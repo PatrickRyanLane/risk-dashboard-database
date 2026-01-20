@@ -60,6 +60,10 @@ def ingest_trends_csv(conn, file_obj):
         snapshot_rows.append((company, avg_val, last_ts))
 
     if daily_rows:
+        deduped = {}
+        for company, dval, ival in daily_rows:
+            deduped[(company, dval)] = ival
+        daily_rows = [(c, d, i) for (c, d), i in deduped.items()]
         sql = """
             insert into trends_daily (company, date, interest)
             values %s
@@ -71,6 +75,12 @@ def ingest_trends_csv(conn, file_obj):
                 execute_values(cur, sql, daily_rows, page_size=1000)
 
     if snapshot_rows:
+        deduped = {}
+        for company, avg_val, last_ts in snapshot_rows:
+            if last_ts is None:
+                continue
+            deduped[(company, last_ts)] = avg_val
+        snapshot_rows = [(c, v, ts) for (c, ts), v in deduped.items()]
         sql = """
             insert into trends_snapshots (company, avg_interest, last_updated)
             values %s
