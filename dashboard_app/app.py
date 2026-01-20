@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Tuple
 
 import psycopg2
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory, redirect, abort
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 
@@ -178,12 +178,16 @@ def set_cached_json(key: str, data):
 @app.route('/')
 def root():
     view = DEFAULT_VIEW if DEFAULT_VIEW in {'internal', 'external'} else 'external'
-    return send_from_directory(f'static/{view}', 'dashboard.html')
+    return redirect(f'/{view}/', code=302)
 
 
 @app.route('/internal/')
 @app.route('/internal/<path:path>')
 def internal_static(path='dashboard.html'):
+    if PUBLIC_MODE:
+        return redirect('/external/', code=302)
+    if not ALLOW_UNAUTHED_INTERNAL and not require_internal_user():
+        abort(403)
     return send_from_directory('static/internal', path)
 
 
