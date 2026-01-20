@@ -217,7 +217,7 @@ def ingest_boards_csv(conn, file_obj):
 
     sql = """
         insert into boards (ceo_id, company_id, url, domain, source, last_updated)
-        select ceo.id, c.id, v.url, v.domain, v.source, v.last_updated
+        select ceo.id, c.id, v.url, v.domain, v.source, v.last_updated::timestamptz
         from (values %s) as v(ceo, company, url, domain, source, last_updated)
         join companies c on c.name = v.company
         join ceos ceo on ceo.name = v.ceo and ceo.company_id = c.id
