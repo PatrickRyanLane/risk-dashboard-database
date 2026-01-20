@@ -8,8 +8,8 @@ from src.url_utils import normalize_url, url_hash
 
 def upsert_companies_ceos(conn, roster_file_obj):
     reader = csv.DictReader(roster_file_obj)
-    companies = []
-    ceos = []
+    companies_map = {}
+    ceos_map = {}
 
     for row in reader:
         company = (row.get('Company') or row.get('company') or '').strip()
@@ -18,8 +18,9 @@ def upsert_companies_ceos(conn, roster_file_obj):
         ticker = (row.get('Stock') or row.get('stock') or '').strip()
         sector = (row.get('Sector') or row.get('sector') or '').strip()
         websites = (row.get('Websites') or row.get('websites') or row.get('Website') or row.get('website') or '').strip()
-        companies.append((company, ticker, sector, websites))
+        companies_map[company] = (company, ticker, sector, websites)
 
+    companies = list(companies_map.values())
     if companies:
         sql = """
             insert into companies (name, ticker, sector, websites)
@@ -42,8 +43,9 @@ def upsert_companies_ceos(conn, roster_file_obj):
         alias = (row.get('CEO Alias') or row.get('ceo alias') or row.get('alias') or '').strip()
         if not company or not ceo:
             continue
-        ceos.append((ceo, company, alias))
+        ceos_map[(ceo, company)] = (ceo, company, alias)
 
+    ceos = list(ceos_map.values())
     if ceos:
         sql = """
             insert into ceos (name, company_id, alias)
