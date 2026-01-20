@@ -280,13 +280,15 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
         run_id_map = {}
 
     if result_rows:
-        insert_rows = []
+        insert_map = {}
         for run_key, rank, url, uhash, title, snippet, domain, sentiment, control_class in result_rows:
             run_id = run_id_map.get(run_key)
             if not run_id:
                 continue
-            insert_rows.append((run_id, rank, url, uhash, title, snippet, domain, sentiment, control_class))
+            key = (run_id, rank, uhash)
+            insert_map[key] = (run_id, rank, url, uhash, title, snippet, domain, sentiment, control_class)
 
+        insert_rows = list(insert_map.values())
         if insert_rows:
             sql = """
                 insert into serp_results (serp_run_id, rank, url, url_hash, title, snippet, domain, sentiment_label, control_class)
