@@ -76,6 +76,13 @@ button:hover{filter:brightness(1.08)}
 /* Table */
 .table-card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:10px}
 .table-hint{margin:0 0 8px;color:var(--muted)}
+.load-status{margin-top:10px;width:100%;display:flex;flex-direction:column;align-items:center}
+.load-bar{height:6px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden}
+.load-bar-fill{height:100%;width:0%;background:var(--accent);transition:width .2s ease}
+.load-items{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:12px;color:var(--muted);justify-content:center;text-align:center}
+.load-pill{padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.1)}
+.load-pill.done{color:#82c618;border-color:rgba(130,198,24,.35);background:rgba(130,198,24,.1)}
+.load-pill.error{color:#ff8261;border-color:rgba(255,130,97,.35);background:rgba(255,130,97,.1)}
 .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .table-scroll::-webkit-scrollbar{height:8px}
 .table-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.05);border-radius:8px}
@@ -199,8 +206,23 @@ tbody td:first-child{background:var(--black)}
 .badge.neutral{background:rgba(207,219,221,.25);color:#cfdbdd;border-color:rgba(207,219,221,.45)}
 .badge.negative{background:rgba(255,130,97,.15);color:#ff8261;border-color:rgba(255,130,97,.35)}
 .edit-controls{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
-.edit-controls select{background:#1f2121;border:1px solid #2a3b5e;color:var(--text);border-radius:8px;padding:4px 6px;font-size:12px}
-.edit-save{background:#1f2121;border:1px solid #2a3b5e;color:var(--text);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer}
+.edit-controls select{
+  appearance:none;
+  background:var(--chip);
+  border:1px solid var(--chipBorder);
+  color:#cfe0ff;
+  border-radius:999px;
+  padding:5px 16px;
+  font-size:12px;
+  cursor:pointer;
+  text-align:center;
+}
+.edit-controls select:focus{outline:2px solid rgba(88,219,237,.35)}
+.edit-controls select.sentiment-positive{background:rgba(130,198,24,.15);color:#82c618;border-color:rgba(130,198,24,.35)}
+.edit-controls select.sentiment-neutral{background:rgba(207,219,221,.25);color:#cfdbdd;border-color:rgba(207,219,221,.45)}
+.edit-controls select.sentiment-negative{background:rgba(255,130,97,.15);color:#ff8261;border-color:rgba(255,130,97,.35)}
+.edit-controls select.controlled{background:rgba(88,219,237,.15);color:#58dbed;border-color:rgba(88,219,237,.35)}
+.edit-controls select.uncontrolled{background:rgba(255,130,97,.15);color:#ff8261;border-color:rgba(255,130,97,.35)}
 .edit-status{font-size:12px;color:var(--muted)}
 .badge.controlled{background:rgba(88,219,237,.15);color:#58dbed;border-color:rgba(88,219,237,.35)}
 .badge.uncontrolled{background:rgba(255,130,97,.15);color:#ff8261;border-color:rgba(255,130,97,.35)}
@@ -629,6 +651,10 @@ body:has(#stockChartModal.open) {
     </div>
     <button id="refreshBtn">Refresh Data</button>
     <button id="clearBtn">Clear Selection</button>
+    <div class="load-status" id="loadStatus">
+      <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
+      <div class="load-items" id="loadItems"></div>
+    </div>
   </div>
 
   <div class="grid">
@@ -784,6 +810,52 @@ let globalTrendsData = {}; // Trends data by company
 
 const _articlesCache = new Map();
 const _serpAggCache  = new Map();
+const _modalHeadlinesCache = new Map();
+const _modalSerpCache = new Map();
+const _loadSections = ['news','serps','stock','trends','negative'];
+const _loadLabels = {
+  news: 'News sentiment',
+  serps: 'SERP metrics',
+  stock: 'Stock data',
+  trends: 'Trends data',
+  negative: 'Negative summary'
+};
+let _loadState = {};
+
+function initLoadStatus(){
+  _loadState = Object.fromEntries(_loadSections.map(k => [k, 'loading']));
+  const items = document.getElementById('loadItems');
+  const wrap = document.getElementById('loadStatus');
+  if (wrap) wrap.style.display = 'block';
+  if (items){
+    items.innerHTML = _loadSections.map(k => `<span class="load-pill" data-key="${k}">${_loadLabels[k] || k}: loading</span>`).join('');
+  }
+  updateLoadBar();
+}
+
+function setLoadStatus(key, state){
+  _loadState[key] = state;
+  const pill = document.querySelector(`.load-pill[data-key="${key}"]`);
+  if (pill){
+    pill.textContent = `${_loadLabels[key] || key}: ${state}`;
+    pill.classList.toggle('done', state === 'done');
+    pill.classList.toggle('error', state === 'error');
+  }
+  updateLoadBar();
+}
+
+function updateLoadBar(){
+  const total = _loadSections.length;
+  const done = Object.values(_loadState).filter(v => v === 'done').length;
+  const fill = document.getElementById('loadBarFill');
+  if (fill){
+    fill.style.width = `${Math.round((done / total) * 100)}%`;
+  }
+  const wrap = document.getElementById('loadStatus');
+  if (wrap && done === total){
+    wrap.style.display = 'none';
+  }
+}
 
 const DATE_WINDOW_SIZE = 30;
 let dateWindowStart = null;
@@ -836,10 +908,12 @@ async function loadStockData() {
     
     // If we get here, no stock data was found in the last 7 days
     console.error('❌ No stock data found in the last 7 days');
+    setLoadStatus('stock', 'error');
     return {};
     
   } catch (error) {
     console.error('❌ STOCK DATA LOAD FAILED:', error);
+    setLoadStatus('stock', 'error');
     return {};
   }
 }
@@ -920,10 +994,13 @@ let negativeSummaryMap = null;
 const NEGATIVE_ARTICLE_THRESHOLD = 3;
 
 async function loadNegativeSummary() {
+  const logLabel = 'negative-summary';
+  console.time(logLabel);
   console.log('📰 Loading negative articles summary...');
   
   try {
     const rows = await fetchCsv('/api/v1/negative_summary');
+    console.log(`📊 Negative summary rows: ${rows.length}`);
     
     console.log(`📊 Loaded ${rows.length} total rows from summary file`);
     
@@ -951,11 +1028,14 @@ async function loadNegativeSummary() {
     });
     
     console.log(`✅ Loaded negative summary for ${summaryMap.size} companies`);
-    
+    console.timeEnd(logLabel);
+    setLoadStatus('negative', 'done');
     return summaryMap;
     
   } catch (e) {
     console.error('❌ Failed to load negative summary:', e);
+    console.timeEnd(logLabel);
+    setLoadStatus('negative', 'error');
     return new Map();
   }
 }
@@ -989,7 +1069,7 @@ async function loadTrendsData() {
         
         console.log(`✅ Successfully loaded trends data from ${dateStr} (${daysBack} day(s) old)`);
         console.log(`📈 Found trends for ${Object.keys(trendsData).length} companies`);
-        
+        setLoadStatus('trends', 'done');
         return trendsData;
       } catch (error) {
         console.log(`⚠️  ${dateStr}: ${error.message}`);
@@ -997,10 +1077,12 @@ async function loadTrendsData() {
     }
     
     console.warn('⚠️  No trends data found in the last 7 days');
+    setLoadStatus('trends', 'error');
     return {};
     
   } catch (error) {
     console.error('❌ TRENDS DATA LOAD FAILED:', error);
+    setLoadStatus('trends', 'error');
     return {};
   }
 }
@@ -1564,14 +1646,20 @@ function preloadModalData(date) {
 
 /********************** Loaders **********************/
 async function loadCounts(){
-  const rows = await fetchCsvAny(COUNTS_CANDIDATES);
-  allCountsRows = rows.map(r=>({
-    date: String(r.date||'').trim(),
-    company: String(r.company||'').trim(),
-    pos: +r.positive||0,
-    neu: +r.neutral||0,
-    neg: +r.negative||0
-  })).filter(r=>isISODate(r.date) && r.company);
+  try{
+    const rows = await fetchCsvAny(COUNTS_CANDIDATES);
+    allCountsRows = rows.map(r=>({
+      date: String(r.date||'').trim(),
+      company: String(r.company||'').trim(),
+      pos: +r.positive||0,
+      neu: +r.neutral||0,
+      neg: +r.negative||0
+    })).filter(r=>isISODate(r.date) && r.company);
+    setLoadStatus('news', 'done');
+  } catch (e){
+    allCountsRows = [];
+    setLoadStatus('news', 'error');
+  }
 }
 async function loadSerpDaily(){
   try{
@@ -1583,7 +1671,11 @@ async function loadSerpDaily(){
       neg_serp:+r.negative_serp||+r.neg_serp||0,
       ctrl:+r.controlled||+r.control||0
     })).filter(r=>isISODate(r.date) && r.company);
-  }catch(e){ serpsDaily = []; }
+    setLoadStatus('serps', 'done');
+  }catch(e){
+    serpsDaily = [];
+    setLoadStatus('serps', 'error');
+  }
 }
 
 /********************** Risk **********************/
@@ -1640,10 +1732,17 @@ async function getSerpAggForDate(d){
 
 /********************** UI bootstrap ***********************/
 async function init(){
+  initLoadStatus();
   await Promise.all([
     loadCounts(), 
     loadSerpDaily(), 
-    loadStockData().then(data => globalStockData = data),
+    loadStockData().then(data => {
+      globalStockData = data;
+      if (Object.keys(globalStockData).length > 0) {
+        setLoadStatus('stock', 'done');
+      }
+      return data;
+    }),
     loadNegativeSummary().then(data => negativeSummaryMap = data),
     loadTrendsData().then(data => globalTrendsData = data)
   ]);
@@ -1663,12 +1762,9 @@ async function init(){
   sel.addEventListener('change', ()=>{ 
     currentPage=1; 
     selectedCompany=null; 
-    preloadModalData(sel.value); 
     renderAll(); 
+    setTimeout(()=>{ if (sel.value) preloadModalData(sel.value); }, 150);
   });
-  
-  // Preload modal data for initial date
-  if (sel.value) preloadModalData(sel.value);
 
   document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll(); });
   document.getElementById('refreshBtn').onclick = async ()=>{ await init(); };
@@ -1699,6 +1795,9 @@ async function init(){
   // ----------------------------------
 
   renderAll();
+  if (sel.value) {
+    setTimeout(()=>{ preloadModalData(sel.value); }, 150);
+  }
 
   const ro = new ResizeObserver(()=>{ if (newsChart) newsChart.resize(); if (serpChart) serpChart.resize(); });
   ro.observe(document.getElementById('newsChart').parentElement);
@@ -2028,10 +2127,10 @@ async function postOverride(payload){
   return await res.json();
 }
 
-modalContent.addEventListener('click', async (e) => {
-  const btn = e.target.closest('.edit-save');
-  if (!btn) return;
-  const card = btn.closest('.serp-card');
+modalContent.addEventListener('change', async (e) => {
+  const select = e.target.closest('.edit-risk, .edit-controlled');
+  if (!select) return;
+  const card = select.closest('.serp-card');
   if (!card) return;
   const mentionId = card.getAttribute('data-mention-id');
   const serpResultId = card.getAttribute('data-serp-result-id');
@@ -2040,11 +2139,11 @@ modalContent.addEventListener('click', async (e) => {
   const riskVal = riskSel ? riskSel.value || null : null;
   const ctrlVal = ctrlSel ? (ctrlSel.value === '' ? null : (ctrlSel.value === 'true')) : null;
   const status = card.querySelector('.edit-status');
+  updatePillClasses(card);
   if ((!mentionId && !serpResultId) || (!riskVal && ctrlVal === null)) {
     if (status) status.textContent = 'Select a value';
     return;
   }
-  btn.disabled = true;
   if (status) status.textContent = 'Saving...';
   try {
     const payload = {
@@ -2059,15 +2158,36 @@ modalContent.addEventListener('click', async (e) => {
     if (status) status.textContent = 'Saved';
   } catch (err) {
     if (status) status.textContent = 'Error';
-  } finally {
-    btn.disabled = false;
   }
 });
 
+function updatePillClasses(card){
+  const riskSel = card.querySelector('.edit-risk');
+  if (riskSel){
+    riskSel.classList.remove('sentiment-positive','sentiment-neutral','sentiment-negative');
+    if (riskSel.value) riskSel.classList.add(`sentiment-${riskSel.value}`);
+  }
+  const ctrlSel = card.querySelector('.edit-controlled');
+  if (ctrlSel){
+    ctrlSel.classList.remove('controlled','uncontrolled');
+    if (ctrlSel.value === 'true') ctrlSel.classList.add('controlled');
+    if (ctrlSel.value === 'false') ctrlSel.classList.add('uncontrolled');
+  }
+}
+
 async function showHeadlines({company}){
   const d=document.getElementById('dateSelect').value;
+  openModal(`Headlines — ${esc(company)}`, `<div class="muted">Loading…</div>`);
+  const cacheKey = d;
   let rows=[];
-  try{ rows=await fetchCsv(HEADLINES_PATH(d)); }catch(e){
+  try{
+    if (_modalHeadlinesCache.has(cacheKey)) {
+      rows = _modalHeadlinesCache.get(cacheKey);
+    } else {
+      rows = await fetchCsv(HEADLINES_PATH(d));
+      _modalHeadlinesCache.set(cacheKey, rows);
+    }
+  }catch(e){
     openModal(`Headlines — ${esc(company)}`, `<div class="muted">Could not load headlines for ${d}.</div>`); return;
   }
   const list=rows.filter(r=>String(r.company||'').trim()===company);
@@ -2084,26 +2204,33 @@ async function showHeadlines({company}){
     return `<div class="serp-card" data-mention-id="${esc(mentionId)}">
       ${domain?`<div class="serp-domain">${esc(domain)}</div>`:''}
       <div class="serp-title">${link}</div>
-      <div class="badges" style="margin-top:8px"><span class="badge ${s}">${s}</span></div>
       ${mentionId ? `<div class="edit-controls">
         <select class="edit-risk">
-          <option value="">Sentiment override</option>
-          <option value="positive">positive</option>
-          <option value="neutral">neutral</option>
-          <option value="negative">negative</option>
+          <option value="positive" ${s==='positive'?'selected':''}>positive</option>
+          <option value="neutral" ${s==='neutral'?'selected':''}>neutral</option>
+          <option value="negative" ${s==='negative'?'selected':''}>negative</option>
         </select>
-        <button class="edit-save" type="button">Save</button>
         <span class="edit-status"></span>
-      </div>` : ''}
+      </div>` : `<div class="badges" style="margin-top:8px"><span class="badge ${s}">${s}</span></div>`}
     </div>`;
   }).join('');
 
   openModal(`Headlines — ${esc(company)}`, `<div class="serp-cards">${cards}</div>`);
+  modalContent.querySelectorAll('.serp-card').forEach(updatePillClasses);
 }
 
 async function showSerp({company}){
   const d=document.getElementById('dateSelect').value;
-  let rows=[]; try{ rows=await fetchCsv(SERP_ROWS_PATH(d)); }
+  openModal(`SERP — ${esc(company)}`, `<div class="muted">Loading…</div>`);
+  const cacheKey = d;
+  let rows=[]; try{
+    if (_modalSerpCache.has(cacheKey)) {
+      rows = _modalSerpCache.get(cacheKey);
+    } else {
+      rows = await fetchCsv(SERP_ROWS_PATH(d));
+      _modalSerpCache.set(cacheKey, rows);
+    }
+  }
   catch{ openModal(`SERP — ${esc(company)}`, `<div class="muted">Could not load SERP file for ${d}.</div>`); return; }
   if (!rows.length){ openModal(`SERP — ${esc(company)}`, `<div class="muted">No SERP data found for ${d}.</div>`); return; }
 
@@ -2133,22 +2260,18 @@ async function showSerp({company}){
       ${domain?`<div class="serp-domain">${esc(domain)}</div>`:''}
       <div class="serp-title">${link}</div>
       ${snippet?`<div class="serp-snippet">${snippet}</div>`:''}
-      <div class="badges"><span class="badge ${s}">${s}</span><span class="badge ${ctrl}">${ctrl}</span></div>
       ${serpResultId ? `<div class="edit-controls">
         <select class="edit-risk">
-          <option value="">Sentiment override</option>
-          <option value="positive">positive</option>
-          <option value="neutral">neutral</option>
-          <option value="negative">negative</option>
+          <option value="positive" ${s==='positive'?'selected':''}>positive</option>
+          <option value="neutral" ${s==='neutral'?'selected':''}>neutral</option>
+          <option value="negative" ${s==='negative'?'selected':''}>negative</option>
         </select>
         <select class="edit-controlled">
-          <option value="">Controlled override</option>
-          <option value="true">controlled</option>
-          <option value="false">uncontrolled</option>
+          <option value="true" ${ctrl==='controlled'?'selected':''}>controlled</option>
+          <option value="false" ${ctrl==='uncontrolled'?'selected':''}>uncontrolled</option>
         </select>
-        <button class="edit-save" type="button">Save</button>
         <span class="edit-status"></span>
-      </div>` : ''}
+      </div>` : `<div class="badges"><span class="badge ${s}">${s}</span><span class="badge ${ctrl}">${ctrl}</span></div>`}
     </div>`;
   }).join('');
 
@@ -2159,6 +2282,7 @@ async function showSerp({company}){
   </div>`;
 
   openModal(`SERP — ${esc(company)}`, `${metrics}<div class="serp-cards">${cards}</div>`);
+  modalContent.querySelectorAll('.serp-card').forEach(updatePillClasses);
 }
 
 /********************** Init **********************/

@@ -76,6 +76,13 @@ button:hover{filter:brightness(1.08)}
 /* Table */
 .table-card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:10px}
 .table-hint{margin:0 0 8px;color:var(--muted)}
+.load-status{margin-top:10px;width:100%;display:flex;flex-direction:column;align-items:center}
+.load-bar{height:6px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden}
+.load-bar-fill{height:100%;width:0%;background:var(--accent);transition:width .2s ease}
+.load-items{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:12px;color:var(--muted);justify-content:center;text-align:center}
+.load-pill{padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.1)}
+.load-pill.done{color:#82c618;border-color:rgba(130,198,24,.35);background:rgba(130,198,24,.1)}
+.load-pill.error{color:#ff8261;border-color:rgba(255,130,97,.35);background:rgba(255,130,97,.1)}
 .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .table-scroll::-webkit-scrollbar{height:8px}
 .table-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.05);border-radius:8px}
@@ -625,6 +632,10 @@ body:has(#stockChartModal.open) {
     </div>
     <button id="refreshBtn">Refresh Data</button>
     <button id="clearBtn">Clear Selection</button>
+    <div class="load-status" id="loadStatus">
+      <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
+      <div class="load-items" id="loadItems"></div>
+    </div>
   </div>
 
   <div class="grid">
@@ -780,6 +791,52 @@ let globalTrendsData = {}; // Trends data by company
 
 const _articlesCache = new Map();
 const _serpAggCache  = new Map();
+const _modalHeadlinesCache = new Map();
+const _modalSerpCache = new Map();
+const _loadSections = ['news','serps','stock','trends','negative'];
+const _loadLabels = {
+  news: 'News sentiment',
+  serps: 'SERP metrics',
+  stock: 'Stock data',
+  trends: 'Trends data',
+  negative: 'Negative summary'
+};
+let _loadState = {};
+
+function initLoadStatus(){
+  _loadState = Object.fromEntries(_loadSections.map(k => [k, 'loading']));
+  const items = document.getElementById('loadItems');
+  const wrap = document.getElementById('loadStatus');
+  if (wrap) wrap.style.display = 'block';
+  if (items){
+    items.innerHTML = _loadSections.map(k => `<span class="load-pill" data-key="${k}">${_loadLabels[k] || k}: loading</span>`).join('');
+  }
+  updateLoadBar();
+}
+
+function setLoadStatus(key, state){
+  _loadState[key] = state;
+  const pill = document.querySelector(`.load-pill[data-key="${key}"]`);
+  if (pill){
+    pill.textContent = `${_loadLabels[key] || key}: ${state}`;
+    pill.classList.toggle('done', state === 'done');
+    pill.classList.toggle('error', state === 'error');
+  }
+  updateLoadBar();
+}
+
+function updateLoadBar(){
+  const total = _loadSections.length;
+  const done = Object.values(_loadState).filter(v => v === 'done').length;
+  const fill = document.getElementById('loadBarFill');
+  if (fill){
+    fill.style.width = `${Math.round((done / total) * 100)}%`;
+  }
+  const wrap = document.getElementById('loadStatus');
+  if (wrap && done === total){
+    wrap.style.display = 'none';
+  }
+}
 
 const DATE_WINDOW_SIZE = 30;
 let dateWindowStart = null;
@@ -832,10 +889,12 @@ async function loadStockData() {
     
     // If we get here, no stock data was found in the last 7 days
     console.error('❌ No stock data found in the last 7 days');
+    setLoadStatus('stock', 'error');
     return {};
     
   } catch (error) {
     console.error('❌ STOCK DATA LOAD FAILED:', error);
+    setLoadStatus('stock', 'error');
     return {};
   }
 }
@@ -916,10 +975,13 @@ let negativeSummaryMap = null;
 const NEGATIVE_ARTICLE_THRESHOLD = 3;
 
 async function loadNegativeSummary() {
+  const logLabel = 'negative-summary';
+  console.time(logLabel);
   console.log('📰 Loading negative articles summary...');
   
   try {
     const rows = await fetchCsv('/api/v1/negative_summary');
+    console.log(`📊 Negative summary rows: ${rows.length}`);
     
     console.log(`📊 Loaded ${rows.length} total rows from summary file`);
     
@@ -947,11 +1009,14 @@ async function loadNegativeSummary() {
     });
     
     console.log(`✅ Loaded negative summary for ${summaryMap.size} companies`);
-    
+    console.timeEnd(logLabel);
+    setLoadStatus('negative', 'done');
     return summaryMap;
     
   } catch (e) {
     console.error('❌ Failed to load negative summary:', e);
+    console.timeEnd(logLabel);
+    setLoadStatus('negative', 'error');
     return new Map();
   }
 }
@@ -985,7 +1050,7 @@ async function loadTrendsData() {
         
         console.log(`✅ Successfully loaded trends data from ${dateStr} (${daysBack} day(s) old)`);
         console.log(`📈 Found trends for ${Object.keys(trendsData).length} companies`);
-        
+        setLoadStatus('trends', 'done');
         return trendsData;
       } catch (error) {
         console.log(`⚠️  ${dateStr}: ${error.message}`);
@@ -993,10 +1058,12 @@ async function loadTrendsData() {
     }
     
     console.warn('⚠️  No trends data found in the last 7 days');
+    setLoadStatus('trends', 'error');
     return {};
     
   } catch (error) {
     console.error('❌ TRENDS DATA LOAD FAILED:', error);
+    setLoadStatus('trends', 'error');
     return {};
   }
 }
@@ -1560,14 +1627,20 @@ function preloadModalData(date) {
 
 /********************** Loaders **********************/
 async function loadCounts(){
-  const rows = await fetchCsvAny(COUNTS_CANDIDATES);
-  allCountsRows = rows.map(r=>({
-    date: String(r.date||'').trim(),
-    company: String(r.company||'').trim(),
-    pos: +r.positive||0,
-    neu: +r.neutral||0,
-    neg: +r.negative||0
-  })).filter(r=>isISODate(r.date) && r.company);
+  try{
+    const rows = await fetchCsvAny(COUNTS_CANDIDATES);
+    allCountsRows = rows.map(r=>({
+      date: String(r.date||'').trim(),
+      company: String(r.company||'').trim(),
+      pos: +r.positive||0,
+      neu: +r.neutral||0,
+      neg: +r.negative||0
+    })).filter(r=>isISODate(r.date) && r.company);
+    setLoadStatus('news', 'done');
+  } catch (e){
+    allCountsRows = [];
+    setLoadStatus('news', 'error');
+  }
 }
 async function loadSerpDaily(){
   try{
@@ -1579,7 +1652,11 @@ async function loadSerpDaily(){
       neg_serp:+r.negative_serp||+r.neg_serp||0,
       ctrl:+r.controlled||+r.control||0
     })).filter(r=>isISODate(r.date) && r.company);
-  }catch(e){ serpsDaily = []; }
+    setLoadStatus('serps', 'done');
+  }catch(e){
+    serpsDaily = [];
+    setLoadStatus('serps', 'error');
+  }
 }
 
 /********************** Risk **********************/
@@ -1636,10 +1713,17 @@ async function getSerpAggForDate(d){
 
 /********************** UI bootstrap ***********************/
 async function init(){
+  initLoadStatus();
   await Promise.all([
     loadCounts(), 
     loadSerpDaily(), 
-    loadStockData().then(data => globalStockData = data),
+    loadStockData().then(data => {
+      globalStockData = data;
+      if (Object.keys(globalStockData).length > 0) {
+        setLoadStatus('stock', 'done');
+      }
+      return data;
+    }),
     loadNegativeSummary().then(data => negativeSummaryMap = data),
     loadTrendsData().then(data => globalTrendsData = data)
   ]);
@@ -1659,12 +1743,9 @@ async function init(){
   sel.addEventListener('change', ()=>{ 
     currentPage=1; 
     selectedCompany=null; 
-    preloadModalData(sel.value); 
     renderAll(); 
+    setTimeout(()=>{ if (sel.value) preloadModalData(sel.value); }, 150);
   });
-  
-  // Preload modal data for initial date
-  if (sel.value) preloadModalData(sel.value);
 
   document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll(); });
   document.getElementById('refreshBtn').onclick = async ()=>{ await init(); };
@@ -1695,6 +1776,9 @@ async function init(){
   // ----------------------------------
 
   renderAll();
+  if (sel.value) {
+    setTimeout(()=>{ preloadModalData(sel.value); }, 150);
+  }
 
   const ro = new ResizeObserver(()=>{ if (newsChart) newsChart.resize(); if (serpChart) serpChart.resize(); });
   ro.observe(document.getElementById('newsChart').parentElement);
@@ -2013,8 +2097,16 @@ function openModal(title,html){ modalTitle.textContent=title; modalContent.inner
 
 async function showHeadlines({company}){
   const d=document.getElementById('dateSelect').value;
+  openModal(`Headlines — ${esc(company)}`, `<div class="muted">Loading…</div>`);
   let rows=[];
-  try{ rows=await fetchCsv(HEADLINES_PATH(d)); }catch(e){
+  try{
+    if (_modalHeadlinesCache.has(d)) {
+      rows = _modalHeadlinesCache.get(d);
+    } else {
+      rows = await fetchCsv(HEADLINES_PATH(d));
+      _modalHeadlinesCache.set(d, rows);
+    }
+  }catch(e){
     openModal(`Headlines — ${esc(company)}`, `<div class="muted">Could not load headlines for ${d}.</div>`); return;
   }
   const list=rows.filter(r=>String(r.company||'').trim()===company);
@@ -2039,7 +2131,15 @@ async function showHeadlines({company}){
 
 async function showSerp({company}){
   const d=document.getElementById('dateSelect').value;
-  let rows=[]; try{ rows=await fetchCsv(SERP_ROWS_PATH(d)); }
+  openModal(`SERP — ${esc(company)}`, `<div class="muted">Loading…</div>`);
+  let rows=[]; try{
+    if (_modalSerpCache.has(d)) {
+      rows = _modalSerpCache.get(d);
+    } else {
+      rows = await fetchCsv(SERP_ROWS_PATH(d));
+      _modalSerpCache.set(d, rows);
+    }
+  }
   catch{ openModal(`SERP — ${esc(company)}`, `<div class="muted">Could not load SERP file for ${d}.</div>`); return; }
   if (!rows.length){ openModal(`SERP — ${esc(company)}`, `<div class="muted">No SERP data found for ${d}.</div>`); return; }
 

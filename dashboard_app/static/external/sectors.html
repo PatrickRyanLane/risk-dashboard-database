@@ -87,6 +87,13 @@ button:hover{filter:brightness(1.08)}
 /* Table */
 .table-card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:10px}
 .table-hint{margin:0 0 8px;color:var(--muted)}
+.load-status{margin-top:10px;width:100%;display:flex;flex-direction:column;align-items:center}
+.load-bar{height:6px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden}
+.load-bar-fill{height:100%;width:0%;background:var(--accent);transition:width .2s ease}
+.load-items{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:12px;color:var(--muted);justify-content:center;text-align:center}
+.load-pill{padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.1)}
+.load-pill.done{color:#82c618;border-color:rgba(130,198,24,.35);background:rgba(130,198,24,.1)}
+.load-pill.error{color:#ff8261;border-color:rgba(255,130,97,.35);background:rgba(255,130,97,.1)}
 table{width:100%;border-collapse:separate;border-spacing:0 6px}
 thead th{font-size:11px;color:var(--muted);text-align:center;padding:6px 4px;vertical-align:middle;line-height:1.3;white-space:normal;max-width:100px}
 thead th:nth-child(2){text-align:left;max-width:140px}
@@ -190,6 +197,10 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
     </div>
     <button id="refreshBtn">Refresh Data</button>
     <button id="clearBtn">Clear Selection</button>
+    <div class="load-status" id="loadStatus">
+      <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
+      <div class="load-items" id="loadItems"></div>
+    </div>
   </div>
 
   <div class="grid">
@@ -291,6 +302,49 @@ let newsChart, serpChart;
 
 const DATE_WINDOW_SIZE = 30;
 let dateWindowStart = null;
+const _loadSections = ['roster','news','serps','stock'];
+const _loadLabels = {
+  roster: 'Roster',
+  news: 'News sentiment',
+  serps: 'SERP metrics',
+  stock: 'Stock data'
+};
+let _loadState = {};
+
+function initLoadStatus(){
+  _loadState = Object.fromEntries(_loadSections.map(k => [k, 'loading']));
+  const items = document.getElementById('loadItems');
+  const wrap = document.getElementById('loadStatus');
+  if (wrap) wrap.style.display = 'block';
+  if (items){
+    items.innerHTML = _loadSections.map(k => `<span class="load-pill" data-key="${k}">${_loadLabels[k] || k}: loading</span>`).join('');
+  }
+  updateLoadBar();
+}
+
+function setLoadStatus(key, state){
+  _loadState[key] = state;
+  const pill = document.querySelector(`.load-pill[data-key="${key}"]`);
+  if (pill){
+    pill.textContent = `${_loadLabels[key] || key}: ${state}`;
+    pill.classList.toggle('done', state === 'done');
+    pill.classList.toggle('error', state === 'error');
+  }
+  updateLoadBar();
+}
+
+function updateLoadBar(){
+  const total = _loadSections.length;
+  const done = Object.values(_loadState).filter(v => v === 'done').length;
+  const fill = document.getElementById('loadBarFill');
+  if (fill){
+    fill.style.width = `${Math.round((done / total) * 100)}%`;
+  }
+  const wrap = document.getElementById('loadStatus');
+  if (wrap && done === total){
+    wrap.style.display = 'none';
+  }
+}
 
 /* ================= Utilities ================= */
 const isISODate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s||'').trim());
@@ -324,9 +378,11 @@ async function loadStockData() {
       stockData = parseStockCSV(text);
     }
     
+    setLoadStatus('stock', 'done');
     return stockData;
   } catch (error) {
     console.warn('Could not load stock data:', error);
+    setLoadStatus('stock', 'error');
     return {};
   }
 }
@@ -420,16 +476,22 @@ async function fetchCsvAny(candidates){
 
 /* ================= Loading ================= */
 async function loadCounts(){
-  const rows = await fetchCsvAny(COUNTS_CANDIDATES);
-  allCountsRows = rows
-    .map(r => ({
-      date: String(r.date || '').trim(),
-      company: String(r.company || r.brand || '').trim(),
-      pos: +r.positive || +r.pos || 0,
-      neu: +r.neutral  || +r.neu || 0,
-      neg: +r.negative || +r.neg || 0
-    }))
-    .filter(r => isISODate(r.date) && r.company);
+  try{
+    const rows = await fetchCsvAny(COUNTS_CANDIDATES);
+    allCountsRows = rows
+      .map(r => ({
+        date: String(r.date || '').trim(),
+        company: String(r.company || r.brand || '').trim(),
+        pos: +r.positive || +r.pos || 0,
+        neu: +r.neutral  || +r.neu || 0,
+        neg: +r.negative || +r.neg || 0
+      }))
+      .filter(r => isISODate(r.date) && r.company);
+    setLoadStatus('news', 'done');
+  } catch (e){
+    allCountsRows = [];
+    setLoadStatus('news', 'error');
+  }
 }
 
 async function loadSerpDaily(){
@@ -442,31 +504,54 @@ async function loadSerpDaily(){
       neg_serp: +r.negative_serp || +r.neg_serp || 0,
       ctrl: +r.controlled || +r.control || 0,
     })).filter(r => isISODate(r.date) && r.company);
-  }catch(e){ serpsDaily = []; }
+    setLoadStatus('serps', 'done');
+  }catch(e){
+    serpsDaily = [];
+    setLoadStatus('serps', 'error');
+  }
 }
 
 async function loadRosterSectors() {
-  const rows = await fetchCsvAny(ROSTER_CANDIDATES);
+  try{
+    const rows = await fetchCsvAny(ROSTER_CANDIDATES);
 
-  sectorFromBrand.clear();
-  brandsBySector.clear();
+    sectorFromBrand.clear();
+    brandsBySector.clear();
 
-  rows.forEach(r => {
-    const brandRaw  = r.company || r.Company || r.brand || r.Brand || '';
-    const sector    = r.sector  || r.Sector  || '';
-    const brandKey  = canonBrand(brandRaw);
-    if (!brandKey || !sector) return;
+    rows.forEach(r => {
+      const brandRaw  = r.company || r.Company || r.brand || r.Brand || '';
+      const sector    = r.sector  || r.Sector  || '';
+      const brandKey  = canonBrand(brandRaw);
+      if (!brandKey || !sector) return;
 
-    sectorFromBrand.set(brandKey, sector);
-    if (!brandsBySector.has(sector)) brandsBySector.set(sector, new Set());
-    brandsBySector.get(sector).add(brandKey);
-  });
+      sectorFromBrand.set(brandKey, sector);
+      if (!brandsBySector.has(sector)) brandsBySector.set(sector, new Set());
+      brandsBySector.get(sector).add(brandKey);
+    });
+    setLoadStatus('roster', 'done');
+  } catch (e){
+    sectorFromBrand.clear();
+    brandsBySector.clear();
+    setLoadStatus('roster', 'error');
+  }
 }
 
 
 /* ================= Init ================= */
 async function init(){
-  await Promise.all([loadRosterSectors(), loadCounts(), loadSerpDaily(), loadStockData().then(data => globalStockData = data)]);
+  initLoadStatus();
+  await Promise.all([
+    loadRosterSectors(),
+    loadCounts(),
+    loadSerpDaily(),
+    loadStockData().then(data => {
+      globalStockData = data;
+      if (Object.keys(globalStockData).length > 0) {
+        setLoadStatus('stock', 'done');
+      }
+      return data;
+    })
+  ]);
 
   const dateSet = new Set([
     ...allCountsRows.map(r => r.date),

@@ -29,6 +29,9 @@ ALLOWED_EMAILS = {e.strip().lower() for e in os.environ.get('ALLOWED_EMAILS', ''
 ALLOW_UNAUTHED_INTERNAL = os.environ.get('ALLOW_UNAUTHED_INTERNAL', 'false').lower() in {'1', 'true', 'yes'}
 EXTERNAL_COMPANY_SCOPE = [c.strip() for c in os.environ.get('EXTERNAL_COMPANY_SCOPE', '').split(',') if c.strip()]
 
+_api_cache = {}
+_api_cache_ttl = int(os.environ.get('API_CACHE_TTL', '120'))
+
 DATE_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-(brand|ceo)-(articles|serps)-(modal|table)\.csv$')
 STOCK_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-stock-data\.csv$')
 TRENDS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-trends-data\.csv$')
@@ -82,13 +85,13 @@ def get_company_scope_ids() -> List[str]:
         return []
 
     rows = query_rows(
-        \"\"\"
+        """
         select u.role, c.id
         from users u
         left join user_company_access uca on u.id = uca.user_id
         left join companies c on c.id = uca.company_id
         where lower(u.email) = %s
-        \"\"\",
+        """,
         (email,)
     )
     if not rows:
@@ -152,6 +155,22 @@ def serialize_rows(rows: List[Dict]) -> List[Dict]:
                 clean[k] = v
         out.append(clean)
     return out
+
+
+def get_cached_json(key: str):
+    now = datetime.utcnow().timestamp()
+    cached = _api_cache.get(key)
+    if not cached:
+        return None
+    data, ts = cached
+    if now - ts > _api_cache_ttl:
+        _api_cache.pop(key, None)
+        return None
+    return data
+
+
+def set_cached_json(key: str, data):
+    _api_cache[key] = (data, datetime.utcnow().timestamp())
 
 
 # --------------------------- Static routes ---------------------------
@@ -241,6 +260,10 @@ def available_dates():
 @app.route('/api/v1/daily_counts')
 def daily_counts_json():
     kind = request.args.get('kind', '')
+    cache_key = f"daily_counts:{kind}:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
     if kind == 'brand_articles':
         params = []
         scope_sql, params = scope_clause("c.id", params)
@@ -263,7 +286,9 @@ def daily_counts_json():
             """,
             tuple(params),
         )
-        return jsonify(serialize_rows(rows))
+        data = serialize_rows(rows)
+        set_cached_json(cache_key, data)
+        return jsonify(data)
     if kind == 'ceo_articles':
         params = []
         scope_sql, params = scope_clause("c.id", params)
@@ -289,7 +314,9 @@ def daily_counts_json():
             """,
             tuple(params),
         )
-        return jsonify(serialize_rows(rows))
+        data = serialize_rows(rows)
+        set_cached_json(cache_key, data)
+        return jsonify(data)
     if kind == 'brand_serps':
         params = []
         scope_sql, params = scope_clause("c.id", params)
@@ -311,7 +338,9 @@ def daily_counts_json():
             """,
             tuple(params),
         )
-        return jsonify(serialize_rows(rows))
+        data = serialize_rows(rows)
+        set_cached_json(cache_key, data)
+        return jsonify(data)
     if kind == 'ceo_serps':
         params = []
         scope_sql, params = scope_clause("c.id", params)
@@ -334,7 +363,9 @@ def daily_counts_json():
             """,
             tuple(params),
         )
-        return jsonify(serialize_rows(rows))
+        data = serialize_rows(rows)
+        set_cached_json(cache_key, data)
+        return jsonify(data)
     return jsonify({'error': 'invalid kind'}), 400
 
 
@@ -343,7 +374,7 @@ def processed_articles_json():
     dstr = request.args.get('date', '')
     entity = request.args.get('entity', 'brand')
     kind = request.args.get('kind', 'modal')
-    filename = f\"{dstr}-{entity}-articles-{kind}.csv\"
+    filename = f"{dstr}-{entity}-articles-{kind}.csv"
     resp = processed_articles_csv(filename)
     if resp.status_code != 200:
         return resp
@@ -356,7 +387,7 @@ def processed_serps_json():
     dstr = request.args.get('date', '')
     entity = request.args.get('entity', 'brand')
     kind = request.args.get('kind', 'modal')
-    filename = f\"{dstr}-{entity}-serps-{kind}.csv\"
+    filename = f"{dstr}-{entity}-serps-{kind}.csv"
     resp = processed_serps_csv(filename)
     if resp.status_code != 200:
         return resp
@@ -366,24 +397,38 @@ def processed_serps_json():
 
 @app.route('/api/v1/roster')
 def roster_json():
+    cache_key = "roster"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
     resp = roster_csv()
     if resp.status_code != 200:
         return resp
     rows = list(csv.DictReader(io.StringIO(resp.get_data(as_text=True))))
+    set_cached_json(cache_key, rows)
     return jsonify(rows)
 
 
 @app.route('/api/v1/negative_summary')
 def negative_summary_json():
+    cache_key = f"negative_summary:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
     resp = negative_articles_summary()
     if resp.status_code != 200:
         return resp
     rows = list(csv.DictReader(io.StringIO(resp.get_data(as_text=True))))
+    set_cached_json(cache_key, rows)
     return jsonify(rows)
 
 
 @app.route('/api/v1/boards')
 def boards_json():
+    cache_key = "boards"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
     params = []
     scope_sql, params = scope_clause("c.id", params)
     rows = query_dict(
@@ -397,7 +442,16 @@ def boards_json():
         """,
         tuple(params),
     )
-    return jsonify(serialize_rows(rows))
+    data = serialize_rows(rows)
+    set_cached_json(cache_key, data)
+    return jsonify(data)
+
+
+@app.after_request
+def add_cache_headers(response):
+    if request.method == 'GET' and request.path.startswith('/api/') and not request.path.startswith('/api/internal/'):
+        response.headers.setdefault('Cache-Control', f'public, max-age={_api_cache_ttl}')
+    return response
 
 
 # --------------------------- Internal edit endpoint ---------------------------
