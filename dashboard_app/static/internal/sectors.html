@@ -310,6 +310,7 @@ const _loadLabels = {
   stock: 'Stock data'
 };
 let _loadState = {};
+let _dataRendered = false;
 
 function initLoadStatus(){
   _loadState = Object.fromEntries(_loadSections.map(k => [k, 'loading']));
@@ -340,8 +341,14 @@ function updateLoadBar(){
   if (fill){
     fill.style.width = `${Math.round((done / total) * 100)}%`;
   }
+  maybeHideLoadStatus();
+}
+
+function maybeHideLoadStatus(){
+  const total = _loadSections.length;
+  const done = Object.values(_loadState).filter(v => v === 'done').length;
   const wrap = document.getElementById('loadStatus');
-  if (wrap && done === total){
+  if (wrap && done === total && _dataRendered){
     wrap.style.display = 'none';
   }
 }
@@ -364,18 +371,16 @@ async function loadStockData() {
     let stockData = {};
     
     try {
-      const response = await fetch(getDataUrl(`data/stock_prices/${today}-stock-data.csv`), {cache:'no-store'});
-      const text = await response.text();
-      stockData = parseStockCSV(text);
+      const rows = await fetchCsv(`/api/v1/stock_data?date=${today}`);
+      stockData = parseStockRows(rows);
     } catch {
       // Try yesterday in UTC
       const yesterdayUTC = new Date(todayUTC);
       yesterdayUTC.setUTCDate(yesterdayUTC.getUTCDate() - 1);
       const yesterday = yesterdayUTC.toISOString().split('T')[0];
       
-      const response = await fetch(getDataUrl(`data/stock_prices/${yesterday}-stock-data.csv`), {cache:'no-store'});
-      const text = await response.text();
-      stockData = parseStockCSV(text);
+      const rows = await fetchCsv(`/api/v1/stock_data?date=${yesterday}`);
+      stockData = parseStockRows(rows);
     }
     
     setLoadStatus('stock', 'done');
@@ -387,30 +392,37 @@ async function loadStockData() {
   }
 }
 
-function parseStockCSV(csvText) {
-  const lines = csvText.trim().split('\n');
+function parseStockRows(rows) {
   const stockData = {};
-  
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    
-    const values = line.split(',');
-    if (values.length < 8) continue;
-    
-    const company = values[1];
+  const toFloat = (val) => {
+    if (val === null || val === undefined || val === '') return null;
+    const num = parseFloat(val);
+    return Number.isFinite(num) ? num : null;
+  };
+  rows.forEach(r => {
+    const company = String(r.company || '').trim();
+    if (!company) return;
+    const priceHistory = Array.isArray(r.price_history)
+      ? r.price_history
+      : String(r.price_history || '').split('|').filter(Boolean).map(Number).filter(n => Number.isFinite(n));
+    const dateHistory = Array.isArray(r.date_history)
+      ? r.date_history
+      : String(r.date_history || '').split('|').filter(Boolean);
+    const volumeHistory = Array.isArray(r.volume_history)
+      ? r.volume_history
+      : String(r.volume_history || '').split('|').filter(Boolean).map(Number).filter(n => Number.isFinite(n));
     stockData[company] = {
-      ticker: values[0],
-      company: values[1],
-      openingPrice: parseFloat(values[2]) || null,
-      dailyChange: parseFloat(values[3]) || null,
-      sevenDayChange: parseFloat(values[4]) || null,
-      priceHistory: values[5] ? values[5].split('|').map(p => parseFloat(p)).filter(p => !isNaN(p)) : [],
-      dateHistory: values[6] ? values[6].split('|') : [],
-      lastUpdated: values[7]
+      ticker: String(r.ticker || ''),
+      company,
+      openingPrice: toFloat(r.opening_price ?? r.openingPrice),
+      dailyChange: toFloat(r.daily_change_pct ?? r.dailyChange ?? r.daily_change),
+      sevenDayChange: toFloat(r.seven_day_change_pct ?? r.sevenDayChange),
+      priceHistory,
+      dateHistory,
+      volumeHistory,
+      lastUpdated: r.last_updated || ''
     };
-  }
-  
+  });
   return stockData;
 }
 
@@ -675,6 +687,8 @@ async function renderAll(){
 
   renderTable();
   renderCharts();
+  _dataRendered = true;
+  maybeHideLoadStatus();
 }
 
 function renderTable(){

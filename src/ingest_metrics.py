@@ -108,7 +108,8 @@ def ingest_stock_csv(conn, file_obj):
         price_history = row.get("price_history")
         last_updated = row.get("last_updated")
 
-        for dval, pval in parse_dates_and_values(date_history, price_history):
+        series = parse_dates_and_values(date_history, price_history)
+        for dval, pval in series:
             if pval is None:
                 continue
             daily_rows.append((ticker, company, dval, pval))
@@ -130,6 +131,18 @@ def ingest_stock_csv(conn, file_obj):
         opening_price = to_float(row.get("opening_price"))
         daily_change_pct = to_float(row.get("daily_change_pct"))
         seven_day_change_pct = to_float(row.get("seven_day_change_pct"))
+
+        prices_only = [p for _, p in series if p is not None]
+        if daily_change_pct is None and len(prices_only) >= 2:
+            prev = prices_only[-2]
+            last = prices_only[-1]
+            if prev:
+                daily_change_pct = ((last - prev) / prev) * 100
+        if seven_day_change_pct is None and len(prices_only) >= 8:
+            prev7 = prices_only[-8]
+            last = prices_only[-1]
+            if prev7:
+                seven_day_change_pct = ((last - prev7) / prev7) * 100
 
         snapshot_rows.append((ticker, company, last_ts.date() if last_ts else None, opening_price,
                               daily_change_pct, seven_day_change_pct, last_ts))

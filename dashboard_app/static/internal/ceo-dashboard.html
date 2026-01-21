@@ -856,6 +856,7 @@ const _loadLabels = {
   negative: 'Negative summary'
 };
 let _loadState = {};
+let _dataRendered = false;
 
 function initLoadStatus(){
   _loadState = Object.fromEntries(_loadSections.map(k => [k, 'loading']));
@@ -886,8 +887,14 @@ function updateLoadBar(){
   if (fill){
     fill.style.width = `${Math.round((done / total) * 100)}%`;
   }
+  maybeHideLoadStatus();
+}
+
+function maybeHideLoadStatus(){
+  const total = _loadSections.length;
+  const done = Object.values(_loadState).filter(v => v === 'done').length;
   const wrap = document.getElementById('loadStatus');
-  if (wrap && done === total){
+  if (wrap && done === total && _dataRendered){
     wrap.style.display = 'none';
   }
 }
@@ -921,14 +928,11 @@ async function loadStockData() {
       const dateStr = checkDate.toISOString().split('T')[0];
       
       try {
-        const url = getDataUrl(`data/stock_prices/${dateStr}-stock-data.csv`);
+        const url = `/api/v1/stock_data?date=${dateStr}`;
         console.log(`🔍 Trying: ${url}`);
-        
-        const response = await fetch(url, {cache:'no-store'});
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        
-        const text = await response.text();
-        const stockData = parseStockCSV(text);
+
+        const rows = await fetchCsv(url);
+        const stockData = parseStockRows(rows);
         
         console.log(`✅ Successfully loaded stock data from ${dateStr} (${daysBack} day(s) old)`);
         console.log(`📈 Found data for ${Object.keys(stockData).length} companies`);
@@ -950,31 +954,37 @@ async function loadStockData() {
   }
 }
 
-function parseStockCSV(csvText) {
-  const lines = csvText.trim().split('\n');
+function parseStockRows(rows) {
   const stockData = {};
-  
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    
-    const values = line.split(',');
-    if (values.length < 8) continue;
-    
-    const company = values[1];
+  const toFloat = (val) => {
+    if (val === null || val === undefined || val === '') return null;
+    const num = parseFloat(val);
+    return Number.isFinite(num) ? num : null;
+  };
+  rows.forEach(r => {
+    const company = String(r.company || '').trim();
+    if (!company) return;
+    const priceHistory = Array.isArray(r.price_history)
+      ? r.price_history
+      : String(r.price_history || '').split('|').filter(Boolean).map(Number).filter(n => Number.isFinite(n));
+    const dateHistory = Array.isArray(r.date_history)
+      ? r.date_history
+      : String(r.date_history || '').split('|').filter(Boolean);
+    const volumeHistory = Array.isArray(r.volume_history)
+      ? r.volume_history
+      : String(r.volume_history || '').split('|').filter(Boolean).map(Number).filter(n => Number.isFinite(n));
     stockData[company] = {
-      ticker: values[0],
-      company: values[1],
-      openingPrice: parseFloat(values[2]) || null,
-      dailyChange: parseFloat(values[3]) || null,
-      sevenDayChange: parseFloat(values[4]) || null,
-      priceHistory: values[5] ? values[5].split('|').map(p => parseFloat(p)).filter(p => !isNaN(p)) : [],
-      dateHistory: values[6] ? values[6].split('|') : [],
-      volumeHistory: values[7] ? values[7].split('|').map(v => parseFloat(v)).filter(v => !isNaN(v)) : [],
-      lastUpdated: values[8]
+      ticker: String(r.ticker || ''),
+      company,
+      openingPrice: toFloat(r.opening_price ?? r.openingPrice),
+      dailyChange: toFloat(r.daily_change_pct ?? r.dailyChange ?? r.daily_change),
+      sevenDayChange: toFloat(r.seven_day_change_pct ?? r.sevenDayChange),
+      priceHistory,
+      dateHistory,
+      volumeHistory,
+      lastUpdated: r.last_updated || ''
     };
-  }
-  
+  });
   return stockData;
 }
 
@@ -1075,14 +1085,11 @@ async function loadTrendsData() {
       const dateStr = checkDate.toISOString().split('T')[0];
       
       try {
-        const url = getDataUrl(`data/trends_data/${dateStr}-trends-data.csv`);
+        const url = `/api/v1/trends_data?date=${dateStr}`;
         console.log(`🔍 Trying: ${url}`);
-        
-        const response = await fetch(url, {cache:'no-store'});
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        
-        const text = await response.text();
-        const trendsData = parseTrendsCSV(text);
+
+        const rows = await fetchCsv(url);
+        const trendsData = parseTrendsRows(rows);
         
         console.log(`✅ Successfully loaded trends data from ${dateStr} (${daysBack} day(s) old)`);
         console.log(`📈 Found trends for ${Object.keys(trendsData).length} companies`);
@@ -1104,26 +1111,24 @@ async function loadTrendsData() {
   }
 }
 
-function parseTrendsCSV(csvText) {
-  const lines = csvText.trim().split('\n');
+function parseTrendsRows(rows) {
   const trendsData = {};
-
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-
-    const values = line.split(',');
-    if (values.length < 3) continue;
-
-    const company = values[0];
+  rows.forEach(r => {
+    const company = String(r.company || '').trim();
+    if (!company) return;
+    const trendsHistory = Array.isArray(r.trends_history)
+      ? r.trends_history
+      : String(r.trends_history || '').split('|').filter(Boolean).map(Number).filter(n => Number.isFinite(n));
+    const dateHistory = Array.isArray(r.date_history)
+      ? r.date_history
+      : String(r.date_history || '').split('|').filter(Boolean);
     trendsData[company] = {
-      company: values[0],
-      trendsHistory: values[1] ? values[1].split('|').map(v => parseFloat(v)).filter(v => !isNaN(v)) : [],
-      dateHistory: values[2] ? values[2].split('|') : [],
-      lastUpdated: values[3] || ''
+      company,
+      trendsHistory,
+      dateHistory,
+      lastUpdated: r.last_updated || ''
     };
-  }
-
+  });
   return trendsData;
 }
 
@@ -1950,6 +1955,8 @@ async function renderAll(){
 
   renderTable();
   renderCharts();
+  _dataRendered = true;
+  maybeHideLoadStatus();
 }
 
 function riskRank(risk) {
@@ -2187,10 +2194,15 @@ function renderCharts(){
     options: { ...commonOpts }
   });
 
-  const avgNegAll  = 1;
-  const avgCtrlAll = 38;
-  const avgNegLine  = new Array(d.length).fill(avgNegAll);
-  const avgCtrlLine = new Array(d.length).fill(avgCtrlAll);
+  const avg = (arr) => {
+    const vals = arr.filter(v => Number.isFinite(v));
+    if (!vals.length) return null;
+    return vals.reduce((sum, v) => sum + v, 0) / vals.length;
+  };
+  const avgNegAll  = avg(sN);
+  const avgCtrlAll = avg(sC);
+  const avgNegLine  = avgNegAll == null ? [] : new Array(d.length).fill(avgNegAll);
+  const avgCtrlLine = avgCtrlAll == null ? [] : new Array(d.length).fill(avgCtrlAll);
   
   const SOLID_WIDTH  = 3;
   const DASH_WIDTH   = 2;

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Tuple
 
 import psycopg2
-from flask import Flask, Response, jsonify, request, send_from_directory, redirect, abort
+from flask import Flask, Response, jsonify, request, send_from_directory, abort
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 
@@ -28,6 +28,7 @@ ALLOWED_DOMAIN = os.environ.get('ALLOWED_DOMAIN', '')
 ALLOWED_EMAILS = {e.strip().lower() for e in os.environ.get('ALLOWED_EMAILS', '').split(',') if e.strip()}
 ALLOW_UNAUTHED_INTERNAL = os.environ.get('ALLOW_UNAUTHED_INTERNAL', 'false').lower() in {'1', 'true', 'yes'}
 EXTERNAL_COMPANY_SCOPE = [c.strip() for c in os.environ.get('EXTERNAL_COMPANY_SCOPE', '').split(',') if c.strip()]
+IAP_CERTS_URL = os.environ.get('IAP_CERTS_URL', 'https://www.gstatic.com/iap/verify/public_key')
 
 _api_cache = {}
 _api_cache_ttl = int(os.environ.get('API_CACHE_TTL', '120'))
@@ -47,7 +48,7 @@ def get_iap_email() -> str:
         return ''
     try:
         req = google_requests.Request()
-        payload = id_token.verify_token(token, req, audience=IAP_AUDIENCE)
+        payload = id_token.verify_token(token, req, audience=IAP_AUDIENCE, certs_url=IAP_CERTS_URL)
         return payload.get('email', '')
     except Exception:
         return ''
@@ -70,6 +71,19 @@ def get_request_email() -> str:
         return ''
     email = get_iap_email()
     return (email or '').lower()
+
+
+def current_view() -> str:
+    if PUBLIC_MODE:
+        return 'external'
+    return DEFAULT_VIEW if DEFAULT_VIEW in {'internal', 'external'} else 'internal'
+
+
+def require_internal_access():
+    if PUBLIC_MODE or ALLOW_UNAUTHED_INTERNAL:
+        return
+    if not require_internal_user():
+        abort(403)
 
 
 def get_company_scope_ids() -> List[str]:
@@ -177,17 +191,37 @@ def set_cached_json(key: str, data):
 
 @app.route('/')
 def root():
-    view = DEFAULT_VIEW if DEFAULT_VIEW in {'internal', 'external'} else 'external'
-    return redirect(f'/{view}/', code=302)
+    view = current_view()
+    if view == 'internal':
+        require_internal_access()
+    return send_from_directory(f'static/{view}', 'dashboard.html')
+
+
+@app.route('/brand-dashboard.html')
+@app.route('/ceo-dashboard.html')
+@app.route('/sectors.html')
+def top_level_dashboards():
+    view = current_view()
+    if view == 'internal':
+        require_internal_access()
+    filename = request.path.lstrip('/')
+    return send_from_directory(f'static/{view}', filename)
+
+
+@app.route('/images/<path:path>')
+def top_level_images(path):
+    view = current_view()
+    if view == 'internal':
+        require_internal_access()
+    return send_from_directory(f'static/{view}/images', path)
 
 
 @app.route('/internal/')
 @app.route('/internal/<path:path>')
 def internal_static(path='dashboard.html'):
     if PUBLIC_MODE:
-        return redirect('/external/', code=302)
-    if not ALLOW_UNAUTHED_INTERNAL and not require_internal_user():
-        abort(403)
+        abort(404)
+    require_internal_access()
     return send_from_directory('static/internal', path)
 
 
@@ -200,6 +234,7 @@ def external_static(path='dashboard.html'):
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.utcnow().isoformat()})
+
 
 
 # --------------------------- Data endpoints ---------------------------
@@ -449,6 +484,36 @@ def boards_json():
     data = serialize_rows(rows)
     set_cached_json(cache_key, data)
     return jsonify(data)
+
+
+@app.route('/api/v1/stock_data')
+def stock_data_json():
+    date_str = request.args.get('date')
+    if not date_str:
+        return jsonify({'error': 'date is required (YYYY-MM-DD)'}), 400
+    cache_key = f"stock_data:{date_str}:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+    target = datetime.strptime(date_str, '%Y-%m-%d').date()
+    rows = build_stock_rows(target)
+    set_cached_json(cache_key, rows)
+    return jsonify(rows)
+
+
+@app.route('/api/v1/trends_data')
+def trends_data_json():
+    date_str = request.args.get('date')
+    if not date_str:
+        return jsonify({'error': 'date is required (YYYY-MM-DD)'}), 400
+    cache_key = f"trends_data:{date_str}:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+    target = datetime.strptime(date_str, '%Y-%m-%d').date()
+    rows = build_trends_rows(target)
+    set_cached_json(cache_key, rows)
+    return jsonify(rows)
 
 
 @app.after_request
@@ -879,24 +944,98 @@ def stock_data_csv(filename: str):
         return jsonify({'error': 'invalid filename'}), 400
     dstr = m.group(1)
     target = datetime.strptime(dstr, '%Y-%m-%d').date()
-    start = target - timedelta(days=120)
+    rows = build_stock_rows(target)
+    csv_rows = []
+    for row in rows:
+        prices = '|'.join(str(p) for p in row['price_history'])
+        dates = '|'.join(row['date_history'])
+        csv_rows.append((
+            row['ticker'],
+            row['company'],
+            row['opening_price'],
+            row['daily_change_pct'],
+            row['seven_day_change_pct'],
+            prices,
+            dates,
+            row['last_updated'] or ''
+        ))
 
-    params = [target]
+    headers = ['ticker','company','opening_price','daily_change_pct','seven_day_change_pct','price_history','date_history','last_updated']
+    csv_text = rows_to_csv(headers, csv_rows)
+    return Response(csv_text, content_type='text/csv')
+
+
+def trends_data_csv(filename: str):
+    m = TRENDS_RE.match(filename)
+    if not m:
+        return jsonify({'error': 'invalid filename'}), 400
+    dstr = m.group(1)
+    target = datetime.strptime(dstr, '%Y-%m-%d').date()
+    rows = build_trends_rows(target)
+    csv_rows = []
+    for row in rows:
+        values = '|'.join(str(v) for v in row['trends_history'])
+        dates = '|'.join(row['date_history'])
+        csv_rows.append((
+            row['company'],
+            values,
+            dates,
+            row['last_updated'] or '',
+            row['avg_interest'],
+        ))
+
+    headers = ['company','trends_history','date_history','last_updated','avg_interest']
+    csv_text = rows_to_csv(headers, csv_rows)
+    return Response(csv_text, content_type='text/csv')
+
+
+def build_stock_rows(target: datetime.date) -> List[Dict]:
     scope_ids = get_company_scope_ids()
+    params = [target]
     scope_sql = ""
     if scope_ids:
         scope_sql = " and company in (select name from companies where id = any(%s))"
         params.append(scope_ids)
-
     snapshots = query_dict(
         f"""
-        select ticker, company, opening_price, daily_change_pct, seven_day_change_pct, last_updated
+        select ticker, company, opening_price, daily_change_pct, seven_day_change_pct, last_updated, as_of_date
         from stock_price_snapshots
         where as_of_date = %s {scope_sql}
         """,
         tuple(params)
     )
+    if not snapshots:
+        params = [target]
+        scope_sql = ""
+        if scope_ids:
+            scope_sql = " and company in (select name from companies where id = any(%s))"
+            params.append(scope_ids)
+        latest_rows = query_rows(
+            f"""
+            select max(as_of_date)
+            from stock_price_snapshots
+            where as_of_date <= %s {scope_sql}
+            """,
+            tuple(params)
+        )
+        latest = latest_rows[0][0] if latest_rows and latest_rows[0] else None
+        if latest:
+            params = [latest]
+            scope_sql = ""
+            if scope_ids:
+                scope_sql = " and company in (select name from companies where id = any(%s))"
+                params.append(scope_ids)
+            snapshots = query_dict(
+                f"""
+                select ticker, company, opening_price, daily_change_pct, seven_day_change_pct, last_updated, as_of_date
+                from stock_price_snapshots
+                where as_of_date = %s {scope_sql}
+                """,
+                tuple(params)
+            )
+            target = latest
 
+    start = target - timedelta(days=120)
     params = [start, target]
     scope_sql = ""
     if scope_ids:
@@ -921,32 +1060,34 @@ def stock_data_csv(filename: str):
     for snap in snapshots:
         key = snap['ticker'] or snap['company']
         series = hist_map.get(key, [])
-        dates = '|'.join(d for d, _ in series)
-        prices = '|'.join(str(p) for _, p in series)
-        rows.append((
-            snap['ticker'],
-            snap['company'],
-            snap['opening_price'],
-            snap['daily_change_pct'],
-            snap['seven_day_change_pct'],
-            prices,
-            dates,
-            snap['last_updated'].isoformat() if snap['last_updated'] else ''
-        ))
+        prices_only = [p for _, p in series]
+        daily_change = snap['daily_change_pct']
+        seven_day_change = snap['seven_day_change_pct']
+        if daily_change is None and len(prices_only) >= 2:
+            prev = prices_only[-2]
+            last = prices_only[-1]
+            if prev:
+                daily_change = ((last - prev) / prev) * 100
+        if seven_day_change is None and len(prices_only) >= 8:
+            prev7 = prices_only[-8]
+            last = prices_only[-1]
+            if prev7:
+                seven_day_change = ((last - prev7) / prev7) * 100
+        rows.append({
+            'ticker': snap['ticker'],
+            'company': snap['company'],
+            'opening_price': snap['opening_price'],
+            'daily_change_pct': daily_change,
+            'seven_day_change_pct': seven_day_change,
+            'price_history': [p for _, p in series],
+            'date_history': [d for d, _ in series],
+            'volume_history': [],
+            'last_updated': snap['last_updated'].isoformat() if snap['last_updated'] else ''
+        })
+    return rows
 
-    headers = ['ticker','company','opening_price','daily_change_pct','seven_day_change_pct','price_history','date_history','last_updated']
-    csv_text = rows_to_csv(headers, rows)
-    return Response(csv_text, content_type='text/csv')
 
-
-def trends_data_csv(filename: str):
-    m = TRENDS_RE.match(filename)
-    if not m:
-        return jsonify({'error': 'invalid filename'}), 400
-    dstr = m.group(1)
-    target = datetime.strptime(dstr, '%Y-%m-%d').date()
-    start = target - timedelta(days=60)
-
+def build_trends_rows(target: datetime.date) -> List[Dict]:
     scope_ids = get_company_scope_ids()
     params = [target]
     scope_sql = ""
@@ -961,7 +1102,38 @@ def trends_data_csv(filename: str):
         """,
         tuple(params)
     )
+    if not snapshots:
+        params = [target]
+        scope_sql = ""
+        if scope_ids:
+            scope_sql = " and company in (select name from companies where id = any(%s))"
+            params.append(scope_ids)
+        latest_rows = query_rows(
+            f"""
+            select max(last_updated::date)
+            from trends_snapshots
+            where last_updated::date <= %s {scope_sql}
+            """,
+            tuple(params)
+        )
+        latest = latest_rows[0][0] if latest_rows and latest_rows[0] else None
+        if latest:
+            params = [latest]
+            scope_sql = ""
+            if scope_ids:
+                scope_sql = " and company in (select name from companies where id = any(%s))"
+                params.append(scope_ids)
+            snapshots = query_dict(
+                f"""
+                select company, avg_interest, last_updated
+                from trends_snapshots
+                where last_updated::date = %s {scope_sql}
+                """,
+                tuple(params)
+            )
+            target = latest
 
+    start = target - timedelta(days=60)
     params = [start, target]
     scope_sql = ""
     if scope_ids:
@@ -984,19 +1156,14 @@ def trends_data_csv(filename: str):
     rows = []
     for snap in snapshots:
         series = hist_map.get(snap['company'], [])
-        dates = '|'.join(d for d, _ in series)
-        values = '|'.join(str(v) for _, v in series)
-        rows.append((
-            snap['company'],
-            values,
-            dates,
-            snap['last_updated'].isoformat() if snap['last_updated'] else '',
-            snap['avg_interest'],
-        ))
-
-    headers = ['company','trends_history','date_history','last_updated','avg_interest']
-    csv_text = rows_to_csv(headers, rows)
-    return Response(csv_text, content_type='text/csv')
+        rows.append({
+            'company': snap['company'],
+            'trends_history': [v for _, v in series],
+            'date_history': [d for d, _ in series],
+            'last_updated': snap['last_updated'].isoformat() if snap['last_updated'] else '',
+            'avg_interest': snap['avg_interest'],
+        })
+    return rows
 
 
 def negative_articles_summary():
