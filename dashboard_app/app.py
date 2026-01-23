@@ -738,6 +738,9 @@ def processed_articles_csv(filename: str):
                 f"""
                 select c.name as company, a.title, a.canonical_url as url, a.publisher as source,
                        coalesce(ov.override_sentiment_label, cam.sentiment_label) as sentiment,
+                       ov.override_sentiment_label as sentiment_override,
+                       ov.override_control_class as control_override,
+                       cam.llm_label as llm_label,
                        cam.id as mention_id
                 from company_article_mentions cam
                 join companies c on c.id = cam.company_id
@@ -748,7 +751,7 @@ def processed_articles_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['company','title','url','source','sentiment','mention_id']
+            headers = ['company','title','url','source','sentiment','sentiment_override','control_override','llm_label','mention_id']
         else:
             params = [dstr]
             scope_sql, params = scope_clause("c.id", params)
@@ -756,6 +759,9 @@ def processed_articles_csv(filename: str):
                 f"""
                 select ceo.name as ceo, c.name as company, a.title, a.canonical_url as url, a.publisher as source,
                        coalesce(ov.override_sentiment_label, cam.sentiment_label) as sentiment,
+                       ov.override_sentiment_label as sentiment_override,
+                       ov.override_control_class as control_override,
+                       cam.llm_label as llm_label,
                        cam.id as mention_id
                 from ceo_article_mentions cam
                 join ceos ceo on ceo.id = cam.ceo_id
@@ -767,7 +773,7 @@ def processed_articles_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['ceo','company','title','url','source','sentiment','mention_id']
+            headers = ['ceo','company','title','url','source','sentiment','sentiment_override','control_override','llm_label','mention_id']
         csv_text = rows_to_csv(headers, rows)
         return Response(csv_text, content_type='text/csv')
 
@@ -840,6 +846,9 @@ def processed_serps_csv(filename: str):
                 select c.name as company, r.title, r.url, r.rank as position, r.snippet,
                        coalesce(ov.override_sentiment_label, r.sentiment_label) as sentiment,
                        coalesce(ov.override_control_class, r.control_class) as controlled,
+                       ov.override_sentiment_label as sentiment_override,
+                       ov.override_control_class as control_override,
+                       r.llm_label as llm_label,
                        r.id as serp_result_id
                 from serp_runs sr
                 join companies c on c.id = sr.company_id
@@ -850,7 +859,7 @@ def processed_serps_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['company','title','url','position','snippet','sentiment','controlled','serp_result_id']
+            headers = ['company','title','url','position','snippet','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
         else:
             params = [dstr]
             scope_sql, params = scope_clause("c.id", params)
@@ -859,6 +868,9 @@ def processed_serps_csv(filename: str):
                 select ceo.name as ceo, c.name as company, r.title, r.url, r.rank as position, r.snippet,
                        coalesce(ov.override_sentiment_label, r.sentiment_label) as sentiment,
                        coalesce(ov.override_control_class, r.control_class) as controlled,
+                       ov.override_sentiment_label as sentiment_override,
+                       ov.override_control_class as control_override,
+                       r.llm_label as llm_label,
                        r.id as serp_result_id
                 from serp_runs sr
                 join ceos ceo on ceo.id = sr.ceo_id
@@ -870,7 +882,7 @@ def processed_serps_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['ceo','company','title','url','position','snippet','sentiment','controlled','serp_result_id']
+            headers = ['ceo','company','title','url','position','snippet','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
         csv_text = rows_to_csv(headers, rows)
         return Response(csv_text, content_type='text/csv')
 

@@ -277,6 +277,7 @@ tbody td:first-child{
   color:#ff8261;
   border-color:rgba(255,130,97,.35);
 }
+.serp-flags{margin-top:6px;font-size:12px;opacity:.8;letter-spacing:.2px}
 .muted{color:var(--muted)}
 
 #stockChartModal .box{max-width:1000px; width:95%; max-height:90vh; overflow:auto;}
@@ -1742,6 +1743,16 @@ function computeRisk(negPct, ctrlPct){
   return (ctrlPct < 0.35) ? 'Medium' : 'Low';
 }
 
+function flagIcons(r){
+  const edited = !!(r.sentiment_override || r.control_override);
+  const llm = !!(r.llm_label);
+  if (!edited && !llm) return '';
+  const parts = [];
+  if (edited) parts.push('<span title="Manual edit">✏️</span>');
+  if (llm) parts.push('<span title="LLM enriched">🤖</span>');
+  return parts.join(' ');
+}
+
 function toPct01(x){
   if (x == null || x === '') return null;
   const n = +String(x).replace('%','').trim();
@@ -2314,11 +2325,13 @@ async function showHeadlines({ ceo }) {
 
     const sRaw = String(r.sentiment || '').toLowerCase();
     const s = sRaw === 'positive' ? 'positive' : (sRaw === 'negative' ? 'negative' : 'neutral');
+    const flags = flagIcons(r);
 
     return `
       <div class="serp-card">
         ${domain ? `<div class="serp-domain">${esc(domain)}</div>` : ''}
         <div class="serp-title">${link}</div>
+        ${flags ? `<div class="serp-flags">${flags}</div>` : ''}
         <div class="badges" style="margin-top:8px">
           <span class="badge ${s}">${s}</span>
         </div>
@@ -2376,10 +2389,12 @@ async function showSerp(row){
     const s = String(r.sentiment||'neutral').toLowerCase();
     const ctrl = (/^controlled|true|1$/i).test(String(r.controlled||'')) ? 'controlled' : 'uncontrolled';
     const link = url ? `<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>` : `<span class="muted">${title}</span>`;
+    const flags = flagIcons(r);
     return `<div class="serp-card">
       ${domain? `<div class="serp-domain">${esc(domain)}</div>` : ''}
       <div class="serp-title">${link}</div>
       ${snippet? `<div class="serp-snippet">${snippet}</div>` : ''}
+      ${flags ? `<div class="serp-flags">${flags}</div>` : ''}
       <div class="badges">
         <span class="badge ${s}">${s}</span>
         <span class="badge ${ctrl}">${ctrl}</span>

@@ -185,9 +185,9 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
                   finance_routine = excluded.finance_routine,
                   uncertain = excluded.uncertain,
                   uncertain_reason = excluded.uncertain_reason,
-                  llm_label = excluded.llm_label,
-                  llm_severity = excluded.llm_severity,
-                  llm_reason = excluded.llm_reason,
+                  llm_label = coalesce(excluded.llm_label, company_article_mentions.llm_label),
+                  llm_severity = coalesce(excluded.llm_severity, company_article_mentions.llm_severity),
+                  llm_reason = coalesce(excluded.llm_reason, company_article_mentions.llm_reason),
                   scored_at = excluded.scored_at,
                   model_version = excluded.model_version
             """
@@ -216,9 +216,9 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
                   finance_routine = excluded.finance_routine,
                   uncertain = excluded.uncertain,
                   uncertain_reason = excluded.uncertain_reason,
-                  llm_label = excluded.llm_label,
-                  llm_severity = excluded.llm_severity,
-                  llm_reason = excluded.llm_reason,
+                  llm_label = coalesce(excluded.llm_label, ceo_article_mentions.llm_label),
+                  llm_severity = coalesce(excluded.llm_severity, ceo_article_mentions.llm_severity),
+                  llm_reason = coalesce(excluded.llm_reason, ceo_article_mentions.llm_reason),
                   scored_at = excluded.scored_at,
                   model_version = excluded.model_version
             """
@@ -358,9 +358,9 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
                   finance_routine = excluded.finance_routine,
                   uncertain = excluded.uncertain,
                   uncertain_reason = excluded.uncertain_reason,
-                  llm_label = excluded.llm_label,
-                  llm_severity = excluded.llm_severity,
-                  llm_reason = excluded.llm_reason
+                  llm_label = coalesce(excluded.llm_label, serp_results.llm_label),
+                  llm_severity = coalesce(excluded.llm_severity, serp_results.llm_severity),
+                  llm_reason = coalesce(excluded.llm_reason, serp_results.llm_reason)
             """
             with conn:
                 with conn.cursor() as cur:

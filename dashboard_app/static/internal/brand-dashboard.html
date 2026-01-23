@@ -226,6 +226,7 @@ tbody td:first-child{background:var(--black)}
 .edit-status{font-size:12px;color:var(--muted)}
 .badge.controlled{background:rgba(88,219,237,.15);color:#58dbed;border-color:rgba(88,219,237,.35)}
 .badge.uncontrolled{background:rgba(255,130,97,.15);color:#ff8261;border-color:rgba(255,130,97,.35)}
+.serp-flags{margin-top:6px;font-size:12px;opacity:.8;letter-spacing:.2px}
 .muted{color:var(--muted)}
 
 /* Stock chart modal */
@@ -2187,6 +2188,16 @@ function updatePillClasses(card){
   }
 }
 
+function flagIcons(r){
+  const edited = !!(r.sentiment_override || r.control_override);
+  const llm = !!(r.llm_label);
+  if (!edited && !llm) return '';
+  const parts = [];
+  if (edited) parts.push('<span title="Manual edit">✏️</span>');
+  if (llm) parts.push('<span title="LLM enriched">🤖</span>');
+  return parts.join(' ');
+}
+
 async function showHeadlines({company}){
   const d=document.getElementById('dateSelect').value;
   openModal(`Headlines — ${esc(company)}`, `<div class="muted">Loading…</div>`);
@@ -2213,9 +2224,11 @@ async function showHeadlines({company}){
     const link=url?`<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>`:`<span class="muted">${title}</span>`;
     const sRaw=String(r.sentiment||'').toLowerCase();
     const s=sRaw==='positive'?'positive':(sRaw==='negative'?'negative':'neutral');
+    const flags = flagIcons(r);
     return `<div class="serp-card" data-mention-id="${esc(mentionId)}">
       ${domain?`<div class="serp-domain">${esc(domain)}</div>`:''}
       <div class="serp-title">${link}</div>
+      ${flags?`<div class="serp-flags">${flags}</div>`:''}
       ${mentionId ? `<div class="edit-controls">
         <select class="edit-risk">
           <option value="positive" ${s==='positive'?'selected':''}>positive</option>
@@ -2268,10 +2281,12 @@ async function showSerp({company}){
     const s=String(r.sentiment||'neutral').toLowerCase();
     const ctrl=(/^controlled|true|1$/i).test(String(r.controlled||''))?'controlled':'uncontrolled';
     const link=url?`<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>`:`<span class="muted">${title}</span>`;
+    const flags = flagIcons(r);
     return `<div class="serp-card" data-serp-result-id="${esc(serpResultId)}">
       ${domain?`<div class="serp-domain">${esc(domain)}</div>`:''}
       <div class="serp-title">${link}</div>
       ${snippet?`<div class="serp-snippet">${snippet}</div>`:''}
+      ${flags?`<div class="serp-flags">${flags}</div>`:''}
       ${serpResultId ? `<div class="edit-controls">
         <select class="edit-risk">
           <option value="positive" ${s==='positive'?'selected':''}>positive</option>
