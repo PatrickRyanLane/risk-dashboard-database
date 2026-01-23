@@ -6,6 +6,10 @@ from psycopg2.extras import execute_values
 from src.url_utils import normalize_url, url_hash
 
 
+def parse_bool(value):
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
 def upsert_companies_ceos(conn, roster_file_obj):
     reader = csv.DictReader(roster_file_obj)
     companies_map = {}
@@ -121,6 +125,12 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
 
         publisher = (row.get('source') or '').strip()
         sentiment = (row.get('sentiment') or '').strip().lower() or None
+        finance_routine = parse_bool(row.get('finance_routine'))
+        uncertain = parse_bool(row.get('uncertain'))
+        uncertain_reason = (row.get('uncertain_reason') or '').strip() or None
+        llm_label = (row.get('llm_label') or '').strip() or None
+        llm_severity = (row.get('llm_severity') or '').strip() or None
+        llm_reason = (row.get('llm_reason') or '').strip() or None
 
         articles[canonical] = (canonical, title, publisher, None, None, now, now, 'google_rss')
         article_urls.append(canonical)
@@ -130,7 +140,10 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
             company_id = company_map.get(company)
             if not company_id:
                 continue
-            mentions.append((company_id, canonical, sentiment, date_str))
+            mentions.append((
+                company_id, canonical, sentiment, finance_routine, uncertain, uncertain_reason,
+                llm_label, llm_severity, llm_reason, date_str
+            ))
         else:
             ceo = (row.get('ceo') or '').strip()
             company = (row.get('company') or '').strip()
@@ -140,7 +153,10 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
             ceo_id = ceo_map.get((ceo, company_id))
             if not ceo_id:
                 continue
-            mentions.append((ceo_id, canonical, sentiment, date_str))
+            mentions.append((
+                ceo_id, canonical, sentiment, finance_routine, uncertain, uncertain_reason,
+                llm_label, llm_severity, llm_reason, date_str
+            ))
 
     upsert_articles(conn, list(articles.values()))
     article_map = fetch_article_map(conn, article_urls)
@@ -149,17 +165,29 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
 
     if entity_type == 'company':
         insert_rows = []
-        for company_id, canonical, sentiment, dstr in mentions:
+        for company_id, canonical, sentiment, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason, dstr in mentions:
             article_id = article_map.get(canonical)
             if not article_id:
                 continue
-            insert_rows.append((company_id, article_id, sentiment, scored_at, 'vader'))
+            insert_rows.append((
+                company_id, article_id, sentiment, finance_routine, uncertain, uncertain_reason,
+                llm_label, llm_severity, llm_reason, scored_at, 'vader'
+            ))
         if insert_rows:
             sql = """
-                insert into company_article_mentions (company_id, article_id, sentiment_label, scored_at, model_version)
+                insert into company_article_mentions (
+                  company_id, article_id, sentiment_label, finance_routine, uncertain, uncertain_reason,
+                  llm_label, llm_severity, llm_reason, scored_at, model_version
+                )
                 values %s
                 on conflict (company_id, article_id) do update set
                   sentiment_label = excluded.sentiment_label,
+                  finance_routine = excluded.finance_routine,
+                  uncertain = excluded.uncertain,
+                  uncertain_reason = excluded.uncertain_reason,
+                  llm_label = excluded.llm_label,
+                  llm_severity = excluded.llm_severity,
+                  llm_reason = excluded.llm_reason,
                   scored_at = excluded.scored_at,
                   model_version = excluded.model_version
             """
@@ -168,17 +196,29 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
                     execute_values(cur, sql, insert_rows, page_size=1000)
     else:
         insert_rows = []
-        for ceo_id, canonical, sentiment, dstr in mentions:
+        for ceo_id, canonical, sentiment, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason, dstr in mentions:
             article_id = article_map.get(canonical)
             if not article_id:
                 continue
-            insert_rows.append((ceo_id, article_id, sentiment, scored_at, 'vader'))
+            insert_rows.append((
+                ceo_id, article_id, sentiment, finance_routine, uncertain, uncertain_reason,
+                llm_label, llm_severity, llm_reason, scored_at, 'vader'
+            ))
         if insert_rows:
             sql = """
-                insert into ceo_article_mentions (ceo_id, article_id, sentiment_label, scored_at, model_version)
+                insert into ceo_article_mentions (
+                  ceo_id, article_id, sentiment_label, finance_routine, uncertain, uncertain_reason,
+                  llm_label, llm_severity, llm_reason, scored_at, model_version
+                )
                 values %s
                 on conflict (ceo_id, article_id) do update set
                   sentiment_label = excluded.sentiment_label,
+                  finance_routine = excluded.finance_routine,
+                  uncertain = excluded.uncertain,
+                  uncertain_reason = excluded.uncertain_reason,
+                  llm_label = excluded.llm_label,
+                  llm_severity = excluded.llm_severity,
+                  llm_reason = excluded.llm_reason,
                   scored_at = excluded.scored_at,
                   model_version = excluded.model_version
             """
@@ -220,6 +260,12 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
             domain = ''
 
         sentiment = (row.get('sentiment') or '').strip().lower() or None
+        finance_routine = parse_bool(row.get('finance_routine'))
+        uncertain = parse_bool(row.get('uncertain'))
+        uncertain_reason = (row.get('uncertain_reason') or '').strip() or None
+        llm_label = (row.get('llm_label') or '').strip() or None
+        llm_severity = (row.get('llm_severity') or '').strip() or None
+        llm_reason = (row.get('llm_reason') or '').strip() or None
         controlled = (row.get('controlled') or '').strip().lower()
         control_class = None
         if controlled in {'true', '1', 'controlled'}:
@@ -251,7 +297,10 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
                 'run_at': datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
             }
 
-        result_rows.append((run_key, rank, url, url_hash(canonical), title, row.get('snippet') or '', domain, sentiment, control_class))
+        result_rows.append((
+            run_key, rank, url, url_hash(canonical), title, row.get('snippet') or '', domain,
+            sentiment, control_class, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason
+        ))
 
     # Insert runs
     if run_rows:
@@ -281,17 +330,23 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
 
     if result_rows:
         insert_map = {}
-        for run_key, rank, url, uhash, title, snippet, domain, sentiment, control_class in result_rows:
+        for run_key, rank, url, uhash, title, snippet, domain, sentiment, control_class, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason in result_rows:
             run_id = run_id_map.get(run_key)
             if not run_id:
                 continue
             key = (run_id, rank, uhash)
-            insert_map[key] = (run_id, rank, url, uhash, title, snippet, domain, sentiment, control_class)
+            insert_map[key] = (
+                run_id, rank, url, uhash, title, snippet, domain, sentiment, control_class,
+                finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason
+            )
 
         insert_rows = list(insert_map.values())
         if insert_rows:
             sql = """
-                insert into serp_results (serp_run_id, rank, url, url_hash, title, snippet, domain, sentiment_label, control_class)
+                insert into serp_results (
+                  serp_run_id, rank, url, url_hash, title, snippet, domain, sentiment_label, control_class,
+                  finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason
+                )
                 values %s
                 on conflict (serp_run_id, rank, url_hash) do update set
                   url = excluded.url,
@@ -299,7 +354,13 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
                   snippet = excluded.snippet,
                   domain = excluded.domain,
                   sentiment_label = excluded.sentiment_label,
-                  control_class = excluded.control_class
+                  control_class = excluded.control_class,
+                  finance_routine = excluded.finance_routine,
+                  uncertain = excluded.uncertain,
+                  uncertain_reason = excluded.uncertain_reason,
+                  llm_label = excluded.llm_label,
+                  llm_severity = excluded.llm_severity,
+                  llm_reason = excluded.llm_reason
             """
             with conn:
                 with conn.cursor() as cur:
