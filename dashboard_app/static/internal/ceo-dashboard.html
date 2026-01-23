@@ -297,6 +297,7 @@ tbody td:first-child{
   border-color:rgba(255,130,97,.35);
 }
 .serp-flags{margin-top:6px;font-size:12px;opacity:.8;letter-spacing:.2px}
+.edit-flags{display:inline-flex;gap:10px;align-items:center;font-size:12px;opacity:.85;white-space:nowrap}
 .muted{color:var(--muted)}
 
 #stockChartModal .box{max-width:1000px; width:95%; max-height:90vh; overflow:auto;}
@@ -2338,8 +2339,8 @@ function flagIcons(r){
   const llm = !!(r.llm_label);
   if (!edited && !llm) return '';
   const parts = [];
-  if (edited) parts.push('<span title="Manual edit">✏️</span>');
-  if (llm) parts.push('<span title="LLM enriched">🤖</span>');
+  if (edited) parts.push('<span title="Manually edited">✏️ Manually edited</span>');
+  if (llm) parts.push('<span title="AI enriched">🤖 AI enriched</span>');
   return parts.join(' ');
 }
 
@@ -2412,7 +2413,7 @@ async function showHeadlines({ ceo }) {
       <div class="serp-card" data-mention-id="${esc(mentionId)}">
         ${domain ? `<div class="serp-domain">${esc(domain)}</div>` : ''}
         <div class="serp-title">${link}</div>
-        ${flags ? `<div class="serp-flags">${flags}</div>` : ''}
+        ${flags ? `<div class="edit-flags">${flags}</div>` : ''}
         ${mentionId ? `<div class="edit-controls">
           <select class="edit-risk">
             <option value="positive" ${s==='positive'?'selected':''}>positive</option>
@@ -2482,7 +2483,7 @@ async function showSerp(row){
       ${domain? `<div class="serp-domain">${esc(domain)}</div>` : ''}
       <div class="serp-title">${link}</div>
       ${snippet? `<div class="serp-snippet">${snippet}</div>` : ''}
-      ${flags ? `<div class="serp-flags">${flags}</div>` : ''}
+      ${flags ? `<div class="edit-flags">${flags}</div>` : ''}
       ${serpResultId ? `<div class="edit-controls">
         <select class="edit-risk">
           <option value="positive" ${s==='positive'?'selected':''}>positive</option>

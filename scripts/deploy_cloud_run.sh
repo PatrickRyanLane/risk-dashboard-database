@@ -31,13 +31,11 @@ docker push "${IMAGE_NAME}"
 INTERNAL_ENV_VARS="PUBLIC_MODE=0,ALLOW_EDITS=1,DEFAULT_VIEW=internal"
 EXTERNAL_ENV_VARS="PUBLIC_MODE=1,ALLOW_EDITS=0,DEFAULT_VIEW=external"
 
-if [[ -n "${ALLOWED_DOMAIN:-}" ]]; then
-  INTERNAL_ENV_VARS="${INTERNAL_ENV_VARS},ALLOWED_DOMAIN=${ALLOWED_DOMAIN}"
-fi
+ALLOWED_DOMAIN_DEFAULT="terakeet.com"
+IAP_AUDIENCE_DEFAULT="/projects/168007850529/locations/us-west1/services/${INTERNAL_SERVICE}"
 
-if [[ -n "${IAP_AUDIENCE:-}" ]]; then
-  INTERNAL_ENV_VARS="${INTERNAL_ENV_VARS},IAP_AUDIENCE=${IAP_AUDIENCE}"
-fi
+INTERNAL_ENV_VARS="${INTERNAL_ENV_VARS},ALLOWED_DOMAIN=${ALLOWED_DOMAIN:-${ALLOWED_DOMAIN_DEFAULT}}"
+INTERNAL_ENV_VARS="${INTERNAL_ENV_VARS},IAP_AUDIENCE=${IAP_AUDIENCE:-${IAP_AUDIENCE_DEFAULT}}"
 
 # Internal (editable) service
 gcloud run deploy "${INTERNAL_SERVICE}" \
@@ -45,7 +43,7 @@ gcloud run deploy "${INTERNAL_SERVICE}" \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \
   --platform managed \
-  --allow-unauthenticated \
+  --no-allow-unauthenticated \
   --set-env-vars "${INTERNAL_ENV_VARS}" \
   --set-secrets "DATABASE_URL=${DB_SECRET_NAME}:latest,LLM_API_KEY=${LLM_SECRET_NAME}:latest"
 

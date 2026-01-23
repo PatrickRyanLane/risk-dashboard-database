@@ -208,6 +208,7 @@ tbody td:first-child{background:var(--black)}
 .badge.controlled{background:rgba(88,219,237,.15);color:#58dbed;border-color:rgba(88,219,237,.35)}
 .badge.uncontrolled{background:rgba(255,130,97,.15);color:#ff8261;border-color:rgba(255,130,97,.35)}
 .serp-flags{margin-top:6px;font-size:12px;opacity:.8;letter-spacing:.2px}
+.edit-flags{display:inline-flex;gap:10px;align-items:center;font-size:12px;opacity:.85;white-space:nowrap}
 .muted{color:var(--muted)}
 
 /* Stock chart modal */
@@ -1678,8 +1679,8 @@ function flagIcons(r){
   const llm = !!(r.llm_label);
   if (!edited && !llm) return '';
   const parts = [];
-  if (edited) parts.push('<span title="Manual edit">✏️</span>');
-  if (llm) parts.push('<span title="LLM enriched">🤖</span>');
+  if (edited) parts.push('<span title="Manually edited">✏️ Manually edited</span>');
+  if (llm) parts.push('<span title="AI enriched">🤖 AI enriched</span>');
   return parts.join(' ');
 }
 
@@ -2146,8 +2147,10 @@ async function showHeadlines({company}){
     return `<div class="serp-card">
       ${domain?`<div class="serp-domain">${esc(domain)}</div>`:''}
       <div class="serp-title">${link}</div>
-      ${flags?`<div class="serp-flags">${flags}</div>`:''}
-      <div class="badges" style="margin-top:8px"><span class="badge ${s}">${s}</span></div>
+      <div class="badges" style="margin-top:8px">
+        <span class="badge ${s}">${s}</span>
+        ${flags?`<span class="edit-flags">${flags}</span>`:''}
+      </div>
     </div>`;
   }).join('');
 
@@ -2194,8 +2197,11 @@ async function showSerp({company}){
       ${domain?`<div class="serp-domain">${esc(domain)}</div>`:''}
       <div class="serp-title">${link}</div>
       ${snippet?`<div class="serp-snippet">${snippet}</div>`:''}
-      ${flags?`<div class="serp-flags">${flags}</div>`:''}
-      <div class="badges"><span class="badge ${s}">${s}</span><span class="badge ${ctrl}">${ctrl}</span></div>
+      <div class="badges">
+        <span class="badge ${s}">${s}</span>
+        <span class="badge ${ctrl}">${ctrl}</span>
+        ${flags?`<span class="edit-flags">${flags}</span>`:''}
+      </div>
     </div>`;
   }).join('');
 
