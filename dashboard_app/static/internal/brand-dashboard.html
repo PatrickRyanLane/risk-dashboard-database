@@ -2141,6 +2141,56 @@ async function postOverride(payload){
   return await res.json();
 }
 
+function updateCachedOverrides(mentionId, serpResultId, updates){
+  const apply = (row) => {
+    if (updates.sentiment_override !== undefined) {
+      row.sentiment_override = updates.sentiment_override;
+      if (updates.sentiment_override) row.sentiment = updates.sentiment_override;
+    }
+    if (updates.control_override !== undefined) {
+      row.control_override = updates.control_override;
+      if (updates.control_override) row.controlled = updates.control_override;
+    }
+  };
+  for (const rows of _modalHeadlinesCache.values()) {
+    for (const r of rows) {
+      if (mentionId && String(r.mention_id || '') === mentionId) apply(r);
+    }
+  }
+  for (const rows of _modalSerpCache.values()) {
+    for (const r of rows) {
+      if (serpResultId && String(r.serp_result_id || '') === serpResultId) apply(r);
+    }
+  }
+}
+
+function setEditFlags(card){
+  const sentimentOverride = card.getAttribute('data-sentiment-override') || '';
+  const controlOverride = card.getAttribute('data-control-override') || '';
+  const llmLabel = card.getAttribute('data-llm-label') || '';
+  const flagsHtml = flagIcons({
+    sentiment_override: sentimentOverride || null,
+    control_override: controlOverride || null,
+    llm_label: llmLabel || null
+  });
+  let flagsEl = card.querySelector('.edit-flags');
+  if (flagsHtml) {
+    if (!flagsEl) {
+      flagsEl = document.createElement('span');
+      flagsEl.className = 'edit-flags';
+      const statusEl = card.querySelector('.edit-status');
+      if (statusEl && statusEl.parentNode) {
+        statusEl.parentNode.insertBefore(flagsEl, statusEl);
+      } else {
+        card.appendChild(flagsEl);
+      }
+    }
+    flagsEl.innerHTML = flagsHtml;
+  } else if (flagsEl) {
+    flagsEl.remove();
+  }
+}
+
 modalContent.addEventListener('change', async (e) => {
   const select = e.target.closest('.edit-risk, .edit-controlled');
   if (!select) return;
@@ -2152,6 +2202,10 @@ modalContent.addEventListener('change', async (e) => {
   const ctrlSel = card.querySelector('.edit-controlled');
   const riskVal = riskSel ? riskSel.value || null : null;
   const ctrlVal = ctrlSel ? (ctrlSel.value === '' ? null : (ctrlSel.value === 'true')) : null;
+  const prevSentiment = card.getAttribute('data-current-sentiment') || '';
+  const prevControl = card.getAttribute('data-current-control') || '';
+  const prevSentimentOverride = card.getAttribute('data-sentiment-override') || '';
+  const prevControlOverride = card.getAttribute('data-control-override') || '';
   const status = card.querySelector('.edit-status');
   updatePillClasses(card);
   if ((!mentionId && !serpResultId) || (!riskVal && ctrlVal === null)) {
@@ -2159,18 +2213,42 @@ modalContent.addEventListener('change', async (e) => {
     return;
   }
   if (status) status.textContent = 'Saving...';
+  const controlOverride = ctrlVal === null ? null : (ctrlVal ? 'controlled' : 'uncontrolled');
+  card.setAttribute('data-sentiment-override', riskVal || '');
+  if (ctrlSel) {
+    card.setAttribute('data-control-override', controlOverride || '');
+    card.setAttribute('data-current-control', controlOverride || '');
+  }
+  card.setAttribute('data-current-sentiment', riskVal || '');
+  updateCachedOverrides(mentionId, serpResultId, {
+    sentiment_override: riskVal,
+    control_override: ctrlSel ? controlOverride : undefined
+  });
+  setEditFlags(card);
   try {
     const payload = {
       mention_type: mentionId ? 'company_article' : 'serp_result',
       mention_id: mentionId || undefined,
       serp_result_id: serpResultId || undefined,
       sentiment_override: riskVal,
-      control_override: ctrlVal === null ? null : (ctrlVal ? 'controlled' : 'uncontrolled'),
+      control_override: controlOverride,
       note: 'dashboard edit'
     };
     await postOverride(payload);
     if (status) status.textContent = 'Saved';
   } catch (err) {
+    card.setAttribute('data-sentiment-override', prevSentimentOverride);
+    card.setAttribute('data-control-override', prevControlOverride);
+    card.setAttribute('data-current-sentiment', prevSentiment);
+    if (ctrlSel) card.setAttribute('data-current-control', prevControl);
+    updateCachedOverrides(mentionId, serpResultId, {
+      sentiment_override: prevSentimentOverride || null,
+      control_override: ctrlSel ? (prevControlOverride || null) : undefined
+    });
+    if (riskSel) riskSel.value = prevSentiment || 'neutral';
+    if (ctrlSel) ctrlSel.value = prevControl ? (prevControl === 'controlled' ? 'true' : 'false') : '';
+    updatePillClasses(card);
+    setEditFlags(card);
     if (status) status.textContent = 'Error';
   }
 });
@@ -2226,7 +2304,7 @@ async function showHeadlines({company}){
     const sRaw=String(r.sentiment||'').toLowerCase();
     const s=sRaw==='positive'?'positive':(sRaw==='negative'?'negative':'neutral');
     const flags = flagIcons(r);
-    return `<div class="serp-card" data-mention-id="${esc(mentionId)}">
+    return `<div class="serp-card" data-mention-id="${esc(mentionId)}" data-sentiment-override="${esc(r.sentiment_override||'')}" data-control-override="${esc(r.control_override||'')}" data-llm-label="${esc(r.llm_label||'')}" data-current-sentiment="${esc(s)}">
       ${domain?`<div class="serp-domain">${esc(domain)}</div>`:''}
       <div class="serp-title">${link}</div>
       ${mentionId ? `<div class="edit-controls">
@@ -2283,7 +2361,7 @@ async function showSerp({company}){
     const ctrl=(/^controlled|true|1$/i).test(String(r.controlled||''))?'controlled':'uncontrolled';
     const link=url?`<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>`:`<span class="muted">${title}</span>`;
     const flags = flagIcons(r);
-    return `<div class="serp-card" data-serp-result-id="${esc(serpResultId)}">
+    return `<div class="serp-card" data-serp-result-id="${esc(serpResultId)}" data-sentiment-override="${esc(r.sentiment_override||'')}" data-control-override="${esc(r.control_override||'')}" data-llm-label="${esc(r.llm_label||'')}" data-current-sentiment="${esc(s)}" data-current-control="${esc(ctrl)}">
       ${domain?`<div class="serp-domain">${esc(domain)}</div>`:''}
       <div class="serp-title">${link}</div>
       ${snippet?`<div class="serp-snippet">${snippet}</div>`:''}

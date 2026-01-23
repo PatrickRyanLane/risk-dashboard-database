@@ -309,12 +309,12 @@ def daily_counts_json():
         rows = query_dict(
             f"""
             select cam.scored_at::date as date, c.name as company,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
               count(*) as total,
               case when count(*) > 0
-                then round((sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
+                then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
                 else 0 end as neg_pct
             from company_article_mentions cam
             join companies c on c.id = cam.company_id
@@ -334,12 +334,12 @@ def daily_counts_json():
         rows = query_dict(
             f"""
             select cam.scored_at::date as date, ceo.name as ceo, c.name as company,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
               count(*) as total,
               case when count(*) > 0
-                then round((sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
+                then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
                 else 0 end as neg_pct,
               '' as theme,
               coalesce(ceo.alias, '') as alias
@@ -363,10 +363,10 @@ def daily_counts_json():
             f"""
             select sr.run_at::date as date, c.name as company,
               count(*) as total,
-              sum(case when coalesce(ov.override_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
+              sum(case when coalesce(ov.override_control_class, r.llm_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
             from serp_runs sr
             join companies c on c.id = sr.company_id
             join serp_results r on r.serp_run_id = sr.id
@@ -387,10 +387,10 @@ def daily_counts_json():
             f"""
             select sr.run_at::date as date, ceo.name as ceo, c.name as company,
               count(*) as total,
-              sum(case when coalesce(ov.override_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
+              sum(case when coalesce(ov.override_control_class, r.llm_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
             from serp_runs sr
             join ceos ceo on ceo.id = sr.ceo_id
             join companies c on c.id = ceo.company_id
@@ -624,12 +624,12 @@ def brand_articles_daily_counts():
     rows = query_rows(
         f"""
         select cam.scored_at::date as date, c.name as company,
-          sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-          sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-          sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+          sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
+          sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+          sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
           count(*) as total,
           case when count(*) > 0
-            then round((sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
+            then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
             else 0 end as neg_pct
         from company_article_mentions cam
         join companies c on c.id = cam.company_id
@@ -650,12 +650,12 @@ def ceo_articles_daily_counts():
     rows = query_rows(
         f"""
         select cam.scored_at::date as date, ceo.name as ceo, c.name as company,
-          sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-          sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-          sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+          sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
+          sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+          sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
           count(*) as total,
           case when count(*) > 0
-            then round((sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
+            then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
             else 0 end as neg_pct,
           '' as theme,
           coalesce(ceo.alias, '') as alias
@@ -680,10 +680,10 @@ def brand_serps_daily_counts():
         f"""
         select sr.run_at::date as date, c.name as company,
           count(*) as total,
-          sum(case when coalesce(ov.override_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
-          sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
-          sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
-          sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
+          sum(case when coalesce(ov.override_control_class, r.llm_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
+          sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
+          sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
+          sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
         from serp_runs sr
         join companies c on c.id = sr.company_id
         join serp_results r on r.serp_run_id = sr.id
@@ -705,10 +705,10 @@ def ceo_serps_daily_counts():
         f"""
         select sr.run_at::date as date, ceo.name as ceo, c.name as company,
           count(*) as total,
-          sum(case when coalesce(ov.override_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
-          sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
-          sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
-          sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
+          sum(case when coalesce(ov.override_control_class, r.llm_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
+          sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
+          sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
+          sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
         from serp_runs sr
         join ceos ceo on ceo.id = sr.ceo_id
         join companies c on c.id = ceo.company_id
@@ -737,7 +737,7 @@ def processed_articles_csv(filename: str):
             rows = query_rows(
                 f"""
                 select c.name as company, a.title, a.canonical_url as url, a.publisher as source,
-                       coalesce(ov.override_sentiment_label, cam.sentiment_label) as sentiment,
+                       coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label) as sentiment,
                        ov.override_sentiment_label as sentiment_override,
                        ov.override_control_class as control_override,
                        cam.llm_label as llm_label,
@@ -758,7 +758,7 @@ def processed_articles_csv(filename: str):
             rows = query_rows(
                 f"""
                 select ceo.name as ceo, c.name as company, a.title, a.canonical_url as url, a.publisher as source,
-                       coalesce(ov.override_sentiment_label, cam.sentiment_label) as sentiment,
+                       coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label) as sentiment,
                        ov.override_sentiment_label as sentiment_override,
                        ov.override_control_class as control_override,
                        cam.llm_label as llm_label,
@@ -784,12 +784,12 @@ def processed_articles_csv(filename: str):
         rows = query_rows(
             f"""
             select cam.scored_at::date as date, c.name as company,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
               count(*) as total,
               case when count(*) > 0
-                then round((sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
+                then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
                 else 0 end as neg_pct
             from company_article_mentions cam
             join companies c on c.id = cam.company_id
@@ -807,12 +807,12 @@ def processed_articles_csv(filename: str):
         rows = query_rows(
             f"""
             select cam.scored_at::date as date, ceo.name as ceo, c.name as company,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-              sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+              sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
               count(*) as total,
               case when count(*) > 0
-                then round((sum(case when coalesce(ov.override_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
+                then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
                 else 0 end as neg_pct,
               '' as theme,
               coalesce(ceo.alias, '') as alias
@@ -844,8 +844,8 @@ def processed_serps_csv(filename: str):
             rows = query_rows(
                 f"""
                 select c.name as company, r.title, r.url, r.rank as position, r.snippet,
-                       coalesce(ov.override_sentiment_label, r.sentiment_label) as sentiment,
-                       coalesce(ov.override_control_class, r.control_class) as controlled,
+                       coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label) as sentiment,
+                       coalesce(ov.override_control_class, r.llm_control_class, r.control_class) as controlled,
                        ov.override_sentiment_label as sentiment_override,
                        ov.override_control_class as control_override,
                        r.llm_label as llm_label,
@@ -866,8 +866,8 @@ def processed_serps_csv(filename: str):
             rows = query_rows(
                 f"""
                 select ceo.name as ceo, c.name as company, r.title, r.url, r.rank as position, r.snippet,
-                       coalesce(ov.override_sentiment_label, r.sentiment_label) as sentiment,
-                       coalesce(ov.override_control_class, r.control_class) as controlled,
+                       coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label) as sentiment,
+                       coalesce(ov.override_control_class, r.llm_control_class, r.control_class) as controlled,
                        ov.override_sentiment_label as sentiment_override,
                        ov.override_control_class as control_override,
                        r.llm_label as llm_label,
@@ -893,10 +893,10 @@ def processed_serps_csv(filename: str):
             f"""
             select sr.run_at::date as date, c.name as company,
               count(*) as total,
-              sum(case when coalesce(ov.override_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
+              sum(case when coalesce(ov.override_control_class, r.llm_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
             from serp_runs sr
             join companies c on c.id = sr.company_id
             join serp_results r on r.serp_run_id = sr.id
@@ -915,10 +915,10 @@ def processed_serps_csv(filename: str):
             f"""
             select sr.run_at::date as date, ceo.name as ceo, c.name as company,
               count(*) as total,
-              sum(case when coalesce(ov.override_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
-              sum(case when coalesce(ov.override_sentiment_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
+              sum(case when coalesce(ov.override_control_class, r.llm_control_class, r.control_class)='controlled' then 1 else 0 end) as controlled,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='negative' then 1 else 0 end) as negative_serp,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='neutral' then 1 else 0 end) as neutral_serp,
+              sum(case when coalesce(ov.override_sentiment_label, r.llm_label, r.sentiment_label)='positive' then 1 else 0 end) as positive_serp
             from serp_runs sr
             join ceos ceo on ceo.id = sr.ceo_id
             join companies c on c.id = ceo.company_id
@@ -1187,7 +1187,7 @@ def negative_articles_summary():
     rows = query_dict(
         f"""
         select cam.scored_at::date as date, c.name as company, ceo.name as ceo,
-               coalesce(ov.override_sentiment_label, cam.sentiment_label) as sentiment,
+               coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label) as sentiment,
                a.title, 'brand' as article_type
         from company_article_mentions cam
         join companies c on c.id = cam.company_id
@@ -1197,7 +1197,7 @@ def negative_articles_summary():
         where cam.scored_at::date >= %s {scope_sql}
         union all
         select cam.scored_at::date as date, c.name as company, ceo.name as ceo,
-               coalesce(ov.override_sentiment_label, cam.sentiment_label) as sentiment,
+               coalesce(ov.override_sentiment_label, cam.llm_label, cam.sentiment_label) as sentiment,
                a.title, 'ceo' as article_type
         from ceo_article_mentions cam
         join ceos ceo on ceo.id = cam.ceo_id
