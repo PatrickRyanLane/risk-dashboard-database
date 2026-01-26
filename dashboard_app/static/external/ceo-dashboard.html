@@ -685,6 +685,17 @@ body:has(#stockChartModal.open) {
       <canvas id="newsChart"></canvas>
     </div>
     <div class="chart-card">
+      <h3>SERP Feature Negativity (stacked)</h3>
+      <div class="chart-actions">
+        <span class="dates-range muted" aria-live="polite"></span>
+        <div class="dates-pager">
+          <button class="dates-prev" title="Older window">←</button>
+          <button class="dates-next" title="Newer window">→</button>
+        </div>
+      </div>
+      <canvas id="featureChart"></canvas>
+    </div>
+    <div class="chart-card">
       <h3>SERP (Negative % • Control %)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
@@ -804,6 +815,7 @@ const COUNTS_CANDIDATES   = ['/api/v1/daily_counts?kind=ceo_articles'];
 const ROSTER_CANDIDATES   = ['/api/v1/roster'];
 const BOARDS_CSV          = ['/api/v1/boards'];
 const SERPS_DAILY_CSV     = '/api/v1/daily_counts?kind=ceo_serps';
+const SERP_FEATURES_PATH  = '/api/v1/serp_features?entity=ceo&days=180';
 const ARTICLES_DAILY_PATH = d => `/api/v1/processed_articles?date=${d}&entity=ceo&kind=table`;
 const HEADLINES_PATH_CEO  = d => `/api/v1/processed_articles?date=${d}&entity=ceo&kind=modal`;
 const SERP_PROCESSED_PATH = d => `/api/v1/processed_serps?date=${d}&entity=ceo&kind=table`;
@@ -813,6 +825,7 @@ let rosterMap = new Map();
 let companyToCeo = new Map();
 let allCountsRows = [];
 let serpsDaily = [];
+let serpFeatureRows = [];
 let boardsByCeo = new Map();
 let filteredRows = [];
 let selectedCeo = null;
@@ -820,7 +833,7 @@ let currentSort = { key:null, dir:1 };
 let currentPage = 1;
 const PAGE_SIZE = 25;
 
-let newsChart, serpChart, stockChart;
+let newsChart, serpChart, stockChart, featureChart;
 let globalStockData = {};
 let showVolume = false; // Toggle state for volume display
 let showTrends = false; // Toggle state for trends display
@@ -828,11 +841,20 @@ let globalTrendsData = {}; // Trends data by company
 
 const _articlesCache = new Map();
 const _serpAggCache  = new Map();
-const _loadSections = ['roster','news','serps','boards','stock','trends','negative'];
+const FEATURE_ORDER = ['aio_citations','paa_items','videos_items','perspectives_items'];
+const FEATURE_LABELS = {
+  aio_citations: 'AIO citations',
+  paa_items: 'PAA',
+  videos_items: 'Videos',
+  perspectives_items: 'Perspectives'
+};
+const FEATURE_COLORS = ['#ffb3a6', '#ff9f8e', '#ff8b77', '#ff7660'];
+const _loadSections = ['roster','news','serps','features','boards','stock','trends','negative'];
 const _loadLabels = {
   roster: 'Roster',
   news: 'News sentiment',
   serps: 'SERP metrics',
+  features: 'SERP features',
   boards: 'Boards data',
   stock: 'Stock data',
   trends: 'Trends data',
@@ -1737,6 +1759,23 @@ async function loadSerpDaily(){
   }
 }
 
+async function loadSerpFeatures(){
+  try{
+    const rows = await fetchCsv(SERP_FEATURES_PATH);
+    serpFeatureRows = rows.map(r=>({
+      date: String(r.date||'').trim(),
+      entity: String(r.entity_name||'').trim(),
+      feature: String(r.feature_type||'').trim(),
+      total: +r.total_count||0,
+      neg: +r.negative_count||0
+    })).filter(r=>isISODate(r.date) && r.entity && FEATURE_ORDER.includes(r.feature));
+    setLoadStatus('features', 'done');
+  }catch(e){
+    serpFeatureRows = [];
+    setLoadStatus('features', 'error');
+  }
+}
+
 function computeRisk(negPct, ctrlPct){
   if (negPct == null || isNaN(negPct)) return 'N/A';
   if (negPct > 0) return 'High';
@@ -1807,10 +1846,11 @@ async function getSerpAggForDate(d){
 async function init(){
   initLoadStatus();
   await Promise.all([
-    loadRoster(), 
-    loadCounts(), 
-    loadSerpDaily(), 
-    loadBoards(), 
+    loadRoster(),
+    loadCounts(),
+    loadSerpDaily(),
+    loadSerpFeatures(),
+    loadBoards(),
     loadStockData().then(data => {
       globalStockData = data;
       if (Object.keys(globalStockData).length > 0) {
@@ -1882,11 +1922,13 @@ async function init(){
   // 4. Chart Resizing & Modal Close
   const newsCanvas = document.getElementById('newsChart');
   const serpCanvas = document.getElementById('serpChart');
+  const featureCanvas = document.getElementById('featureChart');
   const ro = new ResizeObserver(() => {
     if (newsChart) newsChart.resize();
     if (serpChart) serpChart.resize();
+    if (featureChart) featureChart.resize();
   });
-  [newsCanvas.parentElement, serpCanvas.parentElement].forEach(el => ro.observe(el));
+  [newsCanvas.parentElement, serpCanvas.parentElement, featureCanvas.parentElement].forEach(el => ro.observe(el));
   
   window.onclick = function(event) {
     if (event.target === document.getElementById('stockChartModal')) {
@@ -2141,8 +2183,33 @@ function getDateSeries(){
   return {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct, serpNegPctAll, serpCtrlPctAll};
 }
 
+function getFeatureSeries(){
+  const byDate = new Map();
+  const useAll = !selectedCeo;
+  serpFeatureRows.forEach(r=>{
+    if (!useAll && r.entity !== selectedCeo) return;
+    if (!byDate.has(r.date)) byDate.set(r.date, {});
+    const bucket = byDate.get(r.date);
+    if (!bucket[r.feature]) bucket[r.feature] = {neg:0,total:0};
+    bucket[r.feature].neg += r.neg || 0;
+    bucket[r.feature].total += r.total || 0;
+  });
+  const dates = [...byDate.keys()].filter(isISODate).sort();
+  const series = {};
+  FEATURE_ORDER.forEach(f => { series[f] = []; });
+  dates.forEach(d=>{
+    const bucket = byDate.get(d) || {};
+    FEATURE_ORDER.forEach(f=>{
+      const v = bucket[f] || {neg:0,total:0};
+      series[f].push(v.total ? (v.neg / v.total * 100) : 0);
+    });
+  });
+  return {dates, series};
+}
+
 function renderCharts(){
   const {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct, serpNegPctAll, serpCtrlPctAll} = getDateSeries();
+  const {dates: featureDates, series: featureSeries} = getFeatureSeries();
 
   if (dateWindowStart === null){
     dateWindowStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
@@ -2156,6 +2223,15 @@ function renderCharts(){
   const sC = sliceWindow(serpCtrlPct, start, DATE_WINDOW_SIZE);
   const sNAll = sliceWindow(serpNegPctAll, start, DATE_WINDOW_SIZE);
   const sCAll = sliceWindow(serpCtrlPctAll, start, DATE_WINDOW_SIZE);
+  const featureIndex = new Map(featureDates.map((d,i)=>[d,i]));
+  const fDates = d;
+  const featureData = FEATURE_ORDER.map(f=>{
+    const arr = featureSeries[f] || [];
+    return fDates.map(dt=>{
+      const idx = featureIndex.get(dt);
+      return idx == null ? 0 : (arr[idx] || 0);
+    });
+  });
 
   updateDateRangeUI(dates);
   hookDatePager(dates);
@@ -2263,6 +2339,38 @@ function renderCharts(){
       ]
     },
     options: { ...commonOpts }
+  });
+
+  const fh = document.getElementById('featureChart').getContext('2d');
+  if (featureChart) featureChart.destroy();
+  featureChart = new Chart(fh, {
+    type: 'line',
+    data: {
+      labels: fDates,
+      datasets: FEATURE_ORDER.map((feature, idx) => ({
+        label: FEATURE_LABELS[feature] || feature,
+        data: featureData[idx],
+        tension: 0.2,
+        fill: true,
+        borderWidth: 1,
+        borderColor: FEATURE_COLORS[idx],
+        backgroundColor: FEATURE_COLORS[idx] + '66',
+        pointRadius: 0,
+        stack: 'features'
+      }))
+    },
+    options: {
+      ...commonOpts,
+      scales: {
+        ...commonOpts.scales,
+        y: { ...commonOpts.scales.y, stacked: true },
+        x: { ...commonOpts.scales.x, stacked: true }
+      },
+      plugins: {
+        ...commonOpts.plugins,
+        title: { ...commonOpts.plugins.title, text: `${who} • SERP Feature Negativity` }
+      }
+    }
   });
 }
 

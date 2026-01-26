@@ -215,6 +215,27 @@ create index if not exists serp_results_url_hash_idx on serp_results (url_hash);
 create unique index if not exists serp_results_unique_idx
   on serp_results (serp_run_id, rank, url_hash);
 
+create table if not exists serp_feature_daily (
+  id uuid primary key default gen_random_uuid(),
+  date date not null,
+  entity_type text not null,
+  entity_id uuid,
+  entity_name text not null,
+  feature_type text not null,
+  total_count int not null default 0,
+  positive_count int not null default 0,
+  neutral_count int not null default 0,
+  negative_count int not null default 0,
+  source text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists serp_feature_daily_date_idx on serp_feature_daily (date);
+create index if not exists serp_feature_daily_entity_idx on serp_feature_daily (entity_type, entity_name);
+create unique index if not exists serp_feature_daily_unique_idx
+  on serp_feature_daily (date, entity_type, entity_name, feature_type);
+
 create table if not exists company_article_mentions (
   id uuid primary key default gen_random_uuid(),
   company_id uuid not null references companies(id),

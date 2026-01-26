@@ -434,6 +434,42 @@ def processed_serps_json():
     return jsonify(rows)
 
 
+@app.route('/api/v1/serp_features')
+def serp_features_json():
+    entity = request.args.get('entity', 'brand')
+    days = int(request.args.get('days', '90') or 90)
+    entity_type = 'company' if entity == 'brand' else 'ceo'
+
+    params = [entity_type, days]
+    if entity_type == 'company':
+        scope_sql, params = scope_clause("c.id", params)
+        sql = f"""
+            select s.date, s.entity_name, s.feature_type,
+                   s.total_count, s.positive_count, s.neutral_count, s.negative_count
+            from serp_feature_daily s
+            join companies c on c.id = s.entity_id
+            where s.entity_type = %s
+              and s.date >= (current_date - (%s || ' days')::interval)
+              {scope_sql}
+            order by s.date, s.entity_name, s.feature_type
+        """
+    else:
+        scope_sql, params = scope_clause("c.id", params)
+        sql = f"""
+            select s.date, s.entity_name, s.feature_type,
+                   s.total_count, s.positive_count, s.neutral_count, s.negative_count
+            from serp_feature_daily s
+            join ceos ceo on ceo.id = s.entity_id
+            join companies c on c.id = ceo.company_id
+            where s.entity_type = %s
+              and s.date >= (current_date - (%s || ' days')::interval)
+              {scope_sql}
+            order by s.date, s.entity_name, s.feature_type
+        """
+    rows = query_rows(sql, tuple(params))
+    return jsonify(rows)
+
+
 @app.route('/api/v1/roster')
 def roster_json():
     cache_key = "roster"

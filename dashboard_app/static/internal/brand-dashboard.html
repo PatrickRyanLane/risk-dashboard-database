@@ -673,6 +673,18 @@ body:has(#stockChartModal.open) {
     </div>
 
     <div class="chart-card">
+      <h3>SERP Feature Negativity (stacked)</h3>
+      <div class="chart-actions">
+        <span class="dates-range muted" aria-live="polite"></span>
+        <div class="dates-pager">
+          <button class="dates-prev" title="Older window">←</button>
+          <button class="dates-next" title="Newer window">→</button>
+        </div>
+      </div>
+      <canvas id="featureChart"></canvas>
+    </div>
+
+    <div class="chart-card">
       <h3>SERP (Negative % • Control %)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
@@ -790,6 +802,7 @@ body:has(#stockChartModal.open) {
 /********************** Config (brand) **********************/
 const COUNTS_CANDIDATES   = ['/api/v1/daily_counts?kind=brand_articles'];
 const SERPS_DAILY_CSV     = '/api/v1/daily_counts?kind=brand_serps';
+const SERP_FEATURES_PATH  = '/api/v1/serp_features?entity=brand&days=180';
 const ARTICLES_DAILY_PATH = d => `/api/v1/processed_articles?date=${d}&entity=brand&kind=table`;
 const HEADLINES_PATH      = d => `/api/v1/processed_articles?date=${d}&entity=brand&kind=modal`;
 const SERP_PROCESSED_PATH = d => `/api/v1/processed_serps?date=${d}&entity=brand&kind=table`;
@@ -798,13 +811,14 @@ const SERP_ROWS_PATH      = d => `/api/v1/processed_serps?date=${d}&entity=brand
 /********************** Runtime **********************/
 let allCountsRows = [];
 let serpsDaily    = [];
+let serpFeatureRows = [];
 let filteredRows  = [];
 let selectedCompany = null;
 let currentSort = { key:null, dir:1 };
 let currentPage = 1;
 const PAGE_SIZE = 25;
 
-let newsChart, serpChart, stockChart;
+let newsChart, serpChart, stockChart, featureChart;
 let globalStockData = {};
 let showVolume = false; // Toggle state for volume display
 let showTrends = false; // Toggle state for trends display
@@ -814,10 +828,19 @@ const _articlesCache = new Map();
 const _serpAggCache  = new Map();
 const _modalHeadlinesCache = new Map();
 const _modalSerpCache = new Map();
-const _loadSections = ['news','serps','stock','trends','negative'];
+const _loadSections = ['news','serps','features','stock','trends','negative'];
+const FEATURE_ORDER = ['aio_citations','paa_items','videos_items','perspectives_items'];
+const FEATURE_LABELS = {
+  aio_citations: 'AIO citations',
+  paa_items: 'PAA',
+  videos_items: 'Videos',
+  perspectives_items: 'Perspectives'
+};
+const FEATURE_COLORS = ['#ffb3a6', '#ff9f8e', '#ff8b77', '#ff7660'];
 const _loadLabels = {
   news: 'News sentiment',
   serps: 'SERP metrics',
+  features: 'SERP features',
   stock: 'Stock data',
   trends: 'Trends data',
   negative: 'Negative summary'
@@ -1685,6 +1708,23 @@ async function loadSerpDaily(){
   }
 }
 
+async function loadSerpFeatures(){
+  try{
+    const rows = await fetchCsv(SERP_FEATURES_PATH);
+    serpFeatureRows = rows.map(r=>({
+      date: String(r.date||'').trim(),
+      entity: String(r.entity_name||'').trim(),
+      feature: String(r.feature_type||'').trim(),
+      total: +r.total_count||0,
+      neg: +r.negative_count||0
+    })).filter(r=>isISODate(r.date) && r.entity && FEATURE_ORDER.includes(r.feature));
+    setLoadStatus('features', 'done');
+  }catch(e){
+    serpFeatureRows = [];
+    setLoadStatus('features', 'error');
+  }
+}
+
 /********************** Risk **********************/
 function computeRisk(negPct, ctrlPct){
   if (negPct == null || isNaN(negPct)) return 'N/A';
@@ -1743,6 +1783,7 @@ async function init(){
   await Promise.all([
     loadCounts(), 
     loadSerpDaily(), 
+    loadSerpFeatures(),
     loadStockData().then(data => {
       globalStockData = data;
       if (Object.keys(globalStockData).length > 0) {
@@ -1806,7 +1847,7 @@ async function init(){
     setTimeout(()=>{ preloadModalData(sel.value); }, 150);
   }
 
-  const ro = new ResizeObserver(()=>{ if (newsChart) newsChart.resize(); if (serpChart) serpChart.resize(); });
+  const ro = new ResizeObserver(()=>{ if (newsChart) newsChart.resize(); if (serpChart) serpChart.resize(); if (featureChart) featureChart.resize(); });
   ro.observe(document.getElementById('newsChart').parentElement);
   ro.observe(document.getElementById('serpChart').parentElement);
 
@@ -2021,8 +2062,33 @@ function getDateSeries(){
   return {dates,newsPos,newsNeu,newsNeg,serpNegPct,serpCtrlPct,serpNegPctAll,serpCtrlPctAll};
 }
 
+function getFeatureSeries(){
+  const byDate = new Map();
+  const useAll = !selectedCompany;
+  serpFeatureRows.forEach(r=>{
+    if (!useAll && r.entity !== selectedCompany) return;
+    if (!byDate.has(r.date)) byDate.set(r.date, {});
+    const bucket = byDate.get(r.date);
+    if (!bucket[r.feature]) bucket[r.feature] = {neg:0,total:0};
+    bucket[r.feature].neg += r.neg || 0;
+    bucket[r.feature].total += r.total || 0;
+  });
+  const dates = [...byDate.keys()].filter(isISODate).sort();
+  const series = {};
+  FEATURE_ORDER.forEach(f => { series[f] = []; });
+  dates.forEach(d=>{
+    const bucket = byDate.get(d) || {};
+    FEATURE_ORDER.forEach(f=>{
+      const v = bucket[f] || {neg:0,total:0};
+      series[f].push(v.total ? (v.neg / v.total * 100) : 0);
+    });
+  });
+  return {dates, series};
+}
+
 function renderCharts(){
   const {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct, serpNegPctAll, serpCtrlPctAll} = getDateSeries();
+  const {dates: featureDates, series: featureSeries} = getFeatureSeries();
 
   if (dateWindowStart === null){
     dateWindowStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
@@ -2036,6 +2102,15 @@ function renderCharts(){
   const sC = sliceWindow(serpCtrlPct, start, DATE_WINDOW_SIZE);
   const sNAll = sliceWindow(serpNegPctAll, start, DATE_WINDOW_SIZE);
   const sCAll = sliceWindow(serpCtrlPctAll, start, DATE_WINDOW_SIZE);
+  const featureIndex = new Map(featureDates.map((d,i)=>[d,i]));
+  const fDates = d;
+  const featureData = FEATURE_ORDER.map(f=>{
+    const arr = featureSeries[f] || [];
+    return fDates.map(dt=>{
+      const idx = featureIndex.get(dt);
+      return idx == null ? 0 : (arr[idx] || 0);
+    });
+  });
 
   updateDateRangeUI(dates);
   hookDatePager(dates);
@@ -2131,6 +2206,38 @@ function renderCharts(){
       ]
     },
     options: { ...commonOpts }
+  });
+
+  const fh = document.getElementById('featureChart').getContext('2d');
+  if (featureChart) featureChart.destroy();
+  featureChart = new Chart(fh, {
+    type: 'line',
+    data: {
+      labels: fDates,
+      datasets: FEATURE_ORDER.map((feature, idx) => ({
+        label: FEATURE_LABELS[feature] || feature,
+        data: featureData[idx],
+        tension: 0.2,
+        fill: true,
+        borderWidth: 1,
+        borderColor: FEATURE_COLORS[idx],
+        backgroundColor: FEATURE_COLORS[idx] + '66',
+        pointRadius: 0,
+        stack: 'features'
+      }))
+    },
+    options: {
+      ...commonOpts,
+      scales: {
+        ...commonOpts.scales,
+        y: { ...commonOpts.scales.y, stacked: true },
+        x: { ...commonOpts.scales.x, stacked: true }
+      },
+      plugins: {
+        ...commonOpts.plugins,
+        title: { ...commonOpts.plugins.title, text: `${who} • SERP Feature Negativity` }
+      }
+    }
   });
 }
 
