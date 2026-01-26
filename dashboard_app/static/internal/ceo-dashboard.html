@@ -2102,44 +2102,56 @@ function renderTable(){
 }
 
 function getDateSeries(){
-  const byDate = new Map();
+  const byDateAll = new Map();
+  const byDateSel = new Map();
   allCountsRows.forEach(r=>{
     const key = r.date;
-    if (!byDate.has(key)) byDate.set(key,{pos:0,neu:0,neg:0});
-    const bucket = byDate.get(key);
+    if (!byDateAll.has(key)) byDateAll.set(key,{pos:0,neu:0,neg:0});
+    const all = byDateAll.get(key);
+    all.pos += +r.pos||0; all.neu += +r.neu||0; all.neg += +r.neg||0;
     if (!selectedCeo || r.ceo===selectedCeo){
+      if (!byDateSel.has(key)) byDateSel.set(key,{pos:0,neu:0,neg:0});
+      const bucket = byDateSel.get(key);
       bucket.pos += +r.pos||0; bucket.neu += +r.neu||0; bucket.neg += +r.neg||0;
     }
   });
 
-  const serpByDate = new Map();
+  const serpByDateAll = new Map();
+  const serpByDateSel = new Map();
   serpsDaily.forEach(r=>{
     const key = r.date;
-    if (!serpByDate.has(key)) serpByDate.set(key,{total:0,neg:0,ctrl:0});
+    if (!serpByDateAll.has(key)) serpByDateAll.set(key,{total:0,neg:0,ctrl:0});
+    const all = serpByDateAll.get(key);
+    all.total += +r.total||0; all.neg += +r.neg_serp||0; all.ctrl += +r.ctrl||0;
     if (!selectedCeo || r.ceo===selectedCeo){
-      const b = serpByDate.get(key);
+      if (!serpByDateSel.has(key)) serpByDateSel.set(key,{total:0,neg:0,ctrl:0});
+      const b = serpByDateSel.get(key);
       b.total += +r.total||0; b.neg += +r.neg_serp||0; b.ctrl += +r.ctrl||0;
     }
   });
 
-  const dates = [...new Set([...byDate.keys(), ...serpByDate.keys()])].filter(isISODate).sort();
-  const newsPos=[], newsNeu=[], newsNeg=[], serpNegPct=[], serpCtrlPct=[];
+  const dates = [...new Set([...byDateAll.keys(), ...serpByDateAll.keys()])].filter(isISODate).sort();
+  const newsPos=[], newsNeu=[], newsNeg=[], serpNegPct=[], serpCtrlPct=[], serpNegPctAll=[], serpCtrlPctAll=[];
   dates.forEach(d=>{
-    const n = byDate.get(d)||{pos:0,neu:0,neg:0};
+    const n = byDateSel.get(d)||{pos:0,neu:0,neg:0};
     const t = n.pos+n.neu+n.neg || 0;
     newsPos.push(t? n.pos/t*100 : 0);
     newsNeu.push(t? n.neu/t*100 : 0);
     newsNeg.push(t? n.neg/t*100 : 0);
 
-    const s = serpByDate.get(d)||{total:0,neg:0,ctrl:0};
+    const s = serpByDateSel.get(d)||{total:0,neg:0,ctrl:0};
     serpNegPct.push(s.total? s.neg/s.total*100 : 0);
     serpCtrlPct.push(s.total? s.ctrl/s.total*100 : 0);
+
+    const sa = serpByDateAll.get(d)||{total:0,neg:0,ctrl:0};
+    serpNegPctAll.push(sa.total? sa.neg/sa.total*100 : 0);
+    serpCtrlPctAll.push(sa.total? sa.ctrl/sa.total*100 : 0);
   });
-  return {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct};
+  return {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct, serpNegPctAll, serpCtrlPctAll};
 }
 
 function renderCharts(){
-  const {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct} = getDateSeries();
+  const {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct, serpNegPctAll, serpCtrlPctAll} = getDateSeries();
 
   if (dateWindowStart === null){
     dateWindowStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
@@ -2151,6 +2163,8 @@ function renderCharts(){
   const nG = sliceWindow(newsNeg,     start, DATE_WINDOW_SIZE);
   const sN = sliceWindow(serpNegPct,  start, DATE_WINDOW_SIZE);
   const sC = sliceWindow(serpCtrlPct, start, DATE_WINDOW_SIZE);
+  const sNAll = sliceWindow(serpNegPctAll, start, DATE_WINDOW_SIZE);
+  const sCAll = sliceWindow(serpCtrlPctAll, start, DATE_WINDOW_SIZE);
 
   updateDateRangeUI(dates);
   hookDatePager(dates);
@@ -2201,8 +2215,8 @@ function renderCharts(){
     if (!vals.length) return null;
     return vals.reduce((sum, v) => sum + v, 0) / vals.length;
   };
-  const avgNegAll  = avg(sN);
-  const avgCtrlAll = avg(sC);
+  const avgNegAll  = avg(sNAll);
+  const avgCtrlAll = avg(sCAll);
   const avgNegLine  = avgNegAll == null ? [] : new Array(d.length).fill(avgNegAll);
   const avgCtrlLine = avgCtrlAll == null ? [] : new Array(d.length).fill(avgCtrlAll);
   
@@ -2478,6 +2492,8 @@ async function showHeadlines({ ceo }) {
     const mentionId = String(r.mention_id || '').trim();
     let domain = '';
     try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+    const source = esc(r.source || '');
+    const sourceLabel = source || domain;
     const title = esc(r.title || domain || '(no title)');
     const link = url
       ? `<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>`
@@ -2489,7 +2505,7 @@ async function showHeadlines({ ceo }) {
     const flags = flagIcons(r);
     return `
       <div class="serp-card" data-mention-id="${esc(mentionId)}" data-sentiment-override="${esc(r.sentiment_override||'')}" data-control-override="${esc(r.control_override||'')}" data-llm-label="${esc(r.llm_label||'')}" data-current-sentiment="${esc(s)}">
-        ${domain ? `<div class="serp-domain">${esc(domain)}</div>` : ''}
+        ${sourceLabel ? `<div class="serp-domain">${sourceLabel}</div>` : ''}
         <div class="serp-title">${link}</div>
         ${flags ? `<div class="edit-flags">${flags}</div>` : ''}
         ${mentionId ? `<div class="edit-controls">
