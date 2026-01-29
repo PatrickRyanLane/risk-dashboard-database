@@ -6,6 +6,7 @@ Internal service should be protected by IAP; external service read-only.
 
 import csv
 import io
+import logging
 import os
 import re
 from datetime import datetime, timedelta
@@ -18,6 +19,7 @@ from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+logging.basicConfig(level=logging.INFO)
 
 PORT = int(os.environ.get('PORT', 8080))
 DB_DSN = os.environ.get('DATABASE_URL')
@@ -953,6 +955,7 @@ def negative_summary_json():
     cached = get_cached_json(cache_key)
     if cached is not None:
         return jsonify(cached)
+    debug = (request.args.get('debug') or '').strip().lower() in {'1', 'true', 'yes'}
     days_raw = request.args.get('days', '').strip()
     days = None
     if days_raw:
@@ -960,12 +963,18 @@ def negative_summary_json():
             days = max(1, int(days_raw))
         except ValueError:
             days = None
-    resp = negative_articles_summary(days=days)
-    if resp.status_code != 200:
-        return resp
-    rows = list(csv.DictReader(io.StringIO(resp.get_data(as_text=True))))
-    set_cached_json(cache_key, rows)
-    return jsonify(rows)
+    try:
+        resp = negative_articles_summary(days=days)
+        if resp.status_code != 200:
+            return resp
+        rows = list(csv.DictReader(io.StringIO(resp.get_data(as_text=True))))
+        set_cached_json(cache_key, rows)
+        return jsonify(rows)
+    except Exception as exc:
+        app.logger.exception("negative_summary failed")
+        if debug:
+            return jsonify({'error': 'negative_summary_failed', 'detail': str(exc)}), 500
+        raise
 
 
 @app.route('/api/v1/boards')
@@ -1377,6 +1386,7 @@ def processed_articles_csv(filename: str):
                 f"""
                 select c.name as company, a.title, a.canonical_url as url, a.publisher as source,
                        coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
+                       coalesce(ov.override_control_class, cm.control_class) as control_class,
                        ov.override_sentiment_label as sentiment_override,
                        ov.override_control_class as control_override,
                        coalesce(cm.llm_sentiment_label, cm.llm_risk_label) as llm_label,
@@ -1391,7 +1401,7 @@ def processed_articles_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['company','title','url','source','sentiment','sentiment_override','control_override','llm_label','mention_id']
+            headers = ['company','title','url','source','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
         else:
             params = [dstr]
             scope_sql, params = scope_clause("c.id", params)
@@ -1399,6 +1409,7 @@ def processed_articles_csv(filename: str):
                 f"""
                 select ceo.name as ceo, c.name as company, a.title, a.canonical_url as url, a.publisher as source,
                        coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
+                       coalesce(ov.override_control_class, cm.control_class) as control_class,
                        ov.override_sentiment_label as sentiment_override,
                        ov.override_control_class as control_override,
                        coalesce(cm.llm_sentiment_label, cm.llm_risk_label) as llm_label,
@@ -1414,7 +1425,7 @@ def processed_articles_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['ceo','company','title','url','source','sentiment','sentiment_override','control_override','llm_label','mention_id']
+            headers = ['ceo','company','title','url','source','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
         csv_text = rows_to_csv(headers, rows)
         return Response(csv_text, content_type='text/csv')
 

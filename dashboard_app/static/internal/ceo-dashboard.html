@@ -2691,7 +2691,10 @@ function updateCachedOverrides(mentionId, serpResultId, updates){
     }
     if (updates.control_override !== undefined) {
       row.control_override = updates.control_override;
-      if (updates.control_override) row.controlled = updates.control_override;
+      if (updates.control_override) {
+        row.controlled = updates.control_override;
+        row.control_class = updates.control_override;
+      }
     }
   };
   for (const rows of _modalHeadlinesCache.values()) {
@@ -2921,10 +2924,12 @@ async function showHeadlines({ ceo }) {
 
     const sRaw = String(r.sentiment || '').toLowerCase();
     const s = sRaw === 'positive' ? 'positive' : (sRaw === 'negative' ? 'negative' : 'neutral');
+    const ctrlRaw = String(r.control_override || r.control_class || '').toLowerCase();
+    const ctrl = ctrlRaw === 'controlled' ? 'controlled' : (ctrlRaw === 'uncontrolled' ? 'uncontrolled' : '');
 
     const flags = flagIcons(r);
     return `
-      <div class="serp-card" data-mention-id="${esc(mentionId)}" data-sentiment-override="${esc(r.sentiment_override||'')}" data-control-override="${esc(r.control_override||'')}" data-llm-label="${esc(r.llm_label||'')}" data-current-sentiment="${esc(s)}">
+      <div class="serp-card" data-mention-id="${esc(mentionId)}" data-sentiment-override="${esc(r.sentiment_override||'')}" data-control-override="${esc(r.control_override||'')}" data-llm-label="${esc(r.llm_label||'')}" data-current-sentiment="${esc(s)}" data-current-control="${esc(ctrl)}">
         ${sourceLabel ? `<div class="serp-domain">${sourceLabel}</div>` : ''}
         <div class="serp-title">${link}</div>
         ${flags ? `<div class="edit-flags">${flags}</div>` : ''}
@@ -2934,8 +2939,13 @@ async function showHeadlines({ ceo }) {
             <option value="neutral" ${s==='neutral'?'selected':''}>neutral</option>
             <option value="negative" ${s==='negative'?'selected':''}>negative</option>
           </select>
+          <select class="edit-controlled">
+            <option value="" ${!ctrl?'selected':''}>control</option>
+            <option value="true" ${ctrl==='controlled'?'selected':''}>controlled</option>
+            <option value="false" ${ctrl==='uncontrolled'?'selected':''}>uncontrolled</option>
+          </select>
           <span class="edit-status"></span>
-        </div>` : `<div class="badges" style="margin-top:8px"><span class="badge ${s}">${s}</span></div>`}
+        </div>` : `<div class="badges" style="margin-top:8px"><span class="badge ${s}">${s}</span>${ctrl?`<span class="badge ${ctrl}">${ctrl}</span>`:''}</div>`}
       </div>
     `;
   }).join('');

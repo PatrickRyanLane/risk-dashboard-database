@@ -2704,6 +2704,8 @@ async function showHeadlines({ ceo }) {
 
     const sRaw = String(r.sentiment || '').toLowerCase();
     const s = sRaw === 'positive' ? 'positive' : (sRaw === 'negative' ? 'negative' : 'neutral');
+    const ctrlRaw = String(r.control_override || r.control_class || '').toLowerCase();
+    const ctrl = ctrlRaw === 'controlled' ? 'controlled' : (ctrlRaw === 'uncontrolled' ? 'uncontrolled' : '');
     const flags = flagIcons(r);
 
     return `
@@ -2712,6 +2714,7 @@ async function showHeadlines({ ceo }) {
         <div class="serp-title">${link}</div>
         <div class="badges" style="margin-top:8px">
           <span class="badge ${s}">${s}</span>
+          ${ctrl ? `<span class="badge ${ctrl}">${ctrl}</span>` : ''}
           ${flags ? `<span class="edit-flags">${flags}</span>` : ''}
         </div>
       </div>

@@ -2525,12 +2525,15 @@ async function showHeadlines({company}){
     const link=url?`<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>`:`<span class="muted">${title}</span>`;
     const sRaw=String(r.sentiment||'').toLowerCase();
     const s=sRaw==='positive'?'positive':(sRaw==='negative'?'negative':'neutral');
+    const ctrlRaw=String(r.control_override||r.control_class||'').toLowerCase();
+    const ctrl=ctrlRaw==='controlled'?'controlled':(ctrlRaw==='uncontrolled'?'uncontrolled':'');
     const flags = flagIcons(r);
     return `<div class="serp-card">
       ${sourceLabel?`<div class="serp-domain">${sourceLabel}</div>`:''}
       <div class="serp-title">${link}</div>
       <div class="badges" style="margin-top:8px">
         <span class="badge ${s}">${s}</span>
+        ${ctrl?`<span class="badge ${ctrl}">${ctrl}</span>`:''}
         ${flags?`<span class="edit-flags">${flags}</span>`:''}
       </div>
     </div>`;

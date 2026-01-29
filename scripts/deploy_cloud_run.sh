@@ -5,6 +5,7 @@ PROJECT_ID="${PROJECT_ID:-gen-lang-client-0154760958}"
 REGION="${REGION:-us-west1}"
 INTERNAL_SERVICE="${INTERNAL_SERVICE:-risk-dashboard}"
 EXTERNAL_SERVICE="${EXTERNAL_SERVICE:-risk-dashboard-external}"
+MEMORY="${MEMORY:-1Gi}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_DIR="${APP_DIR:-${ROOT_DIR}/dashboard_app}"
@@ -54,6 +55,7 @@ gcloud run deploy "${INTERNAL_SERVICE}" \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \
   --platform managed \
+  --memory "${MEMORY}" \
   --no-allow-unauthenticated \
   --set-env-vars "${INTERNAL_ENV_VARS}" \
   --set-secrets "DATABASE_URL=${DB_SECRET_NAME}:latest,LLM_API_KEY=${LLM_SECRET_NAME}:latest"
@@ -64,6 +66,7 @@ gcloud run deploy "${EXTERNAL_SERVICE}" \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \
   --platform managed \
+  --memory "${MEMORY}" \
   --allow-unauthenticated \
   --set-env-vars "${EXTERNAL_ENV_VARS}" \
   --set-secrets "DATABASE_URL=${DB_SECRET_NAME}:latest,LLM_API_KEY=${LLM_SECRET_NAME}:latest"
