@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Tuple
 
 import psycopg2
+import requests
 from flask import Flask, Response, jsonify, request, send_from_directory, abort
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
@@ -23,6 +24,10 @@ DB_DSN = os.environ.get('DATABASE_URL')
 DEFAULT_VIEW = os.environ.get('DEFAULT_VIEW', 'external')
 PUBLIC_MODE = os.environ.get('PUBLIC_MODE', 'false').lower() in {'1', 'true', 'yes'}
 ALLOW_EDITS = os.environ.get('ALLOW_EDITS', 'true').lower() in {'1', 'true', 'yes'}
+LLM_API_KEY = os.environ.get('LLM_API_KEY', '')
+LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'openai').lower()
+LLM_MODEL = os.environ.get('LLM_MODEL', 'gpt-4o-mini')
+LLM_SUMMARY_ITEMS = int(os.environ.get('LLM_SUMMARY_ITEMS', '12'))
 IAP_AUDIENCE = os.environ.get('IAP_AUDIENCE', '')
 ALLOWED_DOMAIN = os.environ.get('ALLOWED_DOMAIN', '')
 ALLOWED_EMAILS = {e.strip().lower() for e in os.environ.get('ALLOWED_EMAILS', '').split(',') if e.strip()}
@@ -31,7 +36,7 @@ EXTERNAL_COMPANY_SCOPE = [c.strip() for c in os.environ.get('EXTERNAL_COMPANY_SC
 IAP_CERTS_URL = os.environ.get('IAP_CERTS_URL', 'https://www.gstatic.com/iap/verify/public_key')
 
 _api_cache = {}
-_api_cache_ttl = int(os.environ.get('API_CACHE_TTL', '120'))
+_api_cache_ttl = int(os.environ.get('API_CACHE_TTL', '300'))
 
 DATE_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-(brand|ceo)-(articles|serps)-(modal|table)\.csv$')
 STOCK_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-stock-data\.csv$')
@@ -71,6 +76,79 @@ def get_request_email() -> str:
         return ''
     email = get_iap_email()
     return (email or '').lower()
+
+
+def build_serp_feature_summary_prompt(entity_type: str, entity_name: str,
+                                      feature_type: str, items: List[Dict]) -> Dict[str, str]:
+    system = (
+        "You summarize SERP feature results for internal users. "
+        "Write exactly one concise sentence. "
+        "No preamble, no leading entity name."
+    )
+    lines = []
+    for item in items:
+        title = (item.get("title") or "").strip()
+        source = (item.get("source") or "").strip()
+        url = (item.get("url") or "").strip()
+        if title and source:
+            lines.append(f"- {title} ({source})")
+        elif title:
+            lines.append(f"- {title}")
+        elif url:
+            lines.append(f"- {url}")
+    joined = "\n".join(lines)
+    user = (
+        f"Entity: {entity_type} = {entity_name}\n"
+        f"Feature: {feature_type}\n"
+        f"Items:\n{joined}\n"
+        "Return summary only."
+    )
+    return {"system": system, "user": user}
+
+
+def call_llm_text(prompt: Dict[str, str]) -> Tuple[str, str, str]:
+    if not LLM_API_KEY:
+        return "", "llm_not_configured", ""
+    if LLM_PROVIDER == "gemini":
+        model = LLM_MODEL or "gemini-1.5-flash"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": f"{prompt['system']}\n\n{prompt['user']}"}]}],
+            "generationConfig": {"temperature": 0.2},
+        }
+        resp = requests.post(url, params={"key": LLM_API_KEY}, json=payload, timeout=20)
+        if resp.status_code != 200:
+            detail = resp.text or ""
+            if len(detail) > 1000:
+                detail = detail[:1000] + "…"
+            return "", f"gemini_http_{resp.status_code}", detail
+        data = resp.json()
+        try:
+            return str(data["candidates"][0]["content"]["parts"][0]["text"]).strip(), "", ""
+        except Exception:
+            return "", "gemini_parse_error", ""
+    model = LLM_MODEL or "gpt-4o-mini"
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": prompt["system"]},
+            {"role": "user", "content": prompt["user"]},
+        ],
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=20)
+    if resp.status_code != 200:
+        detail = resp.text or ""
+        if len(detail) > 1000:
+            detail = detail[:1000] + "…"
+        return "", f"openai_http_{resp.status_code}", detail
+    data = resp.json()
+    try:
+        return str(data["choices"][0]["message"]["content"]).strip(), "", ""
+    except Exception:
+        return "", "openai_parse_error", ""
 
 
 def current_view() -> str:
@@ -303,9 +381,20 @@ def daily_counts_json():
     cached = get_cached_json(cache_key)
     if cached is not None:
         return jsonify(cached)
+    days_raw = (request.args.get('days') or '').strip()
+    days = None
+    if days_raw:
+        try:
+            days = max(1, int(days_raw))
+        except ValueError:
+            days = None
     if kind == 'brand_articles':
         params = []
         scope_sql, params = scope_clause("c.id", params)
+        date_sql = ""
+        if days:
+            params.append(days)
+            date_sql = "and cam.scored_at::date >= (current_date - (%s || ' days')::interval)"
         rows = query_dict(
             f"""
             select cam.scored_at::date as date, c.name as company,
@@ -319,7 +408,7 @@ def daily_counts_json():
             from company_article_mentions cam
             join companies c on c.id = cam.company_id
             left join company_article_overrides ov on ov.company_id = cam.company_id and ov.article_id = cam.article_id
-            where cam.scored_at is not null {scope_sql}
+            where cam.scored_at is not null {scope_sql} {date_sql}
             group by cam.scored_at::date, c.name
             order by cam.scored_at::date, c.name
             """,
@@ -331,6 +420,10 @@ def daily_counts_json():
     if kind == 'ceo_articles':
         params = []
         scope_sql, params = scope_clause("c.id", params)
+        date_sql = ""
+        if days:
+            params.append(days)
+            date_sql = "and cam.scored_at::date >= (current_date - (%s || ' days')::interval)"
         rows = query_dict(
             f"""
             select cam.scored_at::date as date, ceo.name as ceo, c.name as company,
@@ -347,7 +440,7 @@ def daily_counts_json():
             join ceos ceo on ceo.id = cam.ceo_id
             join companies c on c.id = ceo.company_id
             left join ceo_article_overrides ov on ov.ceo_id = cam.ceo_id and ov.article_id = cam.article_id
-            where cam.scored_at is not null {scope_sql}
+            where cam.scored_at is not null {scope_sql} {date_sql}
             group by cam.scored_at::date, ceo.name, c.name, ceo.alias
             order by cam.scored_at::date, ceo.name
             """,
@@ -359,6 +452,10 @@ def daily_counts_json():
     if kind == 'brand_serps':
         params = []
         scope_sql, params = scope_clause("c.id", params)
+        date_sql = ""
+        if days:
+            params.append(days)
+            date_sql = "and sr.run_at::date >= (current_date - (%s || ' days')::interval)"
         rows = query_dict(
             f"""
             select sr.run_at::date as date, c.name as company,
@@ -371,7 +468,7 @@ def daily_counts_json():
             join companies c on c.id = sr.company_id
             join serp_results r on r.serp_run_id = sr.id
             left join serp_result_overrides ov on ov.serp_result_id = r.id
-            where sr.entity_type = 'company' {scope_sql}
+            where sr.entity_type = 'company' {scope_sql} {date_sql}
             group by sr.run_at::date, c.name
             order by sr.run_at::date, c.name
             """,
@@ -383,6 +480,10 @@ def daily_counts_json():
     if kind == 'ceo_serps':
         params = []
         scope_sql, params = scope_clause("c.id", params)
+        date_sql = ""
+        if days:
+            params.append(days)
+            date_sql = "and sr.run_at::date >= (current_date - (%s || ' days')::interval)"
         rows = query_dict(
             f"""
             select sr.run_at::date as date, ceo.name as ceo, c.name as company,
@@ -396,7 +497,7 @@ def daily_counts_json():
             join companies c on c.id = ceo.company_id
             join serp_results r on r.serp_run_id = sr.id
             left join serp_result_overrides ov on ov.serp_result_id = r.id
-            where sr.entity_type = 'ceo' {scope_sql}
+            where sr.entity_type = 'ceo' {scope_sql} {date_sql}
             group by sr.run_at::date, ceo.name, c.name
             order by sr.run_at::date, ceo.name
             """,
@@ -438,24 +539,109 @@ def processed_serps_json():
 def serp_features_json():
     entity = request.args.get('entity', 'brand')
     days = int(request.args.get('days', '90') or 90)
+    entity_name = request.args.get('entity_name', '').strip()
+    mode = request.args.get('mode', '').strip()
     entity_type = 'company' if entity == 'brand' else 'ceo'
+    entity_types = ['brand', 'company'] if entity_type == 'company' else [entity_type]
 
-    params = [entity_type, days]
     if entity_type == 'company':
-        scope_sql, params = scope_clause("c.id", params)
-        sql = f"""
+        entity_types = ['brand', 'company']
+        if mode == "index":
+            name_sql_base = ""
+            name_sql_live = ""
+            feat_sql_base = ""
+            feat_sql_live = ""
+        else:
+            name_sql_base = "and s.entity_name = %s" if entity_name else ""
+            name_sql_live = "and sfi.entity_name = %s" if entity_name else ""
+            feat_val = request.args.get('feature_type')
+            feat_sql_base = "and s.feature_type = %s" if feat_val else ""
+            feat_sql_live = "and sfi.feature_type = %s" if feat_val else ""
+
+        params_base = [entity_types, days]
+        scope_sql_base, params_base = scope_clause("c.id", params_base)
+        params_live = [entity_types]
+        scope_sql_live, params_live = scope_clause("c.id", params_live)
+
+        if entity_name:
+            params_base.append(entity_name)
+            params_live.append(entity_name)
+        if request.args.get('feature_type'):
+            params_base.append(request.args.get('feature_type'))
+            params_live.append(request.args.get('feature_type'))
+
+        base_sql = f"""
             select s.date, s.entity_name, s.feature_type,
                    s.total_count, s.positive_count, s.neutral_count, s.negative_count
             from serp_feature_daily s
             join companies c on c.id = s.entity_id
-            where s.entity_type = %s
+            where s.entity_type = any(%s)
               and s.date >= (current_date - (%s || ' days')::interval)
-              {scope_sql}
-            order by s.date, s.entity_name, s.feature_type
+              and s.date < current_date
+              {scope_sql_base}
+              {name_sql_base}
+              {feat_sql_base}
+            union all
+            select sfi.date, sfi.entity_name, sfi.feature_type,
+                   count(*) as total_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count
+            from serp_feature_items sfi
+            join companies c on c.id = sfi.entity_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.entity_type = any(%s)
+              and sfi.date = current_date
+              {scope_sql_live}
+              {name_sql_live}
+              {feat_sql_live}
+            group by sfi.date, sfi.entity_name, sfi.feature_type
         """
+        params = params_base + params_live
+        if mode == "index":
+            sql = f"""
+                with base as ({base_sql})
+                select date, 'Index' as entity_name, feature_type,
+                       sum(total_count) as total_count,
+                       sum(positive_count) as positive_count,
+                       sum(neutral_count) as neutral_count,
+                       sum(negative_count) as negative_count
+                from base
+                group by date, feature_type
+                order by date, feature_type
+            """
+        else:
+            sql = f"""
+                with base as ({base_sql})
+                select * from base
+                order by date, entity_name, feature_type
+            """
     else:
-        scope_sql, params = scope_clause("c.id", params)
-        sql = f"""
+        if mode == "index":
+            name_sql_base = ""
+            name_sql_live = ""
+            feat_sql_base = ""
+            feat_sql_live = ""
+        else:
+            name_sql_base = "and s.entity_name = %s" if entity_name else ""
+            name_sql_live = "and sfi.entity_name = %s" if entity_name else ""
+            feat_val = request.args.get('feature_type')
+            feat_sql_base = "and s.feature_type = %s" if feat_val else ""
+            feat_sql_live = "and sfi.feature_type = %s" if feat_val else ""
+
+        params_base = [entity_type, days]
+        scope_sql_base, params_base = scope_clause("c.id", params_base)
+        params_live = [entity_type]
+        scope_sql_live, params_live = scope_clause("c.id", params_live)
+
+        if entity_name:
+            params_base.append(entity_name)
+            params_live.append(entity_name)
+        if request.args.get('feature_type'):
+            params_base.append(request.args.get('feature_type'))
+            params_live.append(request.args.get('feature_type'))
+
+        base_sql = f"""
             select s.date, s.entity_name, s.feature_type,
                    s.total_count, s.positive_count, s.neutral_count, s.negative_count
             from serp_feature_daily s
@@ -463,11 +649,288 @@ def serp_features_json():
             join companies c on c.id = ceo.company_id
             where s.entity_type = %s
               and s.date >= (current_date - (%s || ' days')::interval)
-              {scope_sql}
-            order by s.date, s.entity_name, s.feature_type
+              and s.date < current_date
+              {scope_sql_base}
+              {name_sql_base}
+              {feat_sql_base}
+            union all
+            select sfi.date, sfi.entity_name, sfi.feature_type,
+                   count(*) as total_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count
+            from serp_feature_items sfi
+            join ceos ceo on ceo.id = sfi.entity_id
+            join companies c on c.id = ceo.company_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.entity_type = %s
+              and sfi.date = current_date
+              {scope_sql_live}
+              {name_sql_live}
+              {feat_sql_live}
+            group by sfi.date, sfi.entity_name, sfi.feature_type
         """
-    rows = query_rows(sql, tuple(params))
-    return jsonify(rows)
+        params = params_base + params_live
+        if mode == "index":
+            sql = f"""
+                with base as ({base_sql})
+                select date, 'Index' as entity_name, feature_type,
+                       sum(total_count) as total_count,
+                       sum(positive_count) as positive_count,
+                       sum(neutral_count) as neutral_count,
+                       sum(negative_count) as negative_count
+                from base
+                group by date, feature_type
+                order by date, feature_type
+            """
+        else:
+            sql = f"""
+                with base as ({base_sql})
+                select * from base
+                order by date, entity_name, feature_type
+            """
+    rows = query_dict(sql, tuple(params))
+    return jsonify(serialize_rows(rows))
+
+
+@app.route('/api/v1/serp_feature_controls')
+def serp_feature_controls_json():
+    entity = request.args.get('entity', 'brand')
+    days = int(request.args.get('days', '90') or 90)
+    entity_name = request.args.get('entity_name', '').strip()
+    mode = request.args.get('mode', '').strip()
+    entity_type = 'company' if entity == 'brand' else 'ceo'
+    entity_types = ['brand', 'company'] if entity_type == 'company' else [entity_type]
+
+    if entity_type == 'company':
+        if mode == "index":
+            name_sql = ""
+        else:
+            name_sql = "and sfi.entity_name = %s" if entity_name else ""
+        params = [entity_types, days]
+        scope_sql, params = scope_clause("c.id", params)
+        if entity_name:
+            params.append(entity_name)
+        sql = f"""
+            with base as (
+                select sfi.date, sfi.entity_name, sfi.feature_type,
+                       count(*) as total_count,
+                       sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
+                from serp_feature_items sfi
+                join companies c on c.id = sfi.entity_id
+                left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                where sfi.entity_type = any(%s)
+                  and sfi.date >= (current_date - (%s || ' days')::interval)
+                  {scope_sql}
+                  {name_sql}
+                group by sfi.date, sfi.entity_name, sfi.feature_type
+            )
+            select date, {("'Index'" if mode == "index" else "entity_name")} as entity_name, feature_type,
+                   sum(total_count) as total_count,
+                   sum(controlled_count) as controlled_count
+            from base
+            {"group by date, feature_type" if mode == "index" else "group by date, entity_name, feature_type"}
+            order by date, feature_type
+        """
+    else:
+        if mode == "index":
+            name_sql = ""
+        else:
+            name_sql = "and sfi.entity_name = %s" if entity_name else ""
+        params = [entity_type, days]
+        scope_sql, params = scope_clause("c.id", params)
+        if entity_name:
+            params.append(entity_name)
+        sql = f"""
+            with base as (
+                select sfi.date, sfi.entity_name, sfi.feature_type,
+                       count(*) as total_count,
+                       sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
+                from serp_feature_items sfi
+                join ceos ceo on ceo.id = sfi.entity_id
+                join companies c on c.id = ceo.company_id
+                left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                where sfi.entity_type = %s
+                  and sfi.date >= (current_date - (%s || ' days')::interval)
+                  {scope_sql}
+                  {name_sql}
+                group by sfi.date, sfi.entity_name, sfi.feature_type
+            )
+            select date, {("'Index'" if mode == "index" else "entity_name")} as entity_name, feature_type,
+                   sum(total_count) as total_count,
+                   sum(controlled_count) as controlled_count
+            from base
+            {"group by date, feature_type" if mode == "index" else "group by date, entity_name, feature_type"}
+            order by date, feature_type
+        """
+
+    rows = query_dict(sql, tuple(params))
+    return jsonify(serialize_rows(rows))
+
+
+@app.route('/api/v1/serp_feature_items')
+def serp_feature_items_json():
+    if PUBLIC_MODE:
+        return jsonify({'error': 'not available'}), 403
+    date_str = (request.args.get('date') or '').strip()
+    if not date_str:
+        return jsonify({'error': 'date is required (YYYY-MM-DD)'}), 400
+    entity = request.args.get('entity', 'brand')
+    entity_name = (request.args.get('entity_name') or '').strip()
+    feature_type = (request.args.get('feature_type') or '').strip()
+    try:
+        limit = int(request.args.get('limit', '200') or 200)
+    except ValueError:
+        limit = 200
+    if limit < 1:
+        limit = 1
+    if limit > 500:
+        limit = 500
+    try:
+        offset = int(request.args.get('offset', '0') or 0)
+    except ValueError:
+        offset = 0
+    if offset < 0:
+        offset = 0
+
+    entity_type = 'company' if entity == 'brand' else 'ceo'
+    if entity_type == 'company':
+        entity_types = ['brand', 'company']
+        params = [date_str, entity_types]
+        scope_sql, params = scope_clause("c.id", params)
+        name_sql = ""
+        feat_sql = ""
+        if entity_name:
+            params.append(entity_name)
+            name_sql = "and sfi.entity_name = %s"
+        if feature_type:
+            params.append(feature_type)
+            feat_sql = "and sfi.feature_type = %s"
+        params.append(limit)
+        params.append(offset)
+        sql = f"""
+            select sfi.id, sfi.date, sfi.entity_name, sfi.feature_type,
+                   sfi.title, sfi.snippet, sfi.url, sfi.domain, sfi.position, sfi.source,
+                   coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment,
+                   coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) as control_class,
+                   ov.override_sentiment_label as sentiment_override,
+                   ov.override_control_class as control_override,
+                   coalesce(sfi.llm_sentiment_label, sfi.llm_risk_label) as llm_label
+            from serp_feature_items sfi
+            join companies c on c.id = sfi.entity_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.date = %s
+              and sfi.entity_type = any(%s)
+              {scope_sql}
+              {name_sql}
+              {feat_sql}
+            order by sfi.feature_type, sfi.position nulls last, sfi.sentiment_label
+            limit %s offset %s
+        """
+    else:
+        params = [date_str, entity_type]
+        scope_sql, params = scope_clause("c.id", params)
+        name_sql = ""
+        feat_sql = ""
+        if entity_name:
+            params.append(entity_name)
+            name_sql = "and sfi.entity_name = %s"
+        if feature_type:
+            params.append(feature_type)
+            feat_sql = "and sfi.feature_type = %s"
+        params.append(limit)
+        params.append(offset)
+        sql = f"""
+            select sfi.id, sfi.date, sfi.entity_name, sfi.feature_type,
+                   sfi.title, sfi.snippet, sfi.url, sfi.domain, sfi.position, sfi.source,
+                   coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment,
+                   coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) as control_class,
+                   ov.override_sentiment_label as sentiment_override,
+                   ov.override_control_class as control_override,
+                   coalesce(sfi.llm_sentiment_label, sfi.llm_risk_label) as llm_label
+            from serp_feature_items sfi
+            join ceos ceo on ceo.id = sfi.entity_id
+            join companies c on c.id = ceo.company_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.date = %s
+              and sfi.entity_type = %s
+              {scope_sql}
+              {name_sql}
+              {feat_sql}
+            order by sfi.feature_type, sfi.position nulls last, sfi.sentiment_label
+            limit %s offset %s
+        """
+
+    rows = query_dict(sql, tuple(params))
+    return jsonify(serialize_rows(rows))
+
+
+@app.route('/api/v1/serp_feature_series')
+def serp_feature_series_json():
+    if PUBLIC_MODE:
+        return jsonify({'error': 'not available'}), 403
+    entity = request.args.get('entity', 'brand')
+    entity_name = (request.args.get('entity_name') or '').strip()
+    feature_type = (request.args.get('feature_type') or '').strip()
+    if not entity_name or not feature_type:
+        return jsonify({'error': 'entity_name and feature_type are required'}), 400
+    try:
+        days = int(request.args.get('days', '30') or 30)
+    except ValueError:
+        days = 30
+    if days < 1:
+        days = 1
+    if days > 365:
+        days = 365
+
+    entity_type = 'company' if entity == 'brand' else 'ceo'
+    if entity_type == 'company':
+        entity_types = ['brand', 'company']
+        params = [entity_types, entity_name, feature_type, days]
+        scope_sql, params = scope_clause("c.id", params)
+        sql = f"""
+            select sfi.date,
+                   count(*) as total_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count,
+                   sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
+            from serp_feature_items sfi
+            join companies c on c.id = sfi.entity_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.entity_type = any(%s)
+              and sfi.entity_name = %s
+              and sfi.feature_type = %s
+              and sfi.date >= (current_date - (%s || ' days')::interval)
+              {scope_sql}
+            group by sfi.date
+            order by sfi.date
+        """
+    else:
+        params = [entity_type, entity_name, feature_type, days]
+        scope_sql, params = scope_clause("c.id", params)
+        sql = f"""
+            select sfi.date,
+                   count(*) as total_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
+                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count,
+                   sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
+            from serp_feature_items sfi
+            join ceos ceo on ceo.id = sfi.entity_id
+            join companies c on c.id = ceo.company_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.entity_type = %s
+              and sfi.entity_name = %s
+              and sfi.feature_type = %s
+              and sfi.date >= (current_date - (%s || ' days')::interval)
+              {scope_sql}
+            group by sfi.date
+            order by sfi.date
+        """
+
+    rows = query_dict(sql, tuple(params))
+    return jsonify(serialize_rows(rows))
 
 
 @app.route('/api/v1/roster')
@@ -490,7 +953,14 @@ def negative_summary_json():
     cached = get_cached_json(cache_key)
     if cached is not None:
         return jsonify(cached)
-    resp = negative_articles_summary()
+    days_raw = request.args.get('days', '').strip()
+    days = None
+    if days_raw:
+        try:
+            days = max(1, int(days_raw))
+        except ValueError:
+            days = None
+    resp = negative_articles_summary(days=days)
     if resp.status_code != 200:
         return resp
     rows = list(csv.DictReader(io.StringIO(resp.get_data(as_text=True))))
@@ -561,6 +1031,120 @@ def add_cache_headers(response):
 
 # --------------------------- Internal edit endpoint ---------------------------
 
+@app.route('/api/internal/serp_feature_summary')
+def serp_feature_summary():
+    if PUBLIC_MODE:
+        return jsonify({'error': 'not available'}), 403
+    user_email = require_internal_user()
+    if not user_email:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    date_str = (request.args.get('date') or '').strip()
+    entity = request.args.get('entity', 'brand').strip()
+    entity_name = (request.args.get('entity_name') or '').strip()
+    feature_type = (request.args.get('feature_type') or '').strip()
+    refresh = request.args.get('refresh', '').strip() in {'1', 'true', 'yes'}
+
+    if not date_str or not entity_name or not feature_type:
+        return jsonify({'error': 'date, entity_name, feature_type are required'}), 400
+
+    entity_type = 'company' if entity == 'brand' else 'ceo'
+    entity_types = ['brand', 'company'] if entity_type == 'company' else [entity_type]
+    if request.args.get('debug', '').strip() in {'1', 'true', 'yes'}:
+        return jsonify({
+            'date': date_str,
+            'entity': entity,
+            'entity_name': entity_name,
+            'feature_type': feature_type,
+            'entity_type': entity_type,
+            'entity_types': entity_types,
+            'llm_provider': LLM_PROVIDER,
+            'llm_model': LLM_MODEL,
+            'llm_summary_items': LLM_SUMMARY_ITEMS,
+            'llm_key_set': bool(LLM_API_KEY),
+        })
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if entity_type == 'company':
+                cur.execute("select id, name from companies where name = %s", (entity_name,))
+            else:
+                cur.execute("select id, name from ceos where name = %s", (entity_name,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'error': 'entity not found'}), 404
+            entity_id, canonical_name = row[0], row[1]
+
+            if not refresh:
+                cur.execute(
+                    """
+                    select summary_text, provider, model, updated_at
+                    from serp_feature_summaries
+                    where date = %s and entity_type = %s and entity_id = %s and feature_type = %s
+                    """,
+                    (date_str, entity_type, entity_id, feature_type),
+                )
+                cached = cur.fetchone()
+                if cached:
+                    summary_text, provider, model, updated_at = cached
+                    return jsonify({
+                        'summary': summary_text,
+                        'provider': provider,
+                        'model': model,
+                        'updated_at': updated_at.isoformat() if hasattr(updated_at, 'isoformat') else updated_at,
+                        'cached': True,
+                    })
+
+            cur.execute(
+                """
+                select title, snippet, source, url
+                from serp_feature_items
+                where date = %s
+                  and entity_type = any(%s)
+                  and entity_id = %s
+                  and feature_type = %s
+                order by position nulls last, title
+                limit %s
+                """,
+                (date_str, entity_types, entity_id, feature_type, LLM_SUMMARY_ITEMS),
+            )
+            items = [dict(zip([d[0] for d in cur.description], r)) for r in cur.fetchall()]
+            if not items:
+                return jsonify({'summary': '', 'cached': False, 'status': 'no_items'})
+
+            if not LLM_API_KEY:
+                return jsonify({'summary': '', 'cached': False, 'status': 'llm_not_configured'}), 503
+
+            prompt = build_serp_feature_summary_prompt(entity_type, canonical_name, feature_type, items)
+            summary_text, llm_error, llm_detail = call_llm_text(prompt)
+            if not summary_text:
+                payload = {'summary': '', 'cached': False, 'status': 'llm_failed'}
+                if llm_error:
+                    payload['error'] = llm_error
+                if llm_detail and request.args.get('debug', '').strip() in {'1', 'true', 'yes'}:
+                    payload['detail'] = llm_detail
+                return jsonify(payload), 502
+
+            cur.execute(
+                """
+                insert into serp_feature_summaries
+                  (date, entity_type, entity_id, entity_name, feature_type, summary_text, provider, model)
+                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (date, entity_type, entity_id, feature_type) do update set
+                  summary_text = excluded.summary_text,
+                  provider = excluded.provider,
+                  model = excluded.model,
+                  updated_at = now()
+                """,
+                (date_str, entity_type, entity_id, canonical_name, feature_type, summary_text, LLM_PROVIDER, LLM_MODEL),
+            )
+
+    return jsonify({
+        'summary': summary_text,
+        'provider': LLM_PROVIDER,
+        'model': LLM_MODEL,
+        'cached': False,
+    })
+
 @app.route('/api/internal/overrides', methods=['POST'])
 def apply_override():
     if PUBLIC_MODE or not ALLOW_EDITS:
@@ -573,6 +1157,7 @@ def apply_override():
     mention_type = (payload.get('mention_type') or '').strip()
     mention_id = (payload.get('mention_id') or '').strip()
     serp_result_id = (payload.get('serp_result_id') or '').strip()
+    serp_feature_item_id = (payload.get('serp_feature_item_id') or '').strip()
     sentiment_override = payload.get('sentiment_override')
     control_override = payload.get('control_override')
     relevant_override = payload.get('relevant_override')
@@ -582,6 +1167,8 @@ def apply_override():
         return jsonify({'error': 'mention_id is required'}), 400
     if mention_type == 'serp_result' and not serp_result_id:
         return jsonify({'error': 'serp_result_id is required'}), 400
+    if mention_type == 'serp_feature_item' and not serp_feature_item_id:
+        return jsonify({'error': 'serp_feature_item_id is required'}), 400
 
     if sentiment_override not in (None, 'positive', 'neutral', 'negative', 'risk', 'no_risk'):
         return jsonify({'error': 'invalid sentiment_override'}), 400
@@ -643,6 +1230,22 @@ def apply_override():
                     returning id
                     """,
                     (serp_result_id, sentiment_override, control_override, note, user_email),
+                )
+            elif mention_type == 'serp_feature_item':
+                cur.execute(
+                    """
+                    insert into serp_feature_item_overrides
+                      (serp_feature_item_id, override_sentiment_label, override_control_class, note, edited_by)
+                    values (%s, %s, %s, %s, %s)
+                    on conflict (serp_feature_item_id) do update set
+                      override_sentiment_label = excluded.override_sentiment_label,
+                      override_control_class = excluded.override_control_class,
+                      note = excluded.note,
+                      edited_by = excluded.edited_by,
+                      edited_at = now()
+                    returning id
+                    """,
+                    (serp_feature_item_id, sentiment_override, control_override, note, user_email),
                 )
             else:
                 return jsonify({'error': 'invalid mention_type'}), 400
@@ -1214,8 +1817,8 @@ def build_trends_rows(target: datetime.date) -> List[Dict]:
     return rows
 
 
-def negative_articles_summary():
-    lookback_days = int(os.environ.get('NEGATIVE_SUMMARY_LOOKBACK_DAYS', '90'))
+def negative_articles_summary(days: int | None = None):
+    lookback_days = days or int(os.environ.get('NEGATIVE_SUMMARY_LOOKBACK_DAYS', '90'))
     start_date = datetime.utcnow().date() - timedelta(days=lookback_days)
 
     params = [start_date]

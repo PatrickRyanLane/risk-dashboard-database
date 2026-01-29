@@ -186,6 +186,14 @@ create index if not exists serp_runs_run_at_idx on serp_runs (run_at);
 create unique index if not exists serp_runs_unique_idx
   on serp_runs (entity_type, company_id, ceo_id, run_at);
 
+create unique index if not exists serp_runs_company_unique_idx
+  on serp_runs (entity_type, company_id, run_at)
+  where entity_type = 'company';
+
+create unique index if not exists serp_runs_ceo_unique_idx
+  on serp_runs (entity_type, ceo_id, run_at)
+  where entity_type = 'ceo';
+
 create table if not exists serp_results (
   id uuid primary key default gen_random_uuid(),
   serp_run_id uuid not null references serp_runs(id) on delete cascade,
@@ -235,6 +243,101 @@ create index if not exists serp_feature_daily_date_idx on serp_feature_daily (da
 create index if not exists serp_feature_daily_entity_idx on serp_feature_daily (entity_type, entity_name);
 create unique index if not exists serp_feature_daily_unique_idx
   on serp_feature_daily (date, entity_type, entity_name, feature_type);
+
+create table if not exists serp_feature_items (
+  id uuid primary key default gen_random_uuid(),
+  date date not null,
+  entity_type text not null,
+  entity_id uuid,
+  entity_name text not null,
+  feature_type text not null,
+  item_type text,
+  title text,
+  snippet text,
+  url text,
+  domain text,
+  position int,
+  url_hash text,
+  sentiment_label text,
+  llm_sentiment_label text,
+  llm_risk_label text,
+  llm_control_class text,
+  llm_severity text,
+  llm_reason text,
+  control_class text,
+  finance_routine boolean,
+  source text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists serp_feature_items_date_idx on serp_feature_items (date);
+create index if not exists serp_feature_items_entity_idx on serp_feature_items (entity_type, entity_name);
+create index if not exists serp_feature_items_feature_idx on serp_feature_items (feature_type);
+create unique index if not exists serp_feature_items_unique_idx
+  on serp_feature_items (date, entity_type, entity_name, feature_type, url_hash);
+
+create table if not exists serp_feature_item_overrides (
+  id uuid primary key default gen_random_uuid(),
+  serp_feature_item_id uuid not null references serp_feature_items(id) on delete cascade,
+  override_sentiment_label text,
+  override_control_class text,
+  note text,
+  edited_by text,
+  edited_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  unique (serp_feature_item_id)
+);
+
+create index if not exists serp_feature_item_overrides_item_idx
+  on serp_feature_item_overrides (serp_feature_item_id);
+
+create table if not exists serp_feature_summaries (
+  id uuid primary key default gen_random_uuid(),
+  date date not null,
+  entity_type text not null,
+  entity_id uuid not null,
+  entity_name text not null,
+  feature_type text not null,
+  summary_text text not null,
+  provider text,
+  model text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (date, entity_type, entity_id, feature_type)
+);
+
+create index if not exists serp_feature_summaries_lookup_idx
+  on serp_feature_summaries (entity_type, entity_id, feature_type, date);
+
+create table if not exists company_article_mentions_daily (
+  date date not null,
+  company_id uuid not null references companies(id),
+  article_id uuid not null references articles(id),
+  sentiment_label text,
+  control_class text,
+  finance_routine boolean,
+  uncertain boolean,
+  created_at timestamptz not null default now(),
+  primary key (date, company_id, article_id)
+) partition by range (date);
+
+create table if not exists ceo_article_mentions_daily (
+  date date not null,
+  ceo_id uuid not null references ceos(id),
+  article_id uuid not null references articles(id),
+  sentiment_label text,
+  control_class text,
+  finance_routine boolean,
+  uncertain boolean,
+  created_at timestamptz not null default now(),
+  primary key (date, ceo_id, article_id)
+) partition by range (date);
+
+create index if not exists company_article_mentions_daily_company_idx
+  on company_article_mentions_daily (company_id, date);
+create index if not exists ceo_article_mentions_daily_ceo_idx
+  on ceo_article_mentions_daily (ceo_id, date);
 
 create table if not exists company_article_mentions (
   id uuid primary key default gen_random_uuid(),

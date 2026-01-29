@@ -50,7 +50,7 @@ button:hover{filter:brightness(1.08)}
 /* Charts grid – equal heights, responsive */
 .grid{
   display:grid;
-  grid-template-rows:minmax(360px,42vh) minmax(360px,42vh);
+  grid-auto-rows:minmax(340px,40vh);
   gap:16px;
   margin:16px 0;
 }
@@ -229,6 +229,17 @@ tbody td:first-child{background:var(--black)}
 .serp-flags{margin-top:6px;font-size:12px;opacity:.8;letter-spacing:.2px}
 .edit-flags{display:inline-flex;gap:10px;align-items:center;font-size:12px;opacity:.85;white-space:nowrap}
 .muted{color:var(--muted)}
+.serp-feature-viz{display:flex;gap:16px;flex-wrap:nowrap;align-items:stretch;margin:40px 0}
+@media (max-width: 900px){
+  .serp-feature-viz{flex-wrap:wrap}
+}
+.toggle-switch{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+.toggle-switch input{display:none}
+.toggle-slider{position:relative;width:36px;height:20px;background:#1f2b4a;border:1px solid #2b3d63;border-radius:999px;transition:all .2s ease}
+.toggle-slider::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;background:#8aa0b6;border-radius:50%;transition:transform .2s ease, background .2s ease}
+.toggle-switch input:checked + .toggle-slider{background:rgba(88,219,237,.2);border-color:rgba(88,219,237,.5)}
+.toggle-switch input:checked + .toggle-slider::after{transform:translateX(16px);background:#58dbed}
+.toggle-text{font-size:12px;color:#cfdbdd}
 
 /* Stock chart modal */
 #stockChartModal .box{max-width:1000px}
@@ -653,6 +664,7 @@ body:has(#stockChartModal.open) {
     </div>
     <button id="refreshBtn">Refresh Data</button>
     <button id="clearBtn">Clear Selection</button>
+    <button id="fullHistoryBtn">Load 180 days</button>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
       <div class="load-items" id="loadItems"></div>
@@ -680,8 +692,25 @@ body:has(#stockChartModal.open) {
           <button class="dates-prev" title="Older window">←</button>
           <button class="dates-next" title="Newer window">→</button>
         </div>
+        <label class="toggle-switch" style="margin-left:auto">
+          <input type="checkbox" id="featureExcludeEmpty" />
+          <span class="toggle-slider"></span>
+          <span class="toggle-text">Exclude zero-negative features</span>
+        </label>
       </div>
       <canvas id="featureChart"></canvas>
+    </div>
+
+    <div class="chart-card">
+      <h3>SERP Feature Control (stacked)</h3>
+      <div class="chart-actions">
+        <span class="dates-range muted" aria-live="polite"></span>
+        <div class="dates-pager">
+          <button class="dates-prev" title="Older window">←</button>
+          <button class="dates-next" title="Newer window">→</button>
+        </div>
+      </div>
+      <canvas id="featureControlChart"></canvas>
     </div>
 
     <div class="chart-card">
@@ -748,6 +777,7 @@ body:has(#stockChartModal.open) {
             </th>
             <th>Headlines</th>
             <th>SERP</th>
+            <th>SERP Features</th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -800,25 +830,50 @@ body:has(#stockChartModal.open) {
 
 <script>
 /********************** Config (brand) **********************/
-const COUNTS_CANDIDATES   = ['/api/v1/daily_counts?kind=brand_articles'];
-const SERPS_DAILY_CSV     = '/api/v1/daily_counts?kind=brand_serps';
-const SERP_FEATURES_PATH  = '/api/v1/serp_features?entity=brand&days=180';
+const DEFAULT_DAYS = 90;
+const FULL_DAYS = 180;
+let currentDays = DEFAULT_DAYS;
+const COUNTS_PATH = () => `/api/v1/daily_counts?kind=brand_articles&days=${currentDays}`;
+const SERPS_DAILY_CSV = () => `/api/v1/daily_counts?kind=brand_serps&days=${currentDays}`;
+const SERP_FEATURES_INDEX_PATH  = () => `/api/v1/serp_features?entity=brand&days=${currentDays}&mode=index`;
+const SERP_FEATURES_ENTITY_PATH = name => `/api/v1/serp_features?entity=brand&days=${currentDays}&entity_name=${encodeURIComponent(name)}`;
+const SERP_FEATURES_CONTROL_INDEX_PATH  = () => `/api/v1/serp_feature_controls?entity=brand&days=${currentDays}&mode=index`;
+const SERP_FEATURES_CONTROL_ENTITY_PATH = name => `/api/v1/serp_feature_controls?entity=brand&days=${currentDays}&entity_name=${encodeURIComponent(name)}`;
+const NEGATIVE_SUMMARY_PATH = '/api/v1/negative_summary?days=30';
+const PRELOAD_MODAL_DATA = false;
 const ARTICLES_DAILY_PATH = d => `/api/v1/processed_articles?date=${d}&entity=brand&kind=table`;
 const HEADLINES_PATH      = d => `/api/v1/processed_articles?date=${d}&entity=brand&kind=modal`;
 const SERP_PROCESSED_PATH = d => `/api/v1/processed_serps?date=${d}&entity=brand&kind=table`;
 const SERP_ROWS_PATH      = d => `/api/v1/processed_serps?date=${d}&entity=brand&kind=modal`;
+const SERP_FEATURE_ITEMS_PATH = (d, company, feature, offset = 0, limit = FEATURE_MODAL_LIMIT) =>
+  `/api/v1/serp_feature_items?date=${d}&entity=brand&entity_name=${encodeURIComponent(company)}&feature_type=${encodeURIComponent(feature)}&limit=${limit}&offset=${offset}`;
+const SERP_FEATURE_SERIES_PATH = (company, feature, days = 30) =>
+  `/api/v1/serp_feature_series?entity=brand&entity_name=${encodeURIComponent(company)}&feature_type=${encodeURIComponent(feature)}&days=${days}`;
 
 /********************** Runtime **********************/
 let allCountsRows = [];
 let serpsDaily    = [];
-let serpFeatureRows = [];
+let serpFeatureIndexRows = [];
+let serpFeatureEntityRows = [];
+let serpFeatureControlIndexRows = [];
+let serpFeatureControlEntityRows = [];
 let filteredRows  = [];
 let selectedCompany = null;
 let currentSort = { key:null, dir:1 };
 let currentPage = 1;
+let featureExcludeEmpty = false;
 const PAGE_SIZE = 25;
 
-let newsChart, serpChart, stockChart, featureChart;
+function updateEntityUrlParam(param, value){
+  try{
+    const url = new URL(window.location.href);
+    if (value) url.searchParams.set(param, value);
+    else url.searchParams.delete(param);
+    window.history.replaceState({}, '', url);
+  }catch{}
+}
+
+let newsChart, serpChart, stockChart, featureChart, featureControlChart;
 let globalStockData = {};
 let showVolume = false; // Toggle state for volume display
 let showTrends = false; // Toggle state for trends display
@@ -828,15 +883,28 @@ const _articlesCache = new Map();
 const _serpAggCache  = new Map();
 const _modalHeadlinesCache = new Map();
 const _modalSerpCache = new Map();
+const _serpFeatureItemsCache = new Map();
 const _loadSections = ['news','serps','features','stock','trends','negative'];
-const FEATURE_ORDER = ['aio_citations','paa_items','videos_items','perspectives_items'];
+const FEATURE_ORDER_SENTIMENT = ['organic','aio_citations','paa_items','videos_items','perspectives_items','top_stories_items'];
+const FEATURE_ORDER_BASE = ['organic','aio','paa','videos','perspectives','top_stories'];
 const FEATURE_LABELS = {
+  organic: 'Organic',
   aio_citations: 'AIO citations',
   paa_items: 'PAA',
   videos_items: 'Videos',
-  perspectives_items: 'Perspectives'
+  perspectives_items: 'Perspectives',
+  aio: 'AI Overview',
+  paa: 'People also ask',
+  videos: 'Videos',
+  perspectives: 'Perspectives',
+  top_stories_items: 'Top stories',
+  top_stories: 'Top stories'
 };
-const FEATURE_COLORS = ['#ffb3a6', '#ff9f8e', '#ff8b77', '#ff7660'];
+const FEATURE_MODAL_ORDER = ['aio_citations','paa_items','videos_items','perspectives_items','top_stories_items'];
+const FEATURE_MODAL_LIMIT = 100;
+const FEATURE_MODAL_DAYS = 30;
+const FEATURE_COLORS = ['#f2c14e', '#ffb3a6', '#ff9f8e', '#ff8b77', '#ff7660', '#ff5e45'];
+const CONTROL_COLORS = ['#58dbed', '#4fb7d8', '#3f94c3', '#2f72ad', '#1f5197', '#133c80'];
 const _loadLabels = {
   news: 'News sentiment',
   serps: 'SERP metrics',
@@ -847,6 +915,8 @@ const _loadLabels = {
 };
 let _loadState = {};
 let _dataRendered = false;
+const _serpFeatureCache = new Map();
+const _serpFeatureControlCache = new Map();
 
 function initLoadStatus(){
   _loadState = Object.fromEntries(_loadSections.map(k => [k, 'loading']));
@@ -1032,9 +1102,10 @@ async function loadNegativeSummary() {
   const logLabel = 'negative-summary';
   console.time(logLabel);
   console.log('📰 Loading negative articles summary...');
+  setLoadStatus('negative', 'loading');
   
   try {
-    const rows = await fetchCsv('/api/v1/negative_summary');
+    const rows = await fetchCsv(NEGATIVE_SUMMARY_PATH);
     console.log(`📊 Negative summary rows: ${rows.length}`);
     
     console.log(`📊 Loaded ${rows.length} total rows from summary file`);
@@ -1677,7 +1748,7 @@ function preloadModalData(date) {
 /********************** Loaders **********************/
 async function loadCounts(){
   try{
-    const rows = await fetchCsvAny(COUNTS_CANDIDATES);
+    const rows = await fetchCsv(COUNTS_PATH());
     allCountsRows = rows.map(r=>({
       date: String(r.date||'').trim(),
       company: String(r.company||'').trim(),
@@ -1693,7 +1764,7 @@ async function loadCounts(){
 }
 async function loadSerpDaily(){
   try{
-    const rows = await fetchCsv(SERPS_DAILY_CSV);
+    const rows = await fetchCsv(SERPS_DAILY_CSV());
     serpsDaily = rows.map(r=>({
       date:(r.date||'').trim(),
       company:(r.company||'').trim(),
@@ -1708,20 +1779,65 @@ async function loadSerpDaily(){
   }
 }
 
-async function loadSerpFeatures(){
+async function loadSerpFeaturesIndex(){
   try{
-    const rows = await fetchCsv(SERP_FEATURES_PATH);
-    serpFeatureRows = rows.map(r=>({
+    const rows = await fetchCsv(SERP_FEATURES_INDEX_PATH());
+    const ctrlRows = await fetchCsv(SERP_FEATURES_CONTROL_INDEX_PATH());
+    serpFeatureIndexRows = rows.map(r=>({
       date: String(r.date||'').trim(),
       entity: String(r.entity_name||'').trim(),
       feature: String(r.feature_type||'').trim(),
       total: +r.total_count||0,
       neg: +r.negative_count||0
-    })).filter(r=>isISODate(r.date) && r.entity && FEATURE_ORDER.includes(r.feature));
+    })).filter(r=>isISODate(r.date) && r.entity && r.feature);
+    serpFeatureControlIndexRows = ctrlRows.map(r=>({
+      date: String(r.date||'').trim(),
+      entity: String(r.entity_name||'').trim(),
+      feature: String(r.feature_type||'').trim(),
+      total: +r.total_count||0,
+      ctrl: +r.controlled_count||0
+    })).filter(r=>isISODate(r.date) && r.entity && r.feature);
     setLoadStatus('features', 'done');
   }catch(e){
-    serpFeatureRows = [];
+    serpFeatureIndexRows = [];
+    serpFeatureControlIndexRows = [];
     setLoadStatus('features', 'error');
+  }
+}
+
+async function loadSerpFeaturesForEntity(entityName){
+  if (!entityName) return [];
+  if (_serpFeatureCache.has(entityName)) {
+    serpFeatureEntityRows = _serpFeatureCache.get(entityName);
+    serpFeatureControlEntityRows = _serpFeatureControlCache.get(entityName) || [];
+    return serpFeatureEntityRows;
+  }
+  try{
+    const rows = await fetchCsv(SERP_FEATURES_ENTITY_PATH(entityName));
+    const ctrlRows = await fetchCsv(SERP_FEATURES_CONTROL_ENTITY_PATH(entityName));
+    const parsed = rows.map(r=>({
+      date: String(r.date||'').trim(),
+      entity: String(r.entity_name||'').trim(),
+      feature: String(r.feature_type||'').trim(),
+      total: +r.total_count||0,
+      neg: +r.negative_count||0
+    })).filter(r=>isISODate(r.date) && r.entity && r.feature);
+    _serpFeatureCache.set(entityName, parsed);
+    serpFeatureEntityRows = parsed;
+    const parsedCtrl = ctrlRows.map(r=>({
+      date: String(r.date||'').trim(),
+      entity: String(r.entity_name||'').trim(),
+      feature: String(r.feature_type||'').trim(),
+      total: +r.total_count||0,
+      ctrl: +r.controlled_count||0
+    })).filter(r=>isISODate(r.date) && r.entity && r.feature);
+    _serpFeatureControlCache.set(entityName, parsedCtrl);
+    serpFeatureControlEntityRows = parsedCtrl;
+    return parsed;
+  }catch(e){
+    serpFeatureEntityRows = [];
+    serpFeatureControlEntityRows = [];
+    return [];
   }
 }
 
@@ -1783,40 +1899,48 @@ async function init(){
   await Promise.all([
     loadCounts(), 
     loadSerpDaily(), 
-    loadSerpFeatures(),
-    loadStockData().then(data => {
-      globalStockData = data;
-      if (Object.keys(globalStockData).length > 0) {
-        setLoadStatus('stock', 'done');
-      }
-      return data;
-    }),
-    loadNegativeSummary().then(data => negativeSummaryMap = data),
-    loadTrendsData().then(data => globalTrendsData = data)
+    loadSerpFeaturesIndex()
   ]);
-
-  console.log('📈 Stock data loaded. Companies with stock data:', Object.keys(globalStockData).length);
-  if (Object.keys(globalStockData).length === 0) {
-    console.warn('⚠️  No stock data was loaded. Stock prices and sparklines will show N/A.');
-  }
 
   const dateSet = new Set([ ...allCountsRows.map(r=>r.date), ...serpsDaily.map(r=>r.date) ].filter(isISODate));
   const dates = [...dateSet].sort();
   const sel = document.getElementById('dateSelect');
   sel.innerHTML = dates.map(d=>`<option value="${d}">${d}</option>`).join('');
   sel.value = dates[dates.length-1] || '';
+  document.getElementById('fullHistoryBtn').disabled = currentDays >= FULL_DAYS;
   
   // 1. Date Change Listener (Keep this simple)
   sel.addEventListener('change', ()=>{ 
     currentPage=1; 
     selectedCompany=null; 
     renderAll(); 
-    setTimeout(()=>{ if (sel.value) preloadModalData(sel.value); }, 150);
+    if (PRELOAD_MODAL_DATA) {
+      setTimeout(()=>{ if (sel.value) preloadModalData(sel.value); }, 150);
+    }
   });
 
   document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll(); });
   document.getElementById('refreshBtn').onclick = async ()=>{ await init(); };
-  document.getElementById('clearBtn').onclick = ()=>{ selectedCompany=null; document.getElementById('filterInput').value=''; renderAll(); };
+  document.getElementById('clearBtn').onclick = ()=>{
+    selectedCompany=null;
+    document.getElementById('filterInput').value='';
+    updateEntityUrlParam('company', null);
+    renderAll();
+  };
+  const featureToggle = document.getElementById('featureExcludeEmpty');
+  if (featureToggle){
+    featureToggle.addEventListener('change', ()=>{
+      featureExcludeEmpty = featureToggle.checked;
+      renderAll();
+    });
+  }
+  document.getElementById('fullHistoryBtn').onclick = async ()=>{
+    if (currentDays >= FULL_DAYS) return;
+    currentDays = FULL_DAYS;
+    document.getElementById('fullHistoryBtn').disabled = true;
+    await Promise.all([loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()]);
+    renderAll();
+  };
   document.getElementById('prevBtn').onclick = ()=>{ if (currentPage>1){ currentPage--; renderTable(); } };
   document.getElementById('nextBtn').onclick = ()=>{ const totalPages = Math.max(1, Math.ceil(filteredRows.length/PAGE_SIZE)); if (currentPage<totalPages){ currentPage++; renderTable(); } };
 
@@ -1843,13 +1967,31 @@ async function init(){
   // ----------------------------------
 
   renderAll();
-  if (sel.value) {
+  if (PRELOAD_MODAL_DATA && sel.value) {
     setTimeout(()=>{ preloadModalData(sel.value); }, 150);
   }
 
-  const ro = new ResizeObserver(()=>{ if (newsChart) newsChart.resize(); if (serpChart) serpChart.resize(); if (featureChart) featureChart.resize(); });
-  ro.observe(document.getElementById('newsChart').parentElement);
-  ro.observe(document.getElementById('serpChart').parentElement);
+  const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
+  idle(() => {
+    loadStockData().then(data => {
+      globalStockData = data;
+      if (Object.keys(globalStockData).length > 0) {
+        setLoadStatus('stock', 'done');
+      }
+      renderTable();
+      return data;
+    }).then(() => {
+      console.log('📈 Stock data loaded. Companies with stock data:', Object.keys(globalStockData).length);
+      if (Object.keys(globalStockData).length === 0) {
+        console.warn('⚠️  No stock data was loaded. Stock prices and sparklines will show N/A.');
+      }
+    }).catch(()=>{ setLoadStatus('stock','error'); });
+    loadTrendsData().then(data => {
+      globalTrendsData = data;
+      setLoadStatus('trends', 'done');
+    }).catch(()=>{ setLoadStatus('trends','error'); });
+    loadNegativeSummary().then(data => negativeSummaryMap = data);
+  });
 
   window.onclick = function(event) {
     if (event.target === document.getElementById('stockChartModal')) {
@@ -1897,6 +2039,10 @@ async function renderAll(){
     selectedCompany = rows[0].company;
   } else if (selectedCompany && !rows.some(r => r.company === selectedCompany)) {
     selectedCompany = null;
+  }
+  updateEntityUrlParam('company', selectedCompany);
+  if (selectedCompany) {
+    await loadSerpFeaturesForEntity(selectedCompany);
   }
   renderTable();
   renderCharts();
@@ -1962,6 +2108,7 @@ function renderTable(){
       }</td>
       <td><button class="headBtn" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
       <td><button class="serpBtn" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
+      <td><button class="serpFeatureBtn" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
     </tr>`;
   }).join('');
 
@@ -1992,17 +2139,24 @@ function renderTable(){
   });
 
   tbody.querySelectorAll('.brandCheck').forEach(cb=>{
-    cb.addEventListener('change',(e)=>{
+    cb.addEventListener('change', async (e)=>{
       const company = e.target.getAttribute('data-company');
       if (e.target.checked){
         selectedCompany = company;
         tbody.querySelectorAll('.brandCheck').forEach(x=>{ if (x!==e.target) x.checked=false; });
       } else selectedCompany=null;
+      updateEntityUrlParam('company', selectedCompany);
+      if (selectedCompany) {
+        await loadSerpFeaturesForEntity(selectedCompany);
+      }
       renderCharts();
     });
   });
   tbody.querySelectorAll('.serpBtn').forEach(btn=>{
     btn.onclick = ()=> showSerp({ company: btn.getAttribute('data-company') });
+  });
+  tbody.querySelectorAll('.serpFeatureBtn').forEach(btn=>{
+    btn.onclick = ()=> showSerpFeatures({ company: btn.getAttribute('data-company') });
   });
   tbody.querySelectorAll('.headBtn').forEach(btn=>{
     btn.onclick = ()=> showHeadlines({ company: btn.getAttribute('data-company') });
@@ -2064,31 +2218,111 @@ function getDateSeries(){
 
 function getFeatureSeries(){
   const byDate = new Map();
-  const useAll = !selectedCompany;
-  serpFeatureRows.forEach(r=>{
-    if (!useAll && r.entity !== selectedCompany) return;
+  const totalByDate = new Map();
+  const featureHasNeg = new Set();
+  const rows = selectedCompany ? serpFeatureEntityRows : serpFeatureIndexRows;
+  const hasSentiment = rows.some(r => FEATURE_ORDER_SENTIMENT.includes(r.feature));
+  let order = hasSentiment ? FEATURE_ORDER_SENTIMENT : FEATURE_ORDER_BASE;
+  const organicByDate = new Map();
+  serpsDaily.forEach(r=>{
+    if (selectedCompany && r.company !== selectedCompany) return;
+    const key = r.date;
+    if (!organicByDate.has(key)) organicByDate.set(key, {total:0, neg:0});
+    const o = organicByDate.get(key);
+    o.total += +r.total||0;
+    o.neg += +r.neg_serp||0;
+  });
+  rows.forEach(r=>{
+    if (r.neg && r.neg > 0) featureHasNeg.add(r.feature);
+    if (!totalByDate.has(r.date)) totalByDate.set(r.date, 0);
+    const includeTotal = !featureExcludeEmpty || (r.neg && r.neg > 0);
+    if (includeTotal) {
+      totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
+    }
+    if (!order.includes(r.feature)) return;
     if (!byDate.has(r.date)) byDate.set(r.date, {});
     const bucket = byDate.get(r.date);
-    if (!bucket[r.feature]) bucket[r.feature] = {neg:0,total:0};
+    if (!bucket[r.feature]) bucket[r.feature] = {neg:0};
     bucket[r.feature].neg += r.neg || 0;
-    bucket[r.feature].total += r.total || 0;
   });
-  const dates = [...byDate.keys()].filter(isISODate).sort();
+  organicByDate.forEach((o, date)=>{
+    if (o.neg > 0) featureHasNeg.add('organic');
+    if (!totalByDate.has(date)) totalByDate.set(date, 0);
+    const includeTotal = !featureExcludeEmpty || (o.neg > 0);
+    if (includeTotal) {
+      totalByDate.set(date, totalByDate.get(date) + o.total);
+    }
+    if (!byDate.has(date)) byDate.set(date, {});
+    const bucket = byDate.get(date);
+    if (!bucket.organic) bucket.organic = {neg:0};
+    bucket.organic.neg += o.neg || 0;
+  });
+  if (featureExcludeEmpty){
+    order = order.filter(f => featureHasNeg.has(f));
+  }
+  const dates = [...totalByDate.keys()].filter(isISODate).sort();
   const series = {};
-  FEATURE_ORDER.forEach(f => { series[f] = []; });
+  order.forEach(f => { series[f] = []; });
   dates.forEach(d=>{
     const bucket = byDate.get(d) || {};
-    FEATURE_ORDER.forEach(f=>{
-      const v = bucket[f] || {neg:0,total:0};
-      series[f].push(v.total ? (v.neg / v.total * 100) : 0);
+    const dayTotal = totalByDate.get(d) || 0;
+    order.forEach(f=>{
+      const v = bucket[f] || {neg:0};
+      series[f].push(dayTotal ? (v.neg / dayTotal * 100) : 0);
     });
   });
-  return {dates, series};
+  return {dates, series, order};
+}
+
+function getFeatureControlSeries(){
+  const byDate = new Map();
+  const totalByDate = new Map();
+  const rows = selectedCompany ? serpFeatureControlEntityRows : serpFeatureControlIndexRows;
+  const order = FEATURE_ORDER_SENTIMENT;
+  const organicByDate = new Map();
+  serpsDaily.forEach(r=>{
+    if (selectedCompany && r.company !== selectedCompany) return;
+    const key = r.date;
+    if (!organicByDate.has(key)) organicByDate.set(key, {total:0, ctrl:0});
+    const o = organicByDate.get(key);
+    o.total += +r.total||0;
+    o.ctrl += +r.ctrl||0;
+  });
+  rows.forEach(r=>{
+    if (!order.includes(r.feature)) return;
+    if (!byDate.has(r.date)) byDate.set(r.date, {});
+    const bucket = byDate.get(r.date);
+    if (!bucket[r.feature]) bucket[r.feature] = {ctrl:0};
+    bucket[r.feature].ctrl += r.ctrl || 0;
+    if (!totalByDate.has(r.date)) totalByDate.set(r.date, 0);
+    totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
+  });
+  organicByDate.forEach((o, date)=>{
+    if (!byDate.has(date)) byDate.set(date, {});
+    const bucket = byDate.get(date);
+    if (!bucket.organic) bucket.organic = {ctrl:0};
+    bucket.organic.ctrl += o.ctrl || 0;
+    if (!totalByDate.has(date)) totalByDate.set(date, 0);
+    totalByDate.set(date, totalByDate.get(date) + o.total);
+  });
+  const dates = [...totalByDate.keys()].filter(isISODate).sort();
+  const series = {};
+  order.forEach(f => { series[f] = []; });
+  dates.forEach(d=>{
+    const bucket = byDate.get(d) || {};
+    const dayTotal = totalByDate.get(d) || 0;
+    order.forEach(f=>{
+      const v = bucket[f] || {ctrl:0};
+      series[f].push(dayTotal ? (v.ctrl / dayTotal * 100) : 0);
+    });
+  });
+  return {dates, series, order};
 }
 
 function renderCharts(){
   const {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct, serpNegPctAll, serpCtrlPctAll} = getDateSeries();
-  const {dates: featureDates, series: featureSeries} = getFeatureSeries();
+  const {dates: featureDates, series: featureSeries, order: featureOrder} = getFeatureSeries();
+  const {dates: featureCtrlDates, series: featureCtrlSeries, order: featureCtrlOrder} = getFeatureControlSeries();
 
   if (dateWindowStart === null){
     dateWindowStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
@@ -2103,11 +2337,20 @@ function renderCharts(){
   const sNAll = sliceWindow(serpNegPctAll, start, DATE_WINDOW_SIZE);
   const sCAll = sliceWindow(serpCtrlPctAll, start, DATE_WINDOW_SIZE);
   const featureIndex = new Map(featureDates.map((d,i)=>[d,i]));
-  const fDates = d;
-  const featureData = FEATURE_ORDER.map(f=>{
+  const fDates = featureDates.length ? featureDates : d;
+  const featureData = featureOrder.map(f=>{
     const arr = featureSeries[f] || [];
     return fDates.map(dt=>{
       const idx = featureIndex.get(dt);
+      return idx == null ? 0 : (arr[idx] || 0);
+    });
+  });
+  const featureCtrlIndex = new Map(featureCtrlDates.map((d,i)=>[d,i]));
+  const fcDates = featureCtrlDates.length ? featureCtrlDates : d;
+  const featureCtrlData = featureCtrlOrder.map(f=>{
+    const arr = featureCtrlSeries[f] || [];
+    return fcDates.map(dt=>{
+      const idx = featureCtrlIndex.get(dt);
       return idx == null ? 0 : (arr[idx] || 0);
     });
   });
@@ -2214,7 +2457,7 @@ function renderCharts(){
     type: 'line',
     data: {
       labels: fDates,
-      datasets: FEATURE_ORDER.map((feature, idx) => ({
+      datasets: featureOrder.map((feature, idx) => ({
         label: FEATURE_LABELS[feature] || feature,
         data: featureData[idx],
         tension: 0.2,
@@ -2233,9 +2476,67 @@ function renderCharts(){
         y: { ...commonOpts.scales.y, stacked: true },
         x: { ...commonOpts.scales.x, stacked: true }
       },
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         ...commonOpts.plugins,
-        title: { ...commonOpts.plugins.title, text: `${who} • SERP Feature Negativity` }
+        tooltip: {
+          ...commonOpts.plugins.tooltip,
+          mode: 'index',
+          intersect: false,
+          callbacks: {
+            ...commonOpts.plugins.tooltip.callbacks,
+            footer: (items) => {
+              const total = items.reduce((sum, i) => sum + (i.parsed?.y || 0), 0);
+              return `Total negative: ${Math.round(total)}`;
+            }
+          }
+        },
+        title: { ...commonOpts.plugins.title, text: `${who} • SERP Feature Negative Share` }
+      }
+    }
+  });
+
+  const fch = document.getElementById('featureControlChart').getContext('2d');
+  if (featureControlChart) featureControlChart.destroy();
+  featureControlChart = new Chart(fch, {
+    type: 'line',
+    data: {
+      labels: fcDates,
+      datasets: featureCtrlOrder.map((feature, idx) => ({
+        label: FEATURE_LABELS[feature] || feature,
+        data: featureCtrlData[idx],
+        tension: 0.2,
+        fill: true,
+        borderWidth: 1,
+        borderColor: CONTROL_COLORS[idx % CONTROL_COLORS.length],
+        backgroundColor: (CONTROL_COLORS[idx % CONTROL_COLORS.length] + '66'),
+        pointRadius: 0,
+        stack: 'features'
+      }))
+    },
+    options: {
+      ...commonOpts,
+      scales: {
+        ...commonOpts.scales,
+        y: { ...commonOpts.scales.y, stacked: true },
+        x: { ...commonOpts.scales.x, stacked: true }
+      },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        ...commonOpts.plugins,
+        tooltip: {
+          ...commonOpts.plugins.tooltip,
+          mode: 'index',
+          intersect: false,
+          callbacks: {
+            ...commonOpts.plugins.tooltip.callbacks,
+            footer: (items) => {
+              const total = items.reduce((sum, i) => sum + (i.parsed?.y || 0), 0);
+              return `Total control: ${Math.round(total)}`;
+            }
+          }
+        },
+        title: { ...commonOpts.plugins.title, text: `${who} • SERP Feature Control Share` }
       }
     }
   });
@@ -2285,6 +2586,24 @@ function updateCachedOverrides(mentionId, serpResultId, updates){
   }
 }
 
+function updateCachedFeatureItems(featureItemId, updates){
+  if (!featureItemId) return;
+  _serpFeatureItemsCache.forEach((rows, key) => {
+    if (!Array.isArray(rows)) return;
+    rows.forEach(r => {
+      if (String(r.id||'') !== String(featureItemId)) return;
+      if (updates.sentiment_override !== undefined) {
+        r.sentiment_override = updates.sentiment_override;
+        if (updates.sentiment_override) r.sentiment = updates.sentiment_override;
+      }
+      if (updates.control_override !== undefined) {
+        r.control_override = updates.control_override;
+        if (updates.control_override) r.control_class = updates.control_override;
+      }
+    });
+  });
+}
+
 function setEditFlags(card){
   const sentimentOverride = card.getAttribute('data-sentiment-override') || '';
   const controlOverride = card.getAttribute('data-control-override') || '';
@@ -2319,6 +2638,7 @@ modalContent.addEventListener('change', async (e) => {
   if (!card) return;
   const mentionId = card.getAttribute('data-mention-id');
   const serpResultId = card.getAttribute('data-serp-result-id');
+  const serpFeatureItemId = card.getAttribute('data-serp-feature-item-id');
   const riskSel = card.querySelector('.edit-risk');
   const ctrlSel = card.querySelector('.edit-controlled');
   const riskVal = riskSel ? riskSel.value || null : null;
@@ -2329,7 +2649,7 @@ modalContent.addEventListener('change', async (e) => {
   const prevControlOverride = card.getAttribute('data-control-override') || '';
   const status = card.querySelector('.edit-status');
   updatePillClasses(card);
-  if ((!mentionId && !serpResultId) || (!riskVal && ctrlVal === null)) {
+  if ((!mentionId && !serpResultId && !serpFeatureItemId) || (!riskVal && ctrlVal === null)) {
     if (status) status.textContent = 'Select a value';
     return;
   }
@@ -2341,16 +2661,27 @@ modalContent.addEventListener('change', async (e) => {
     card.setAttribute('data-current-control', controlOverride || '');
   }
   card.setAttribute('data-current-sentiment', riskVal || '');
-  updateCachedOverrides(mentionId, serpResultId, {
-    sentiment_override: riskVal,
-    control_override: ctrlSel ? controlOverride : undefined
-  });
+  if (serpFeatureItemId) {
+    updateCachedFeatureItems(serpFeatureItemId, {
+      sentiment_override: riskVal,
+      control_override: ctrlSel ? controlOverride : undefined
+    });
+  } else {
+    updateCachedOverrides(mentionId, serpResultId, {
+      sentiment_override: riskVal,
+      control_override: ctrlSel ? controlOverride : undefined
+    });
+  }
   setEditFlags(card);
   try {
+    const mentionType = mentionId
+      ? 'company_article'
+      : (serpResultId ? 'serp_result' : 'serp_feature_item');
     const payload = {
-      mention_type: mentionId ? 'company_article' : 'serp_result',
+      mention_type: mentionType,
       mention_id: mentionId || undefined,
       serp_result_id: serpResultId || undefined,
+      serp_feature_item_id: serpFeatureItemId || undefined,
       sentiment_override: riskVal,
       control_override: controlOverride,
       note: 'dashboard edit'
@@ -2362,10 +2693,17 @@ modalContent.addEventListener('change', async (e) => {
     card.setAttribute('data-control-override', prevControlOverride);
     card.setAttribute('data-current-sentiment', prevSentiment);
     if (ctrlSel) card.setAttribute('data-current-control', prevControl);
-    updateCachedOverrides(mentionId, serpResultId, {
-      sentiment_override: prevSentimentOverride || null,
-      control_override: ctrlSel ? (prevControlOverride || null) : undefined
-    });
+    if (serpFeatureItemId) {
+      updateCachedFeatureItems(serpFeatureItemId, {
+        sentiment_override: prevSentimentOverride || null,
+        control_override: ctrlSel ? (prevControlOverride || null) : undefined
+      });
+    } else {
+      updateCachedOverrides(mentionId, serpResultId, {
+        sentiment_override: prevSentimentOverride || null,
+        control_override: ctrlSel ? (prevControlOverride || null) : undefined
+      });
+    }
     if (riskSel) riskSel.value = prevSentiment || 'neutral';
     if (ctrlSel) ctrlSel.value = prevControl ? (prevControl === 'controlled' ? 'true' : 'false') : '';
     updatePillClasses(card);
@@ -2512,6 +2850,270 @@ async function showSerp({company}){
 
   openModal(`SERP — ${esc(company)}`, `${metrics}<div class="serp-cards">${cards}</div>`);
   modalContent.querySelectorAll('.serp-card').forEach(updatePillClasses);
+}
+
+async function fetchSerpFeatureItems(date, company, feature, offset, limit){
+  const key = `${date}|${company}|${feature}|${offset}|${limit}`;
+  if (_serpFeatureItemsCache.has(key)) return _serpFeatureItemsCache.get(key);
+  const rows = await fetchCsv(SERP_FEATURE_ITEMS_PATH(date, company, feature, offset, limit));
+  _serpFeatureItemsCache.set(key, rows);
+  return rows;
+}
+
+async function showSerpFeatures({company}){
+  const d = document.getElementById('dateSelect').value;
+  await loadSerpFeaturesForEntity(company);
+  const totalsByFeature = new Map();
+  serpFeatureEntityRows.forEach(r=>{
+    if (r.date !== d || r.entity !== company) return;
+    totalsByFeature.set(r.feature, (totalsByFeature.get(r.feature) || 0) + (r.total || 0));
+  });
+  const options = FEATURE_MODAL_ORDER.map(f=>{
+    const count = totalsByFeature.get(f) ?? 0;
+    const label = FEATURE_LABELS[f] || f;
+    return `<option value="${f}">${label} (${count})</option>`;
+  }).join('');
+  openModal(`SERP Features — ${esc(company)}`, `
+    <div class="serp-metrics">
+      <label for="serpFeatureSelect"><b>Feature</b></label>
+      <select id="serpFeatureSelect">${options}</select>
+      <span id="serpFeatureTotal" class="muted" style="margin-left:12px"></span>
+    </div>
+    <div id="serpFeatureCounts" class="muted" style="margin-top:6px"></div>
+    <div id="serpFeatureViz" class="serp-feature-viz" style="margin-top:10px">
+      <div style="flex:1 1 220px;height:220px">
+        <canvas id="serpFeatureSentChart"></canvas>
+      </div>
+      <div style="flex:1 1 220px;height:220px">
+        <canvas id="serpFeatureControlChart"></canvas>
+      </div>
+    <div id="serpFeatureSummary" class="serp-card" style="flex:2 1 320px">
+      <h3 style="margin:0 0 6px">AI Summary</h3>
+      <div class="serp-snippet muted">Loading summary…</div>
+    </div>
+    </div>
+    <div id="serpFeatureList" class="serp-cards"><div class="muted">Loading…</div></div>
+    <div class="pagination" id="serpFeaturePager" style="display:none">
+      <button id="serpFeatureMore">Load more</button>
+    </div>
+  `);
+  const select = modalContent.querySelector('#serpFeatureSelect');
+  const listEl = modalContent.querySelector('#serpFeatureList');
+  const totalEl = modalContent.querySelector('#serpFeatureTotal');
+  const countsEl = modalContent.querySelector('#serpFeatureCounts');
+  const summaryEl = modalContent.querySelector('#serpFeatureSummary');
+  const vizEl = modalContent.querySelector('#serpFeatureViz');
+  if (summaryEl) summaryEl.style.display = 'none';
+  if (vizEl) vizEl.style.display = 'none';
+  const sentCtx = modalContent.querySelector('#serpFeatureSentChart').getContext('2d');
+  const ctrlCtx = modalContent.querySelector('#serpFeatureControlChart').getContext('2d');
+  let featureSentChart = null;
+  let featureCtrlChart = null;
+  const pager = modalContent.querySelector('#serpFeaturePager');
+  const moreBtn = modalContent.querySelector('#serpFeatureMore');
+  let currentOffset = 0;
+
+  async function renderFeature(reset = false){
+    const feature = select.value;
+    if (reset){
+      currentOffset = 0;
+      listEl.innerHTML = '<div class="muted">Loading…</div>';
+    }
+    let rows = [];
+    try{
+      rows = await fetchSerpFeatureItems(d, company, feature, currentOffset, FEATURE_MODAL_LIMIT);
+    }catch(e){
+      listEl.innerHTML = `<div class="muted">Could not load ${FEATURE_LABELS[feature] || feature} items.</div>`;
+      return;
+    }
+    if (!rows.length && currentOffset === 0){
+      listEl.innerHTML = `<div class="muted">No ${FEATURE_LABELS[feature] || feature} items for ${esc(company)} on ${d}.</div>`;
+      pager.style.display = 'none';
+      return;
+    }
+    const cards = rows.map(r=>{
+      const url = String(r.url||'').trim();
+      const itemId = String(r.id||'').trim();
+      let domain = String(r.domain||'').trim();
+      if (!domain && url){ try{ domain=new URL(url).hostname.replace(/^www\./,''); }catch{} }
+      const source = esc(r.source||'');
+      const sourceLabel = source || domain;
+      const title = esc(r.title||domain||'(no title)');
+      const link = url ? `<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>` : `<span class="muted">${title}</span>`;
+      const snippet = esc(r.snippet||'');
+      const sRaw = String(r.sentiment||'').toLowerCase();
+      const s = sRaw==='positive'?'positive':(sRaw==='negative'?'negative':'neutral');
+      const ctrl = String(r.control_class||'').toLowerCase();
+      const flags = flagIcons(r);
+      return `<div class="serp-card"
+        data-serp-feature-item-id="${esc(itemId)}"
+        data-sentiment-override="${esc(r.sentiment_override||'')}"
+        data-control-override="${esc(r.control_override||'')}"
+        data-llm-label="${esc(r.llm_label||'')}"
+        data-current-sentiment="${esc(s)}"
+        data-current-control="${esc(ctrl)}">
+        <div class="serp-domain">${esc(sourceLabel || '')}</div>
+        <div class="serp-title">${link}</div>
+        ${snippet ? `<div class="serp-snippet">${snippet}</div>` : ''}
+        ${flags ? `<div class="edit-flags">${flags}</div>` : ''}
+        <div class="edit-controls">
+          <select class="edit-risk">
+            <option value="positive" ${s==='positive'?'selected':''}>Positive</option>
+            <option value="neutral" ${s==='neutral'?'selected':''}>Neutral</option>
+            <option value="negative" ${s==='negative'?'selected':''}>Negative</option>
+          </select>
+          <select class="edit-controlled">
+            <option value="">–</option>
+            <option value="true" ${ctrl==='controlled'?'selected':''}>Controlled</option>
+            <option value="false" ${ctrl==='uncontrolled'?'selected':''}>Uncontrolled</option>
+          </select>
+          <span class="edit-status muted"></span>
+        </div>
+      </div>`;
+    }).join('');
+    if (currentOffset === 0) {
+      listEl.innerHTML = cards;
+    } else {
+      listEl.insertAdjacentHTML('beforeend', cards);
+    }
+    modalContent.querySelectorAll('.serp-card').forEach(updatePillClasses);
+    modalContent.querySelectorAll('.serp-card').forEach(setEditFlags);
+    if (rows.length === FEATURE_MODAL_LIMIT) {
+      pager.style.display = 'flex';
+    } else {
+      pager.style.display = 'none';
+    }
+  }
+
+  async function renderFeatureSeries(){
+    const feature = select.value;
+    let series = [];
+    try{
+      series = await fetchCsv(SERP_FEATURE_SERIES_PATH(company, feature, FEATURE_MODAL_DAYS));
+    }catch{
+      if (featureChartModal) featureChartModal.destroy();
+      return;
+    }
+    const dates = series.map(r=>String(r.date||'').trim()).filter(isISODate);
+    let countsForDate = null;
+    let totalForDate = null;
+    series.forEach(r=>{
+      const total = +r.total_count || 0;
+      const p = +r.positive_count || 0;
+      const n = +r.neutral_count || 0;
+      const g = +r.negative_count || 0;
+      const c = +r.controlled_count || 0;
+      if (String(r.date||'') === d) {
+        totalForDate = total;
+        countsForDate = {pos:p, neu:n, neg:g, ctrl:c, total};
+      }
+    });
+    if (totalEl) {
+      totalEl.textContent = totalForDate != null ? `Total URLs: ${totalForDate}` : '';
+    }
+    if (countsEl) {
+      countsEl.textContent = countsForDate
+        ? `Counts for ${d}: ${countsForDate.pos} positive, ${countsForDate.neu} neutral, ${countsForDate.neg} negative (total ${countsForDate.total})`
+        : '';
+    }
+    if (featureSentChart) featureSentChart.destroy();
+    if (featureCtrlChart) featureCtrlChart.destroy();
+    if (!countsForDate || !countsForDate.total){
+      if (vizEl) vizEl.style.display = 'none';
+      if (summaryEl) summaryEl.style.display = 'none';
+      if (countsEl) countsEl.textContent = `No items for ${d}.`;
+      return;
+    }
+    if (vizEl) vizEl.style.display = 'flex';
+    const negativeCount = countsForDate.neg;
+    const sentimentData = [negativeCount, Math.max(0, countsForDate.total - negativeCount)];
+    const uncontrolled = Math.max(0, countsForDate.total - countsForDate.ctrl);
+    const controlData = [countsForDate.ctrl, uncontrolled];
+    const pct = (n, d) => d ? Math.round((n / d) * 100) : 0;
+    const sentimentPct = pct(negativeCount, countsForDate.total);
+    const controlPct = pct(countsForDate.ctrl, countsForDate.total);
+    const centerTextPlugin = (text) => ({
+      id: `centerText-${text}`,
+      afterDraw(chart) {
+        const {ctx} = chart;
+        if (!ctx) return;
+        const {left, right, top, bottom} = chart.chartArea;
+        const x = (left + right) / 2;
+        const y = (top + bottom) / 2;
+        ctx.save();
+        ctx.fillStyle = '#ebf2f2';
+        ctx.font = '600 20px "Manrope", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, x, y);
+        ctx.restore();
+      }
+    });
+    featureSentChart = new Chart(sentCtx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Negative', 'Other'],
+        datasets: [{
+          data: sentimentData,
+          backgroundColor: ['#ff826166', 'rgba(207,219,221,0.08)'],
+          borderColor: ['#ff8261', '#cfdbdd'],
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#ebf2f2' } } }
+      },
+      plugins: [centerTextPlugin(`${sentimentPct}%`)]
+    });
+    featureCtrlChart = new Chart(ctrlCtx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Controlled', 'Uncontrolled/Unknown'],
+        datasets: [{
+          data: controlData,
+          backgroundColor: ['#58dbed66', 'rgba(88,219,237,0.03)'],
+          borderColor: ['#58dbed', '#58dbed'],
+          borderWidth: [1, 2]
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#ebf2f2' } } }
+      },
+      plugins: [centerTextPlugin(`${controlPct}%`)]
+    });
+  }
+
+  async function renderFeatureSummary(){
+    if (!summaryEl) return;
+    const feature = select.value;
+    summaryEl.querySelector('.serp-snippet').textContent = 'Loading summary…';
+    try{
+      const data = await fetchCsv(`/api/internal/serp_feature_summary?date=${d}&entity=brand&entity_name=${encodeURIComponent(company)}&feature_type=${encodeURIComponent(feature)}`);
+      const text = (data && data.summary) ? data.summary : '';
+      summaryEl.querySelector('.serp-snippet').textContent = text || 'No summary available.';
+      summaryEl.style.display = 'block';
+    }catch{
+      summaryEl.querySelector('.serp-snippet').textContent = 'Summary unavailable.';
+      summaryEl.style.display = 'block';
+    }
+  }
+
+  select.addEventListener('change', async () => {
+    await renderFeatureSeries();
+    await renderFeatureSummary();
+    renderFeature(true);
+  });
+  moreBtn.addEventListener('click', () => {
+    currentOffset += FEATURE_MODAL_LIMIT;
+    renderFeature(false);
+  });
+  await renderFeatureSeries();
+  await renderFeatureSummary();
+  await renderFeature(true);
 }
 
 /********************** Init **********************/
