@@ -103,6 +103,25 @@ def fetch_article_map(conn, urls):
         return {u: aid for u, aid in cur.fetchall()}
 
 
+def ensure_daily_partitions(cur, dt: datetime) -> None:
+    start = dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    suffix = start.strftime("%Y_%m")
+    for table in ("company_article_mentions_daily", "ceo_article_mentions_daily"):
+        part = f"{table}_{suffix}"
+        cur.execute(
+            f"""
+            create table if not exists {part}
+            partition of {table}
+            for values from (%s) to (%s)
+            """,
+            (start.date(), end.date()),
+        )
+
+
 def ingest_article_mentions(conn, file_obj, entity_type, date_str):
     reader = csv.DictReader(file_obj)
     now = datetime.now(timezone.utc)
@@ -165,6 +184,7 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
 
     if entity_type == 'company':
         insert_rows = []
+        daily_rows = []
         for company_id, canonical, sentiment, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason, dstr in mentions:
             article_id = article_map.get(canonical)
             if not article_id:
@@ -172,6 +192,9 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
             insert_rows.append((
                 company_id, article_id, sentiment, finance_routine, uncertain, uncertain_reason,
                 llm_label, llm_severity, llm_reason, scored_at, 'vader'
+            ))
+            daily_rows.append((
+                scored_at.date(), company_id, article_id, sentiment, None, finance_routine, uncertain
             ))
         if insert_rows:
             sql = """
@@ -193,9 +216,26 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
             """
             with conn:
                 with conn.cursor() as cur:
+                    ensure_daily_partitions(cur, scored_at)
                     execute_values(cur, sql, insert_rows, page_size=1000)
+        if daily_rows:
+            sql = """
+                insert into company_article_mentions_daily (
+                  date, company_id, article_id, sentiment_label, control_class, finance_routine, uncertain
+                )
+                values %s
+                on conflict (date, company_id, article_id) do update set
+                  sentiment_label = excluded.sentiment_label,
+                  finance_routine = excluded.finance_routine,
+                  uncertain = excluded.uncertain
+            """
+            with conn:
+                with conn.cursor() as cur:
+                    ensure_daily_partitions(cur, scored_at)
+                    execute_values(cur, sql, daily_rows, page_size=1000)
     else:
         insert_rows = []
+        daily_rows = []
         for ceo_id, canonical, sentiment, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason, dstr in mentions:
             article_id = article_map.get(canonical)
             if not article_id:
@@ -203,6 +243,9 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
             insert_rows.append((
                 ceo_id, article_id, sentiment, finance_routine, uncertain, uncertain_reason,
                 llm_label, llm_severity, llm_reason, scored_at, 'vader'
+            ))
+            daily_rows.append((
+                scored_at.date(), ceo_id, article_id, sentiment, None, finance_routine, uncertain
             ))
         if insert_rows:
             sql = """
@@ -224,7 +267,23 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
             """
             with conn:
                 with conn.cursor() as cur:
+                    ensure_daily_partitions(cur, scored_at)
                     execute_values(cur, sql, insert_rows, page_size=1000)
+        if daily_rows:
+            sql = """
+                insert into ceo_article_mentions_daily (
+                  date, ceo_id, article_id, sentiment_label, control_class, finance_routine, uncertain
+                )
+                values %s
+                on conflict (date, ceo_id, article_id) do update set
+                  sentiment_label = excluded.sentiment_label,
+                  finance_routine = excluded.finance_routine,
+                  uncertain = excluded.uncertain
+            """
+            with conn:
+                with conn.cursor() as cur:
+                    ensure_daily_partitions(cur, scored_at)
+                    execute_values(cur, sql, daily_rows, page_size=1000)
 
 
 def ingest_serp_results(conn, file_obj, entity_type, date_str):

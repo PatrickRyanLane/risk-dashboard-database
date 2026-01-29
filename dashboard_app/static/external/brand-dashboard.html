@@ -650,18 +650,6 @@ body:has(#stockChartModal.open) {
 
   <div class="grid">
     <div class="chart-card">
-      <h3>News sentiment (percent of articles)</h3>
-      <div class="chart-actions">
-        <span class="dates-range muted" aria-live="polite"></span>
-        <div class="dates-pager">
-          <button class="dates-prev" title="Older window">←</button>
-          <button class="dates-next" title="Newer window">→</button>
-        </div>
-      </div>
-      <canvas id="newsChart"></canvas>
-    </div>
-
-    <div class="chart-card">
       <h3>SERP Feature Negativity (stacked)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
@@ -669,11 +657,6 @@ body:has(#stockChartModal.open) {
           <button class="dates-prev" title="Older window">←</button>
           <button class="dates-next" title="Newer window">→</button>
         </div>
-        <label class="toggle-switch" style="margin-left:auto">
-          <input type="checkbox" id="featureExcludeEmpty" />
-          <span class="toggle-slider"></span>
-          <span class="toggle-text">Exclude zero-negative features</span>
-        </label>
       </div>
       <canvas id="featureChart"></canvas>
     </div>
@@ -691,7 +674,19 @@ body:has(#stockChartModal.open) {
     </div>
 
     <div class="chart-card">
-      <h3>SERP (Negative % • Control %)</h3>
+      <h3>News sentiment (percent of articles)</h3>
+      <div class="chart-actions">
+        <span class="dates-range muted" aria-live="polite"></span>
+        <div class="dates-pager">
+          <button class="dates-prev" title="Older window">←</button>
+          <button class="dates-next" title="Newer window">→</button>
+        </div>
+      </div>
+      <canvas id="newsChart"></canvas>
+    </div>
+
+    <div class="chart-card">
+      <h3>Organic Search (Negative % • Control %)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
         <div class="dates-pager">
@@ -833,7 +828,6 @@ let filteredRows  = [];
 let selectedCompany = null;
 let currentSort = { key:null, dir:1 };
 let currentPage = 1;
-let featureExcludeEmpty = false;
 const PAGE_SIZE = 25;
 
 function updateEntityUrlParam(param, value){
@@ -871,8 +865,8 @@ const FEATURE_LABELS = {
   top_stories_items: 'Top stories',
   top_stories: 'Top stories'
 };
-const FEATURE_COLORS = ['#f2c14e', '#ffb3a6', '#ff9f8e', '#ff8b77', '#ff7660', '#ff5e45'];
-const CONTROL_COLORS = ['#58dbed', '#4fb7d8', '#3f94c3', '#2f72ad', '#1f5197', '#133c80'];
+const FEATURE_COLORS = ['#ff3b30', '#ff5e57', '#ff7a59', '#ff9f43', '#ff6f91', '#e63946'];
+const CONTROL_COLORS = ['#2d9cdb', '#1b84d1', '#1769aa', '#115293', '#0d3b66', '#0a2742'];
 const _loadLabels = {
   news: 'News sentiment',
   serps: 'SERP metrics',
@@ -1905,13 +1899,6 @@ async function init(){
     updateEntityUrlParam('company', null);
     renderAll();
   };
-  const featureToggle = document.getElementById('featureExcludeEmpty');
-  if (featureToggle){
-    featureToggle.addEventListener('change', ()=>{
-      featureExcludeEmpty = featureToggle.checked;
-      renderAll();
-    });
-  }
   document.getElementById('fullHistoryBtn').onclick = async ()=>{
     if (currentDays >= FULL_DAYS) return;
     currentDays = FULL_DAYS;
@@ -2193,7 +2180,6 @@ function getDateSeries(){
 function getFeatureSeries(){
   const byDate = new Map();
   const totalByDate = new Map();
-  const featureHasNeg = new Set();
   const rows = selectedCompany ? serpFeatureEntityRows : serpFeatureIndexRows;
   const hasSentiment = rows.some(r => FEATURE_ORDER_SENTIMENT.includes(r.feature));
   let order = hasSentiment ? FEATURE_ORDER_SENTIMENT : FEATURE_ORDER_BASE;
@@ -2207,12 +2193,8 @@ function getFeatureSeries(){
     o.neg += +r.neg_serp||0;
   });
   rows.forEach(r=>{
-    if (r.neg && r.neg > 0) featureHasNeg.add(r.feature);
     if (!totalByDate.has(r.date)) totalByDate.set(r.date, 0);
-    const includeTotal = !featureExcludeEmpty || (r.neg && r.neg > 0);
-    if (includeTotal) {
-      totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
-    }
+    totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
     if (!order.includes(r.feature)) return;
     if (!byDate.has(r.date)) byDate.set(r.date, {});
     const bucket = byDate.get(r.date);
@@ -2220,20 +2202,13 @@ function getFeatureSeries(){
     bucket[r.feature].neg += r.neg || 0;
   });
   organicByDate.forEach((o, date)=>{
-    if (o.neg > 0) featureHasNeg.add('organic');
     if (!totalByDate.has(date)) totalByDate.set(date, 0);
-    const includeTotal = !featureExcludeEmpty || (o.neg > 0);
-    if (includeTotal) {
-      totalByDate.set(date, totalByDate.get(date) + o.total);
-    }
+    totalByDate.set(date, totalByDate.get(date) + o.total);
     if (!byDate.has(date)) byDate.set(date, {});
     const bucket = byDate.get(date);
     if (!bucket.organic) bucket.organic = {neg:0};
     bucket.organic.neg += o.neg || 0;
   });
-  if (featureExcludeEmpty){
-    order = order.filter(f => featureHasNeg.has(f));
-  }
   const dates = [...totalByDate.keys()].filter(isISODate).sort();
   const series = {};
   order.forEach(f => { series[f] = []; });
@@ -2438,7 +2413,7 @@ function renderCharts(){
         fill: true,
         borderWidth: 1,
         borderColor: FEATURE_COLORS[idx],
-        backgroundColor: FEATURE_COLORS[idx] + '66',
+        backgroundColor: FEATURE_COLORS[idx] + 'b3',
         pointRadius: 0,
         stack: 'features'
       }))
@@ -2483,7 +2458,7 @@ function renderCharts(){
         fill: true,
         borderWidth: 1,
         borderColor: CONTROL_COLORS[idx % CONTROL_COLORS.length],
-        backgroundColor: (CONTROL_COLORS[idx % CONTROL_COLORS.length] + '66'),
+        backgroundColor: (CONTROL_COLORS[idx % CONTROL_COLORS.length] + 'b3'),
         pointRadius: 0,
         stack: 'features'
       }))

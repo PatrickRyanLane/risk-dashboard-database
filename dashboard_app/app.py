@@ -360,10 +360,10 @@ def available_dates():
     scope_sql, params = scope_clause("c.id", params)
     rows = query_rows(
         f"""
-        select distinct cam.scored_at::date as date
-        from company_article_mentions cam
-        join companies c on c.id = cam.company_id
-        where cam.scored_at is not null {scope_sql}
+        select distinct cad.date as date
+        from company_article_mentions_daily cad
+        join companies c on c.id = cad.company_id
+        where cad.date is not null {scope_sql}
         order by date desc
         """,
         tuple(params),
@@ -394,23 +394,23 @@ def daily_counts_json():
         date_sql = ""
         if days:
             params.append(days)
-            date_sql = "and cam.scored_at::date >= (current_date - (%s || ' days')::interval)"
+            date_sql = "and cad.date >= (current_date - (%s || ' days')::interval)"
         rows = query_dict(
             f"""
-            select cam.scored_at::date as date, c.name as company,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+            select cad.date as date, c.name as company,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='positive' then 1 else 0 end) as positive,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end) as negative,
               count(*) as total,
               case when count(*) > 0
-                then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
+                then round((sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
                 else 0 end as neg_pct
-            from company_article_mentions cam
-            join companies c on c.id = cam.company_id
-            left join company_article_overrides ov on ov.company_id = cam.company_id and ov.article_id = cam.article_id
-            where cam.scored_at is not null {scope_sql} {date_sql}
-            group by cam.scored_at::date, c.name
-            order by cam.scored_at::date, c.name
+            from company_article_mentions_daily cad
+            join companies c on c.id = cad.company_id
+            left join company_article_overrides ov on ov.company_id = cad.company_id and ov.article_id = cad.article_id
+            where cad.date is not null {scope_sql} {date_sql}
+            group by cad.date, c.name
+            order by cad.date, c.name
             """,
             tuple(params),
         )
@@ -423,26 +423,26 @@ def daily_counts_json():
         date_sql = ""
         if days:
             params.append(days)
-            date_sql = "and cam.scored_at::date >= (current_date - (%s || ' days')::interval)"
+            date_sql = "and cad.date >= (current_date - (%s || ' days')::interval)"
         rows = query_dict(
             f"""
-            select cam.scored_at::date as date, ceo.name as ceo, c.name as company,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+            select cad.date as date, ceo.name as ceo, c.name as company,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='positive' then 1 else 0 end) as positive,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end) as negative,
               count(*) as total,
               case when count(*) > 0
-                then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
+                then round((sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
                 else 0 end as neg_pct,
               '' as theme,
               coalesce(ceo.alias, '') as alias
-            from ceo_article_mentions cam
-            join ceos ceo on ceo.id = cam.ceo_id
+            from ceo_article_mentions_daily cad
+            join ceos ceo on ceo.id = cad.ceo_id
             join companies c on c.id = ceo.company_id
-            left join ceo_article_overrides ov on ov.ceo_id = cam.ceo_id and ov.article_id = cam.article_id
-            where cam.scored_at is not null {scope_sql} {date_sql}
-            group by cam.scored_at::date, ceo.name, c.name, ceo.alias
-            order by cam.scored_at::date, ceo.name
+            left join ceo_article_overrides ov on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+            where cad.date is not null {scope_sql} {date_sql}
+            group by cad.date, ceo.name, c.name, ceo.alias
+            order by cad.date, ceo.name
             """,
             tuple(params),
         )
@@ -1262,20 +1262,20 @@ def brand_articles_daily_counts():
     scope_sql, params = scope_clause("c.id", params)
     rows = query_rows(
         f"""
-        select cam.scored_at::date as date, c.name as company,
-          sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-          sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-          sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+        select cad.date as date, c.name as company,
+          sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='positive' then 1 else 0 end) as positive,
+          sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+          sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end) as negative,
           count(*) as total,
           case when count(*) > 0
-            then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
+            then round((sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
             else 0 end as neg_pct
-        from company_article_mentions cam
-        join companies c on c.id = cam.company_id
-        left join company_article_overrides ov on ov.company_id = cam.company_id and ov.article_id = cam.article_id
-        where cam.scored_at is not null {scope_sql}
-        group by cam.scored_at::date, c.name
-        order by cam.scored_at::date, c.name
+        from company_article_mentions_daily cad
+        join companies c on c.id = cad.company_id
+        left join company_article_overrides ov on ov.company_id = cad.company_id and ov.article_id = cad.article_id
+        where cad.date is not null {scope_sql}
+        group by cad.date, c.name
+        order by cad.date, c.name
         """,
         tuple(params),
     )
@@ -1288,23 +1288,23 @@ def ceo_articles_daily_counts():
     scope_sql, params = scope_clause("c.id", params)
     rows = query_rows(
         f"""
-        select cam.scored_at::date as date, ceo.name as ceo, c.name as company,
-          sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-          sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-          sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+        select cad.date as date, ceo.name as ceo, c.name as company,
+          sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='positive' then 1 else 0 end) as positive,
+          sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+          sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end) as negative,
           count(*) as total,
           case when count(*) > 0
-            then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
+            then round((sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
             else 0 end as neg_pct,
           '' as theme,
           coalesce(ceo.alias, '') as alias
-        from ceo_article_mentions cam
-        join ceos ceo on ceo.id = cam.ceo_id
+        from ceo_article_mentions_daily cad
+        join ceos ceo on ceo.id = cad.ceo_id
         join companies c on c.id = ceo.company_id
-        left join ceo_article_overrides ov on ov.ceo_id = cam.ceo_id and ov.article_id = cam.article_id
-        where cam.scored_at is not null {scope_sql}
-        group by cam.scored_at::date, ceo.name, c.name, ceo.alias
-        order by cam.scored_at::date, ceo.name
+        left join ceo_article_overrides ov on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+        where cad.date is not null {scope_sql}
+        group by cad.date, ceo.name, c.name, ceo.alias
+        order by cad.date, ceo.name
         """,
         tuple(params),
     )
@@ -1376,16 +1376,17 @@ def processed_articles_csv(filename: str):
             rows = query_rows(
                 f"""
                 select c.name as company, a.title, a.canonical_url as url, a.publisher as source,
-                       coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label) as sentiment,
+                       coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                        ov.override_sentiment_label as sentiment_override,
                        ov.override_control_class as control_override,
-                       coalesce(cam.llm_sentiment_label, cam.llm_risk_label) as llm_label,
-                       cam.id as mention_id
-                from company_article_mentions cam
-                join companies c on c.id = cam.company_id
-                join articles a on a.id = cam.article_id
-                left join company_article_overrides ov on ov.company_id = cam.company_id and ov.article_id = cam.article_id
-                where cam.scored_at::date = %s {scope_sql}
+                       coalesce(cm.llm_sentiment_label, cm.llm_risk_label) as llm_label,
+                       cm.id as mention_id
+                from company_article_mentions_daily cad
+                join companies c on c.id = cad.company_id
+                join articles a on a.id = cad.article_id
+                left join company_article_mentions cm on cm.company_id = cad.company_id and cm.article_id = cad.article_id
+                left join company_article_overrides ov on ov.company_id = cad.company_id and ov.article_id = cad.article_id
+                where cad.date = %s {scope_sql}
                 order by c.name, a.title
                 """,
                 tuple(params)
@@ -1397,17 +1398,18 @@ def processed_articles_csv(filename: str):
             rows = query_rows(
                 f"""
                 select ceo.name as ceo, c.name as company, a.title, a.canonical_url as url, a.publisher as source,
-                       coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label) as sentiment,
+                       coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                        ov.override_sentiment_label as sentiment_override,
                        ov.override_control_class as control_override,
-                       coalesce(cam.llm_sentiment_label, cam.llm_risk_label) as llm_label,
-                       cam.id as mention_id
-                from ceo_article_mentions cam
-                join ceos ceo on ceo.id = cam.ceo_id
+                       coalesce(cm.llm_sentiment_label, cm.llm_risk_label) as llm_label,
+                       cm.id as mention_id
+                from ceo_article_mentions_daily cad
+                join ceos ceo on ceo.id = cad.ceo_id
                 join companies c on c.id = ceo.company_id
-                join articles a on a.id = cam.article_id
-                left join ceo_article_overrides ov on ov.ceo_id = cam.ceo_id and ov.article_id = cam.article_id
-                where cam.scored_at::date = %s {scope_sql}
+                join articles a on a.id = cad.article_id
+                left join ceo_article_mentions cm on cm.ceo_id = cad.ceo_id and cm.article_id = cad.article_id
+                left join ceo_article_overrides ov on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+                where cad.date = %s {scope_sql}
                 order by ceo.name, a.title
                 """,
                 tuple(params)
@@ -1422,19 +1424,19 @@ def processed_articles_csv(filename: str):
         scope_sql, params = scope_clause("c.id", params)
         rows = query_rows(
             f"""
-            select cam.scored_at::date as date, c.name as company,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+            select cad.date as date, c.name as company,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='positive' then 1 else 0 end) as positive,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end) as negative,
               count(*) as total,
               case when count(*) > 0
-                then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
+                then round((sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 6)
                 else 0 end as neg_pct
-            from company_article_mentions cam
-            join companies c on c.id = cam.company_id
-            left join company_article_overrides ov on ov.company_id = cam.company_id and ov.article_id = cam.article_id
-            where cam.scored_at::date = %s {scope_sql}
-            group by cam.scored_at::date, c.name
+            from company_article_mentions_daily cad
+            join companies c on c.id = cad.company_id
+            left join company_article_overrides ov on ov.company_id = cad.company_id and ov.article_id = cad.article_id
+            where cad.date = %s {scope_sql}
+            group by cad.date, c.name
             order by c.name
             """,
             tuple(params)
@@ -1445,22 +1447,22 @@ def processed_articles_csv(filename: str):
         scope_sql, params = scope_clause("c.id", params)
         rows = query_rows(
             f"""
-            select cam.scored_at::date as date, ceo.name as ceo, c.name as company,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='positive' then 1 else 0 end) as positive,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='neutral' then 1 else 0 end) as neutral,
-              sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end) as negative,
+            select cad.date as date, ceo.name as ceo, c.name as company,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='positive' then 1 else 0 end) as positive,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='neutral' then 1 else 0 end) as neutral,
+              sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end) as negative,
               count(*) as total,
               case when count(*) > 0
-                then round((sum(case when coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
+                then round((sum(case when coalesce(ov.override_sentiment_label, cad.sentiment_label)='negative' then 1 else 0 end)::numeric / count(*))::numeric, 1)
                 else 0 end as neg_pct,
               '' as theme,
               coalesce(ceo.alias, '') as alias
-            from ceo_article_mentions cam
-            join ceos ceo on ceo.id = cam.ceo_id
+            from ceo_article_mentions_daily cad
+            join ceos ceo on ceo.id = cad.ceo_id
             join companies c on c.id = ceo.company_id
-            left join ceo_article_overrides ov on ov.ceo_id = cam.ceo_id and ov.article_id = cam.article_id
-            where cam.scored_at::date = %s {scope_sql}
-            group by cam.scored_at::date, ceo.name, c.name, ceo.alias
+            left join ceo_article_overrides ov on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+            where cad.date = %s {scope_sql}
+            group by cad.date, ceo.name, c.name, ceo.alias
             order by ceo.name
             """,
             tuple(params)
@@ -1825,25 +1827,25 @@ def negative_articles_summary(days: int | None = None):
     scope_sql, params = scope_clause("c.id", params)
     rows = query_dict(
         f"""
-        select cam.scored_at::date as date, c.name as company, ceo.name as ceo,
-               coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label) as sentiment,
+        select cad.date as date, c.name as company, ceo.name as ceo,
+               coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                a.title, 'brand' as article_type
-        from company_article_mentions cam
-        join companies c on c.id = cam.company_id
-        join articles a on a.id = cam.article_id
-        left join company_article_overrides ov on ov.company_id = cam.company_id and ov.article_id = cam.article_id
+        from company_article_mentions_daily cad
+        join companies c on c.id = cad.company_id
+        join articles a on a.id = cad.article_id
+        left join company_article_overrides ov on ov.company_id = cad.company_id and ov.article_id = cad.article_id
         left join ceos ceo on ceo.company_id = c.id
-        where cam.scored_at::date >= %s {scope_sql}
+        where cad.date >= %s {scope_sql}
         union all
-        select cam.scored_at::date as date, c.name as company, ceo.name as ceo,
-               coalesce(ov.override_sentiment_label, cam.llm_sentiment_label, cam.sentiment_label) as sentiment,
+        select cad.date as date, c.name as company, ceo.name as ceo,
+               coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                a.title, 'ceo' as article_type
-        from ceo_article_mentions cam
-        join ceos ceo on ceo.id = cam.ceo_id
+        from ceo_article_mentions_daily cad
+        join ceos ceo on ceo.id = cad.ceo_id
         join companies c on c.id = ceo.company_id
-        join articles a on a.id = cam.article_id
-        left join ceo_article_overrides ov on ov.ceo_id = cam.ceo_id and ov.article_id = cam.article_id
-        where cam.scored_at::date >= %s {scope_sql}
+        join articles a on a.id = cad.article_id
+        left join ceo_article_overrides ov on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+        where cad.date >= %s {scope_sql}
         """,
         tuple(params + params),
     )

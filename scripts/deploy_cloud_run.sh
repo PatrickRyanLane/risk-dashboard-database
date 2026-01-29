@@ -25,11 +25,11 @@ echo "App dir: ${APP_DIR}"
 
 gcloud auth configure-docker --quiet
 
-DOCKER_BUILD_FLAGS=()
 if [[ "${NO_CACHE:-0}" == "1" ]]; then
-  DOCKER_BUILD_FLAGS+=(--no-cache)
+  docker build --no-cache -t "${IMAGE_NAME}" "${APP_DIR}"
+else
+  docker build -t "${IMAGE_NAME}" "${APP_DIR}"
 fi
-docker build "${DOCKER_BUILD_FLAGS[@]}" -t "${IMAGE_NAME}" "${APP_DIR}"
 docker push "${IMAGE_NAME}"
 
 INTERNAL_ENV_VARS="PUBLIC_MODE=0,ALLOW_EDITS=1,DEFAULT_VIEW=internal"
