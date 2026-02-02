@@ -881,6 +881,13 @@ const _serpFeatureItemsCache = new Map();
 const _loadSections = ['news','serps','features','stock','trends','negative'];
 const FEATURE_ORDER_SENTIMENT = ['organic','aio_citations','paa_items','videos_items','perspectives_items','top_stories_items'];
 const FEATURE_ORDER_BASE = ['organic','aio','paa','videos','perspectives','top_stories'];
+const FEATURE_ITEM_MAP = {
+  aio: 'aio_citations',
+  paa: 'paa_items',
+  videos: 'videos_items',
+  perspectives: 'perspectives_items',
+  top_stories: 'top_stories_items'
+};
 const FEATURE_LABELS = {
   organic: 'Organic',
   aio_citations: 'AIO citations',
@@ -899,6 +906,11 @@ const FEATURE_MODAL_LIMIT = 100;
 const FEATURE_MODAL_DAYS = 30;
 const FEATURE_COLORS = ['#ff3b30', '#ff5e57', '#ff7a59', '#ff9f43', '#ff6f91', '#e63946'];
 const CONTROL_COLORS = ['#2d9cdb', '#1b84d1', '#1769aa', '#115293', '#0d3b66', '#0a2742'];
+const mapFeatureType = (feature) => FEATURE_ITEM_MAP[feature] || feature;
+const isItemFeature = (feature) => {
+  const mapped = mapFeatureType(feature);
+  return mapped === feature && FEATURE_ORDER_SENTIMENT.includes(mapped);
+};
 const _loadLabels = {
   news: 'News sentiment',
   serps: 'SERP metrics',
@@ -2207,7 +2219,7 @@ function getFeatureSeries(){
   const byDate = new Map();
   const totalByDate = new Map();
   const rows = selectedCompany ? serpFeatureEntityRows : serpFeatureIndexRows;
-  const hasSentiment = rows.some(r => FEATURE_ORDER_SENTIMENT.includes(r.feature));
+  const hasSentiment = rows.some(r => isItemFeature(r.feature));
   let order = hasSentiment ? FEATURE_ORDER_SENTIMENT : FEATURE_ORDER_BASE;
   const organicByDate = new Map();
   serpsDaily.forEach(r=>{
@@ -2219,13 +2231,14 @@ function getFeatureSeries(){
     o.neg += +r.neg_serp||0;
   });
   rows.forEach(r=>{
+    if (!isItemFeature(r.feature)) return;
+    const feature = r.feature;
     if (!totalByDate.has(r.date)) totalByDate.set(r.date, 0);
     totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
-    if (!order.includes(r.feature)) return;
     if (!byDate.has(r.date)) byDate.set(r.date, {});
     const bucket = byDate.get(r.date);
-    if (!bucket[r.feature]) bucket[r.feature] = {neg:0};
-    bucket[r.feature].neg += r.neg || 0;
+    if (!bucket[feature]) bucket[feature] = {neg:0};
+    bucket[feature].neg += r.neg || 0;
   });
   organicByDate.forEach((o, date)=>{
     if (!totalByDate.has(date)) totalByDate.set(date, 0);
@@ -2264,11 +2277,12 @@ function getFeatureControlSeries(){
     o.ctrl += +r.ctrl||0;
   });
   rows.forEach(r=>{
-    if (!order.includes(r.feature)) return;
+    if (!isItemFeature(r.feature)) return;
+    const feature = r.feature;
     if (!byDate.has(r.date)) byDate.set(r.date, {});
     const bucket = byDate.get(r.date);
-    if (!bucket[r.feature]) bucket[r.feature] = {ctrl:0};
-    bucket[r.feature].ctrl += r.ctrl || 0;
+    if (!bucket[feature]) bucket[feature] = {ctrl:0};
+    bucket[feature].ctrl += r.ctrl || 0;
     if (!totalByDate.has(r.date)) totalByDate.set(r.date, 0);
     totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
   });
@@ -2851,6 +2865,7 @@ async function showSerpFeatures({company}){
   const totalsByFeature = new Map();
   serpFeatureEntityRows.forEach(r=>{
     if (r.date !== d || r.entity !== company) return;
+    if (!isItemFeature(r.feature)) return;
     totalsByFeature.set(r.feature, (totalsByFeature.get(r.feature) || 0) + (r.total || 0));
   });
   const options = FEATURE_MODAL_ORDER.map(f=>{
