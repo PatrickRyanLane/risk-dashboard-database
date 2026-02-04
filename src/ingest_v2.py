@@ -42,17 +42,26 @@ def upsert_companies_ceos(conn, roster_file_obj):
         ticker = (row.get('Stock') or row.get('stock') or '').strip()
         sector = (row.get('Sector') or row.get('sector') or '').strip()
         websites = (row.get('Websites') or row.get('websites') or row.get('Website') or row.get('website') or '').strip()
-        companies_map[company] = (company, ticker, sector, websites)
+        favorite = parse_bool(
+            row.get('Favorite')
+            or row.get('favorite')
+            or row.get('Company Favorite')
+            or row.get('company_favorite')
+            or row.get('Favorite Company')
+            or row.get('favorite_company')
+        )
+        companies_map[company] = (company, ticker, sector, websites, favorite)
 
     companies = list(companies_map.values())
     if companies:
         sql = """
-            insert into companies (name, ticker, sector, websites)
+            insert into companies (name, ticker, sector, websites, favorite)
             values %s
             on conflict (name) do update set
               ticker = excluded.ticker,
               sector = excluded.sector,
-              websites = excluded.websites
+              websites = excluded.websites,
+              favorite = excluded.favorite
         """
         with conn:
             with conn.cursor() as cur:
@@ -65,19 +74,27 @@ def upsert_companies_ceos(conn, roster_file_obj):
         company = (row.get('Company') or row.get('company') or '').strip()
         ceo = (row.get('CEO') or row.get('ceo') or '').strip()
         alias = (row.get('CEO Alias') or row.get('ceo alias') or row.get('alias') or '').strip()
+        favorite = parse_bool(
+            row.get('CEO Favorite')
+            or row.get('ceo_favorite')
+            or row.get('Favorite CEO')
+            or row.get('favorite_ceo')
+            or row.get('Favorite (CEO)')
+        )
         if not company or not ceo:
             continue
-        ceos_map[(ceo, company)] = (ceo, company, alias)
+        ceos_map[(ceo, company)] = (ceo, company, alias, favorite)
 
     ceos = list(ceos_map.values())
     if ceos:
         sql = """
-            insert into ceos (name, company_id, alias)
-            select v.ceo, c.id, v.alias
-            from (values %s) as v(ceo, company, alias)
+            insert into ceos (name, company_id, alias, favorite)
+            select v.ceo, c.id, v.alias, v.favorite
+            from (values %s) as v(ceo, company, alias, favorite)
             join companies c on c.name = v.company
             on conflict (name, company_id) do update set
-              alias = excluded.alias
+              alias = excluded.alias,
+              favorite = excluded.favorite
         """
         with conn:
             with conn.cursor() as cur:

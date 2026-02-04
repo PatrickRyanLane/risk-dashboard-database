@@ -146,6 +146,7 @@ create table if not exists companies (
   ticker text,
   sector text,
   websites text,
+  favorite boolean not null default false,
   created_at timestamptz not null default now()
 );
 
@@ -154,6 +155,7 @@ create table if not exists ceos (
   name text not null,
   company_id uuid references companies(id),
   alias text,
+  favorite boolean not null default false,
   created_at timestamptz not null default now(),
   unique (name, company_id)
 );

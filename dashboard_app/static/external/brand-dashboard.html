@@ -42,6 +42,10 @@ h1{font-size:28px;margin:6px 0 18px}
 
 /* Controls */
 .controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:0 0 16px}
+.controls select,
+.controls input,
+.controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
+.controls input{min-width:220px}
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:12px}
 select,input[type="text"]{background:var(--black);border:1px solid #23314d;border-radius:10px;color:var(--text);padding:8px 10px}
 button{background:var(--black);border:1px solid #2a3b5e;color:var(--text);border-radius:10px;padding:8px 12px;cursor:pointer}
@@ -58,6 +62,8 @@ button:hover{filter:brightness(1.08)}
 /* Chart cards */
 .chart-card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:12px 12px 48px;position:relative}
 .chart-card canvas{width:100% !important;height:100% !important;display:block}
+.chart-card.loading::after{content:"";position:absolute;left:12px;right:12px;top:54px;bottom:16px;border-radius:10px;background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.18),rgba(255,255,255,.05));background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite;pointer-events:none}
+.chart-card.loading canvas{opacity:.2}
 
 /* Chart pagination controls (top-right) */
 .chart-actions{
@@ -97,6 +103,13 @@ tbody tr{transition:background-color 0.15s}
 tbody tr:hover{background:rgba(88,219,237,.08)}
 tbody tr td:first-child{border-left:1px solid #0f1831;border-radius:10px 0 0 10px}
 tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 0}
+.skeleton-row td{padding:10px 12px}
+.skeleton-bar{height:12px;border-radius:8px;background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.2),rgba(255,255,255,.05));background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite}
+.skeleton-bar.full{width:100%;height:16px}
+.skeleton-bar.wide{width:90%}
+.skeleton-bar.med{width:60%}
+.skeleton-bar.narrow{width:35%}
+@keyframes skeleton{0%{background-position:200% 0}100%{background-position:-200% 0}}
 
 /* Brand column styling with flexbox */
 .brand-cell-content{display:flex;align-items:center;gap:8px}
@@ -649,7 +662,7 @@ body:has(#stockChartModal.open) {
   </div>
 
   <div class="grid">
-    <div class="chart-card">
+    <div class="chart-card loading" data-chart="features">
       <h3>SERP Feature Negativity (stacked)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
@@ -661,7 +674,7 @@ body:has(#stockChartModal.open) {
       <canvas id="featureChart"></canvas>
     </div>
 
-    <div class="chart-card">
+    <div class="chart-card loading" data-chart="features">
       <h3>SERP Feature Control (stacked)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
@@ -673,7 +686,7 @@ body:has(#stockChartModal.open) {
       <canvas id="featureControlChart"></canvas>
     </div>
 
-    <div class="chart-card">
+    <div class="chart-card loading" data-chart="news">
       <h3>News sentiment (percent of articles)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
@@ -685,7 +698,7 @@ body:has(#stockChartModal.open) {
       <canvas id="newsChart"></canvas>
     </div>
 
-    <div class="chart-card">
+    <div class="chart-card loading" data-chart="serps">
       <h3>Organic Search (Negative % • Control %)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
@@ -727,6 +740,12 @@ body:has(#stockChartModal.open) {
               <div class="tooltip-header">
                 Negative<br>News % ▲▼
                 <span class="tooltip-text">Percentage of articles mentioning this company that have negative sentiment. Higher = greater negative coverage</span>
+              </div>
+            </th>
+            <th data-key="neg_top_stories">
+              <div class="tooltip-header">
+                Negative<br>Top Stories % ▲▼
+                <span class="tooltip-text">Percentage of Top Stories results with negative sentiment for this company on the selected day</span>
               </div>
             </th>
             <th data-key="neg_serp">
@@ -801,12 +820,13 @@ body:has(#stockChartModal.open) {
 
 <script>
 /********************** Config (brand) **********************/
-const DEFAULT_DAYS = 90;
+const DEFAULT_DAYS = 30;
 const FULL_DAYS = 180;
 let currentDays = DEFAULT_DAYS;
 const COUNTS_PATH = () => `/api/v1/daily_counts?kind=brand_articles&days=${currentDays}`;
 const SERPS_DAILY_CSV = () => `/api/v1/daily_counts?kind=brand_serps&days=${currentDays}`;
 const SERP_FEATURES_INDEX_PATH  = () => `/api/v1/serp_features?entity=brand&days=${currentDays}&mode=index`;
+const SERP_FEATURES_TOP_STORIES_PATH = () => `/api/v1/serp_features?entity=brand&days=${currentDays}&feature_type=top_stories_items`;
 const SERP_FEATURES_ENTITY_PATH = name => `/api/v1/serp_features?entity=brand&days=${currentDays}&entity_name=${encodeURIComponent(name)}`;
 const SERP_FEATURES_CONTROL_INDEX_PATH  = () => `/api/v1/serp_feature_controls?entity=brand&days=${currentDays}&mode=index`;
 const SERP_FEATURES_CONTROL_ENTITY_PATH = name => `/api/v1/serp_feature_controls?entity=brand&days=${currentDays}&entity_name=${encodeURIComponent(name)}`;
@@ -824,19 +844,84 @@ let serpFeatureIndexRows = [];
 let serpFeatureEntityRows = [];
 let serpFeatureControlIndexRows = [];
 let serpFeatureControlEntityRows = [];
+let topStoriesNegByDate = new Map();
 let filteredRows  = [];
 let selectedCompany = null;
 let currentSort = { key:null, dir:1 };
 let currentPage = 1;
+let dataReady = false;
 const PAGE_SIZE = 25;
+
+function updateChartSkeletons(){
+  const map = {
+    news: _loadState.news,
+    serps: _loadState.serps,
+    features: _loadState.features
+  };
+  document.querySelectorAll('.chart-card[data-chart]').forEach(card=>{
+    const key = card.getAttribute('data-chart');
+    const state = map[key];
+    card.classList.toggle('loading', state !== 'done');
+  });
+}
+
+function updateDateOptions(){
+  const dateSet = new Set([ ...allCountsRows.map(r=>r.date), ...serpsDaily.map(r=>r.date) ].filter(isISODate));
+  if (!dateSet.size) return;
+  const dates = [...dateSet].sort();
+  const sel = document.getElementById('dateSelect');
+  const prev = sel.value;
+  sel.innerHTML = dates.map(d=>`<option value="${d}">${d}</option>`).join('');
+  sel.value = dates.includes(prev) ? prev : (dates[dates.length-1] || '');
+  document.getElementById('fullHistoryBtn').disabled = currentDays >= FULL_DAYS;
+}
+
+function maybeRenderAll(){
+  const sel = document.getElementById('dateSelect');
+  if (_loadState.news !== 'done' || _loadState.serps !== 'done') return;
+  if (!sel.value) return;
+  if (!dataReady) {
+    dataReady = true;
+  }
+  updateChartSkeletons();
+  renderAll();
+}
 
 function updateEntityUrlParam(param, value){
   try{
     const url = new URL(window.location.href);
     if (value) url.searchParams.set(param, value);
     else url.searchParams.delete(param);
-    window.history.replaceState({}, '', url);
+    url.searchParams.delete('ceo');
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (current !== next) {
+      window.history.replaceState({}, '', next);
+      const after = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (after !== next) {
+        window.history.pushState({}, '', next);
+      }
+    }
+    if (window.top && window.top !== window) {
+      const topUrl = new URL(window.top.location.href);
+      topUrl.searchParams.set('tab', 'brands');
+      if (value) topUrl.searchParams.set(param, value);
+      else topUrl.searchParams.delete(param);
+      topUrl.searchParams.delete('ceo');
+      const topNext = `${topUrl.pathname}${topUrl.search}${topUrl.hash}`;
+      window.top.history.replaceState({}, '', topNext);
+    }
+    console.log('🔗 URL updated', param, value, next);
   }catch{}
+}
+
+async function selectCompany(name){
+  if (!name) return;
+  selectedCompany = name;
+  updateEntityUrlParam('company', selectedCompany);
+  await loadSerpFeaturesForEntity(selectedCompany);
+  renderTable();
+  renderCharts();
 }
 
 let newsChart, serpChart, stockChart, featureChart, featureControlChart;
@@ -912,6 +997,7 @@ function setLoadStatus(key, state){
     pill.classList.toggle('error', state === 'error');
   }
   updateLoadBar();
+  updateChartSkeletons();
 }
 
 function updateLoadBar(){
@@ -1066,57 +1152,57 @@ function createSparkline(prices, isPositive) {
 
 /********************** NEGATIVE ARTICLES HEATMAP INTEGRATION **********************/
 
-// Global variable to store the negative articles summary
-let negativeSummaryMap = null;
+const negativeSummaryCache = new Map();
+let negativeSummaryIndex = null;
 
 // Threshold: minimum number of negative articles required to show a marker
 const NEGATIVE_ARTICLE_THRESHOLD = 3;
 
-async function loadNegativeSummary() {
+async function loadNegativeSummaryIndex() {
   const logLabel = 'negative-summary';
   console.time(logLabel);
   console.log('📰 Loading negative articles summary...');
   setLoadStatus('negative', 'loading');
-  
+
   try {
-    const rows = await fetchCsv(NEGATIVE_SUMMARY_PATH);
+    const rows = await fetchCsv(`${NEGATIVE_SUMMARY_PATH}&mode=index`);
     console.log(`📊 Negative summary rows: ${rows.length}`);
-    
     console.log(`📊 Loaded ${rows.length} total rows from summary file`);
-    
-    const summaryMap = new Map();
-    
-    rows.forEach(r => {
-      const company = String(r.company || '').trim();
-      if (!company || company === 'nan') return;
-      
-      const count = parseInt(r.negative_count) || 0;
-      if (count < NEGATIVE_ARTICLE_THRESHOLD) return;
-      
-      if (!summaryMap.has(company)) {
-        summaryMap.set(company, []);
-      }
-      
-      const type = String(r.article_type || '').trim();
-      
-      summaryMap.get(company).push({
-        date: String(r.date || '').trim(),
-        count: count,
-        headlines: (r.top_headlines || '').split('|').filter(h => h.trim()),
-        type: type
-      });
-    });
-    
-    console.log(`✅ Loaded negative summary for ${summaryMap.size} companies`);
+
+    negativeSummaryIndex = rows;
+    console.log(`✅ Loaded negative summary index rows: ${rows.length}`);
     console.timeEnd(logLabel);
     setLoadStatus('negative', 'done');
-    return summaryMap;
-    
+    return rows;
   } catch (e) {
     console.error('❌ Failed to load negative summary:', e);
     console.timeEnd(logLabel);
     setLoadStatus('negative', 'error');
-    return new Map();
+    return [];
+  }
+}
+
+async function loadNegativeSummaryForCompany(company) {
+  if (!company) return [];
+  if (negativeSummaryCache.has(company)) return negativeSummaryCache.get(company);
+  try {
+    const url = `${NEGATIVE_SUMMARY_PATH}&company=${encodeURIComponent(company)}`;
+    const rows = await fetchCsv(url);
+    const items = [];
+    rows.forEach(r => {
+      const count = parseInt(r.negative_count) || 0;
+      if (count < NEGATIVE_ARTICLE_THRESHOLD) return;
+      items.push({
+        date: String(r.date || '').trim(),
+        count: count,
+        headlines: (r.top_headlines || '').split('|').filter(h => h.trim()),
+        type: String(r.article_type || '').trim()
+      });
+    });
+    negativeSummaryCache.set(company, items);
+    return items;
+  } catch (e) {
+    return [];
   }
 }
 
@@ -1199,7 +1285,7 @@ async function showStockChart(company) {
   
   if (stockChart) stockChart.destroy();
   
-  const negativeDates = negativeSummaryMap?.get(company) || [];
+  const negativeDates = await loadNegativeSummaryForCompany(company);
   const relevantNegatives = negativeDates.filter(item => 
     stock.dateHistory.includes(item.date)
   );
@@ -1666,14 +1752,19 @@ function hookDatePager(allDates){
 /********************** CSV helpers **********************/
 /********************** CSV Fetch with Preload Cache **********************/
 const _preloadCache = new Map();
+const PERF_LOG = new URLSearchParams(window.location.search).get('perf') === '1';
 
 async function fetchCsv(url){
+  const t0 = performance.now();
   // Check preload cache first
   if (_preloadCache.has(url)) {
     const cached = _preloadCache.get(url);
     if (cached instanceof Promise) {
-      return await cached; // Wait for in-flight request
+      const data = await cached; // Wait for in-flight request
+      if (PERF_LOG) console.log(`⏱️ ${url} ${(performance.now() - t0).toFixed(0)}ms (cached promise)`);
+      return data;
     }
+    if (PERF_LOG) console.log(`⏱️ ${url} ${(performance.now() - t0).toFixed(0)}ms (cached)`);
     return cached; // Return cached data
   }
   
@@ -1694,9 +1785,11 @@ async function fetchCsv(url){
   try {
     const data = await fetchPromise;
     _preloadCache.set(url, data); // Replace promise with actual data
+    if (PERF_LOG) console.log(`⏱️ ${url} ${(performance.now() - t0).toFixed(0)}ms`);
     return data;
   } catch (e) {
     _preloadCache.delete(url); // Remove failed requests from cache
+    if (PERF_LOG) console.log(`⏱️ ${url} ${(performance.now() - t0).toFixed(0)}ms (error)`);
     throw e;
   }
 }
@@ -1731,6 +1824,11 @@ async function loadCounts(){
       neg: +r.negative||0
     })).filter(r=>isISODate(r.date) && r.company);
     setLoadStatus('news', 'done');
+    updateDateOptions();
+    if (document.getElementById('dateSelect').value) {
+      renderCharts();
+    }
+    maybeRenderAll();
   } catch (e){
     allCountsRows = [];
     setLoadStatus('news', 'error');
@@ -1747,6 +1845,11 @@ async function loadSerpDaily(){
       ctrl:+r.controlled||+r.control||0
     })).filter(r=>isISODate(r.date) && r.company);
     setLoadStatus('serps', 'done');
+    updateDateOptions();
+    if (document.getElementById('dateSelect').value) {
+      renderCharts();
+    }
+    maybeRenderAll();
   }catch(e){
     serpsDaily = [];
     setLoadStatus('serps', 'error');
@@ -1757,6 +1860,7 @@ async function loadSerpFeaturesIndex(){
   try{
     const rows = await fetchCsv(SERP_FEATURES_INDEX_PATH());
     const ctrlRows = await fetchCsv(SERP_FEATURES_CONTROL_INDEX_PATH());
+    const topRows = await fetchCsv(SERP_FEATURES_TOP_STORIES_PATH());
     serpFeatureIndexRows = rows.map(r=>({
       date: String(r.date||'').trim(),
       entity: String(r.entity_name||'').trim(),
@@ -1771,10 +1875,23 @@ async function loadSerpFeaturesIndex(){
       total: +r.total_count||0,
       ctrl: +r.controlled_count||0
     })).filter(r=>isISODate(r.date) && r.entity && r.feature);
+    topStoriesNegByDate = new Map();
+    topRows.forEach(r=>{
+      const date = String(r.date||'').trim();
+      const entity = String(r.entity_name||'').trim().toLowerCase();
+      if (!isISODate(date) || !entity) return;
+      const total = +r.total_count||0;
+      const neg = +r.negative_count||0;
+      topStoriesNegByDate.set(`${date}|${entity}`, total > 0 ? (neg / total) : null);
+    });
     setLoadStatus('features', 'done');
+    if (document.getElementById('dateSelect').value) {
+      renderCharts();
+    }
   }catch(e){
     serpFeatureIndexRows = [];
     serpFeatureControlIndexRows = [];
+    topStoriesNegByDate = new Map();
     setLoadStatus('features', 'error');
   }
 }
@@ -1880,30 +1997,12 @@ async function getSerpAggForDate(d){
 /********************** UI bootstrap ***********************/
 async function init(){
   initLoadStatus();
-  await Promise.all([
-    loadCounts(), 
-    loadSerpDaily(), 
-    loadSerpFeaturesIndex()
-  ]);
-
-  const dateSet = new Set([ ...allCountsRows.map(r=>r.date), ...serpsDaily.map(r=>r.date) ].filter(isISODate));
-  const dates = [...dateSet].sort();
+  dataReady = false;
+  updateChartSkeletons();
   const sel = document.getElementById('dateSelect');
-  sel.innerHTML = dates.map(d=>`<option value="${d}">${d}</option>`).join('');
-  sel.value = dates[dates.length-1] || '';
-  document.getElementById('fullHistoryBtn').disabled = currentDays >= FULL_DAYS;
-  
-  // 1. Date Change Listener (Keep this simple)
-  sel.addEventListener('change', ()=>{ 
-    currentPage=1; 
-    selectedCompany=null; 
-    renderAll(); 
-    if (PRELOAD_MODAL_DATA) {
-      setTimeout(()=>{ if (sel.value) preloadModalData(sel.value); }, 150);
-    }
-  });
-
-  document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll(); });
+  document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll().then(() => {
+    if (filteredRows.length === 1) selectCompany(filteredRows[0].company);
+  }); });
   document.getElementById('refreshBtn').onclick = async ()=>{ await init(); };
   document.getElementById('clearBtn').onclick = ()=>{
     selectedCompany=null;
@@ -1943,10 +2042,27 @@ async function init(){
   }
   // ----------------------------------
 
-  renderAll();
-  if (PRELOAD_MODAL_DATA && sel.value) {
-    setTimeout(()=>{ preloadModalData(sel.value); }, 150);
+  // 1. Date Change Listener (bind early)
+  if (!sel.dataset.boundChange){
+    sel.addEventListener('change', ()=>{ 
+      currentPage=1; 
+      selectedCompany=null; 
+      renderAll(); 
+      if (PRELOAD_MODAL_DATA) {
+        setTimeout(()=>{ if (sel.value) preloadModalData(sel.value); }, 150);
+      }
+    });
+    sel.dataset.boundChange = '1';
   }
+
+  renderTable();
+
+  const idleLoad = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
+  idleLoad(async () => {
+    loadCounts();
+    loadSerpDaily();
+    loadSerpFeaturesIndex();
+  });
 
   const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
   idle(() => {
@@ -1967,7 +2083,7 @@ async function init(){
       globalTrendsData = data;
       setLoadStatus('trends', 'done');
     }).catch(()=>{ setLoadStatus('trends','error'); });
-    loadNegativeSummary().then(data => negativeSummaryMap = data);
+    loadNegativeSummaryIndex();
   });
 
   window.onclick = function(event) {
@@ -1988,6 +2104,7 @@ async function buildRowsForDate(d){
     let negSerpPct=null, ctrlPct=null;
     if (s && s.total>0){ negSerpPct = s.neg_serp/s.total; ctrlPct = s.controlled/s.total; }
     const risk = computeRisk(negSerpPct, ctrlPct);
+    const negTopStoriesPct = topStoriesNegByDate.get(`${d}|${company.toLowerCase()}`) ?? null;
     
     const stock = globalStockData[company];
     const dailyChange = stock?.dailyChange ?? null;
@@ -1996,6 +2113,7 @@ async function buildRowsForDate(d){
       date:d,
       company,
       neg_news:a.neg_pct ?? 0,
+      neg_top_stories:negTopStoriesPct,
       neg_serp:negSerpPct,
       ctrl_pct:ctrlPct,
       daily_change: dailyChange,
@@ -2014,10 +2132,10 @@ async function renderAll(){
   currentPage = 1;
   if (rows.length === 1) {
     selectedCompany = rows[0].company;
+    updateEntityUrlParam('company', selectedCompany);
   } else if (selectedCompany && !rows.some(r => r.company === selectedCompany)) {
     selectedCompany = null;
   }
-  updateEntityUrlParam('company', selectedCompany);
   if (selectedCompany) {
     await loadSerpFeaturesForEntity(selectedCompany);
   }
@@ -2029,6 +2147,14 @@ async function renderAll(){
 
 function renderTable(){
   const tbody = document.getElementById('tbody');
+  if (!dataReady) {
+    tbody.innerHTML = Array.from({length: 6}).map(() => `
+      <tr class="skeleton-row">
+        <td colspan="12"><div class="skeleton-bar full"></div></td>
+      </tr>
+    `).join('');
+    return;
+  }
   let rows = [...filteredRows];
 
   if (currentSort.key){
@@ -2072,6 +2198,7 @@ function renderTable(){
       <td>${dailyChangeHtml}</td>
       <td class="sparkline-cell"><span id="${sparklineId}"></span></td>
       <td>${fmtPct(r.neg_news)}</td>
+      <td>${fmtPct(r.neg_top_stories)}</td>
       <td>${fmtPct(r.neg_serp)}</td>
       <td>${fmtPct(r.ctrl_pct)}</td>
       <td>${
@@ -2121,7 +2248,7 @@ function renderTable(){
         selectedCompany = company;
         tbody.querySelectorAll('.brandCheck').forEach(x=>{ if (x!==e.target) x.checked=false; });
       } else selectedCompany=null;
-      updateEntityUrlParam('company', selectedCompany);
+  if (selectedCompany) updateEntityUrlParam('company', selectedCompany);
       if (selectedCompany) {
         await loadSerpFeaturesForEntity(selectedCompany);
       }
@@ -2129,10 +2256,18 @@ function renderTable(){
     });
   });
   tbody.querySelectorAll('.serpBtn').forEach(btn=>{
-    btn.onclick = ()=> showSerp({ company: btn.getAttribute('data-company') });
+    btn.onclick = async ()=> {
+      const company = btn.getAttribute('data-company');
+      await selectCompany(company);
+      showSerp({ company });
+    };
   });
   tbody.querySelectorAll('.headBtn').forEach(btn=>{
-    btn.onclick = ()=> showHeadlines({ company: btn.getAttribute('data-company') });
+    btn.onclick = async ()=> {
+      const company = btn.getAttribute('data-company');
+      await selectCompany(company);
+      showHeadlines({ company });
+    };
   });
 
   document.getElementById('pageNo').textContent = String(currentPage);
@@ -2233,7 +2368,7 @@ function getFeatureSeries(){
       series[f].push(dayTotal ? (v.neg / dayTotal * 100) : 0);
     });
   });
-  return {dates, series, order};
+  return {dates, series, order, countsByDate: byDate, totalsByDate: totalByDate};
 }
 
 function getFeatureControlSeries(){
@@ -2279,13 +2414,13 @@ function getFeatureControlSeries(){
       series[f].push(dayTotal ? (v.ctrl / dayTotal * 100) : 0);
     });
   });
-  return {dates, series, order};
+  return {dates, series, order, countsByDate: byDate, totalsByDate: totalByDate};
 }
 
 function renderCharts(){
   const {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct, serpNegPctAll, serpCtrlPctAll} = getDateSeries();
-  const {dates: featureDates, series: featureSeries, order: featureOrder} = getFeatureSeries();
-  const {dates: featureCtrlDates, series: featureCtrlSeries, order: featureCtrlOrder} = getFeatureControlSeries();
+  const {dates: featureDates, series: featureSeries, order: featureOrder, countsByDate: featureCountsByDate} = getFeatureSeries();
+  const {dates: featureCtrlDates, series: featureCtrlSeries, order: featureCtrlOrder, countsByDate: featureCtrlCountsByDate} = getFeatureControlSeries();
 
   if (dateWindowStart === null){
     dateWindowStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
@@ -2448,9 +2583,20 @@ function renderCharts(){
           intersect: false,
           callbacks: {
             ...commonOpts.plugins.tooltip.callbacks,
+            label: (ctx) => {
+              const pctVal = (typeof ctx.parsed.y === 'number') ? ctx.parsed.y : ctx.parsed;
+              const date = ctx.label;
+              const feature = featureOrder[ctx.datasetIndex];
+              const bucket = featureCountsByDate.get(date) || {};
+              const count = bucket[feature]?.neg || 0;
+              return `${ctx.dataset?.label ? ctx.dataset.label + ': ' : ''}${pct(pctVal)} (${Math.round(count)})`;
+            },
             footer: (items) => {
               const total = items.reduce((sum, i) => sum + (i.parsed?.y || 0), 0);
-              return `Total negative: ${Math.round(total)}`;
+              const date = items[0]?.label;
+              const bucket = date ? (featureCountsByDate.get(date) || {}) : {};
+              const countTotal = Object.values(bucket).reduce((sum, v) => sum + ((v && v.neg) || 0), 0);
+              return `Total negative: ${Math.round(total)}% (${Math.round(countTotal)})`;
             }
           }
         },
@@ -2493,9 +2639,20 @@ function renderCharts(){
           intersect: false,
           callbacks: {
             ...commonOpts.plugins.tooltip.callbacks,
+            label: (ctx) => {
+              const pctVal = (typeof ctx.parsed.y === 'number') ? ctx.parsed.y : ctx.parsed;
+              const date = ctx.label;
+              const feature = featureCtrlOrder[ctx.datasetIndex];
+              const bucket = featureCtrlCountsByDate.get(date) || {};
+              const count = bucket[feature]?.ctrl || 0;
+              return `${ctx.dataset?.label ? ctx.dataset.label + ': ' : ''}${pct(pctVal)} (${Math.round(count)})`;
+            },
             footer: (items) => {
               const total = items.reduce((sum, i) => sum + (i.parsed?.y || 0), 0);
-              return `Total control: ${Math.round(total)}`;
+              const date = items[0]?.label;
+              const bucket = date ? (featureCtrlCountsByDate.get(date) || {}) : {};
+              const countTotal = Object.values(bucket).reduce((sum, v) => sum + ((v && v.ctrl) || 0), 0);
+              return `Total control: ${Math.round(total)}% (${Math.round(countTotal)})`;
             }
           }
         },
