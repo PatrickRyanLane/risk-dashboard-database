@@ -45,6 +45,8 @@ def upsert_companies_ceos(conn, roster_file_obj):
         favorite = parse_bool(
             row.get('Favorite')
             or row.get('favorite')
+            or row.get('Favorites')
+            or row.get('favorites')
             or row.get('Company Favorite')
             or row.get('company_favorite')
             or row.get('Favorite Company')
@@ -77,6 +79,10 @@ def upsert_companies_ceos(conn, roster_file_obj):
         favorite = parse_bool(
             row.get('CEO Favorite')
             or row.get('ceo_favorite')
+            or row.get('CEO Favorites')
+            or row.get('ceo_favorites')
+            or row.get('Favorites')
+            or row.get('favorites')
             or row.get('Favorite CEO')
             or row.get('favorite_ceo')
             or row.get('Favorite (CEO)')

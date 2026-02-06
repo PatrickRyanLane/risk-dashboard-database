@@ -369,6 +369,8 @@ tbody td:first-child{background:var(--black)}
 .controls button#fullHistoryBtn{font-size:12px;padding:6px 10px;min-height:30px}
 .fav-toggle.active{background:rgba(255,215,0,.18);border-color:rgba(255,215,0,.5);color:#ffd54f}
 .fav-star{color:#ffd54f;font-weight:700;margin-right:6px}
+.fav-inline{background:transparent;border:0;color:#666;cursor:pointer;font-size:14px;line-height:1;padding:0 4px}
+.fav-inline.active{color:#ffd54f}
 
 
 #stockChartModal .content {
@@ -953,6 +955,19 @@ function updateEntityUrlParam(param, value){
   }catch{}
 }
 
+async function updateFavorite(entityType, name, favorite, company=''){
+  try{
+    const r = await fetch('/api/internal/favorites', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entity_type: entityType, name, favorite, company})
+    });
+    return r.ok;
+  }catch(e){
+    return false;
+  }
+}
+
 async function selectCompany(name){
   if (!name) return;
   selectedCompany = name;
@@ -970,14 +985,18 @@ async function loadRosterFavorites(){
   try{
     const rows = await fetchCsv('/api/v1/roster');
     favoriteCompanies = new Set();
+    companyTickers = new Map();
     rows.forEach(r=>{
       const company = String(r.company || r.Company || '').trim();
       if (!company) return;
       const fav = isTrue(r.company_favorite || r['Company Favorite'] || r.favorite || r.Favorite);
       if (fav) favoriteCompanies.add(company);
+      const ticker = String(r.ticker || r.Ticker || r.stock_ticker || r['Stock Ticker'] || '').trim();
+      if (ticker) companyTickers.set(company, ticker);
     });
   }catch(e){
     favoriteCompanies = new Set();
+    companyTickers = new Map();
   }
 }
 
@@ -986,6 +1005,7 @@ let globalStockData = {};
 let showVolume = false; // Toggle state for volume display
 let showTrends = false; // Toggle state for trends display
 let globalTrendsData = {}; // Trends data by company
+let companyTickers = new Map();
 
 const _articlesCache = new Map();
 const _serpAggCache  = new Map();
@@ -2151,7 +2171,7 @@ async function init(){
     loadCounts();
     loadSerpDaily();
     loadSerpFeaturesIndex();
-    loadRosterFavorites();
+    loadRosterFavorites().then(()=>{ renderTable(); });
   });
 
   const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
@@ -2266,9 +2286,11 @@ function renderTable(){
   const rowsHTML = pageRows.map(r=>{
     const checked = (selectedCompany && selectedCompany===r.company) ? 'checked' : '';
     const stock = globalStockData[r.company];
+    const ticker = companyTickers.get(r.company) || '';
+    const hasTicker = Boolean(ticker);
     let stockPriceHtml = '<span class="muted">N/A</span>';
     let dailyChangeHtml = '<span class="muted">N/A</span>';
-    let sparklineId = '';
+    let sparklineCellHtml = '<span class="muted">N/A</span>';
 
     if (stock && stock.openingPrice !== null) {
       stockPriceHtml = `<span class="stock-price">$${stock.openingPrice.toFixed(2)}</span>`;
@@ -2279,9 +2301,15 @@ function renderTable(){
         dailyChangeHtml = `<span class="stock-change ${changeClass}">${changeSymbol} ${Math.abs(stock.dailyChange).toFixed(2)}%</span>`;
       }
 
-      sparklineId = `sparkline-${r.company.replace(/[^a-zA-Z0-9]/g, '-')}`;
+      const sparklineId = `sparkline-${r.company.replace(/[^a-zA-Z0-9]/g, '-')}`;
+      sparklineCellHtml = `<span id="${sparklineId}"></span>`;
+    } else if (!hasTicker) {
+      sparklineCellHtml = '<span class="muted">Privately Owned</span>';
+    } else {
+      sparklineCellHtml = '<span class="muted">Stock data unavailable</span>';
     }
-    const favStar = favoriteCompanies.has(r.company) ? '<span class="fav-star">★</span>' : '';
+    const favActive = favoriteCompanies.has(r.company);
+    const favStar = `<button class="fav-inline ${favActive ? 'active' : ''}" data-company="${esc(r.company)}" title="Toggle favorite">★</button>`;
 
     return `<tr data-company="${esc(r.company)}">
       <td>
@@ -2293,7 +2321,7 @@ function renderTable(){
       </td>
       <td>${stockPriceHtml}</td>
       <td>${dailyChangeHtml}</td>
-      <td class="sparkline-cell"><span id="${sparklineId}"></span></td>
+      <td class="sparkline-cell">${sparklineCellHtml}</td>
       <td>${fmtPct(r.neg_news)}</td>
       <td>${fmtPct(r.neg_top_stories)}</td>
       <td>${fmtPct(r.neg_serp)}</td>
@@ -2314,6 +2342,26 @@ function renderTable(){
   }).join('');
 
   tbody.innerHTML = rowsHTML;
+
+  tbody.querySelectorAll('.fav-inline[data-company]').forEach(btn=>{
+    btn.onclick = async (e)=>{
+      e.stopPropagation();
+      const company = btn.dataset.company || '';
+      if (!company) return;
+      const next = !favoriteCompanies.has(company);
+      btn.disabled = true;
+      const ok = await updateFavorite('company', company, next);
+      if (ok) {
+        if (next) favoriteCompanies.add(company);
+        else favoriteCompanies.delete(company);
+        btn.classList.toggle('active', next);
+        if (favoritesOnly && !next) {
+          renderAll();
+        }
+      }
+      btn.disabled = false;
+    };
+  });
 
   pageRows.forEach(r => {
     const stock = globalStockData[r.company];

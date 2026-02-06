@@ -19,6 +19,8 @@ def parse_args():
     p.add_argument("--days-back", type=int, help="Number of days back from today (inclusive)")
     p.add_argument("--map-sentiment-to-risk", action="store_true",
                    help="Set risk_raw from sentiment (negative->risk, else no_risk)")
+    p.add_argument("--include-serps", action="store_true",
+                   help="Include processed_serps CSVs (default: skip; use parquet pipeline instead)")
     p.add_argument("--batch-size", type=int, default=1000)
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
@@ -47,8 +49,8 @@ def resolve_dates(args):
     return [datetime.utcnow().date().isoformat()]
 
 
-def build_file_map(data_dir, dstr):
-    return [
+def build_file_map(data_dir, dstr, include_serps: bool):
+    items = [
         (
             os.path.join(data_dir, "processed_articles", f"{dstr}-brand-articles-modal.csv"),
             "brand",
@@ -59,17 +61,21 @@ def build_file_map(data_dir, dstr):
             "ceo",
             "news",
         ),
-        (
-            os.path.join(data_dir, "processed_serps", f"{dstr}-brand-serps-modal.csv"),
-            "brand",
-            "serp",
-        ),
-        (
-            os.path.join(data_dir, "processed_serps", f"{dstr}-ceo-serps-modal.csv"),
-            "ceo",
-            "serp",
-        ),
     ]
+    if include_serps:
+        items.extend([
+            (
+                os.path.join(data_dir, "processed_serps", f"{dstr}-brand-serps-modal.csv"),
+                "brand",
+                "serp",
+            ),
+            (
+                os.path.join(data_dir, "processed_serps", f"{dstr}-ceo-serps-modal.csv"),
+                "ceo",
+                "serp",
+            ),
+        ])
+    return items
 
 
 def maybe_gcs_exists(path):
@@ -149,7 +155,7 @@ def main():
             boards_path = os.path.join(base, "rosters", "boards-roster.csv")
         total += ingest_boards(conn, boards_path)
         for dstr in dates:
-            for path, entity_type, source_type in build_file_map(args.data_dir, dstr):
+            for path, entity_type, source_type in build_file_map(args.data_dir, dstr, args.include_serps):
                 if not maybe_gcs_exists(path):
                     continue
                 with open_text(path) as f:

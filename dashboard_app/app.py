@@ -1359,6 +1359,46 @@ def apply_override():
     return jsonify({'status': 'ok', 'id': row[0] if row else None})
 
 
+@app.route('/api/internal/favorites', methods=['POST'])
+def update_favorite():
+    if PUBLIC_MODE or not ALLOW_EDITS:
+        return jsonify({'error': 'editing disabled'}), 403
+    user_email = require_internal_user()
+    if not user_email:
+        return jsonify({'error': 'unauthorized'}), 401
+    payload = request.get_json(force=True, silent=True) or {}
+    entity_type = (payload.get('entity_type') or '').strip().lower()
+    name = (payload.get('name') or '').strip()
+    company = (payload.get('company') or '').strip()
+    favorite = payload.get('favorite')
+    if entity_type not in {'company', 'ceo'}:
+        return jsonify({'error': 'invalid entity_type'}), 400
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    if favorite is None:
+        return jsonify({'error': 'favorite is required'}), 400
+
+    favorite = bool(favorite)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if entity_type == 'company':
+                cur.execute("update companies set favorite = %s where name = %s", (favorite, name))
+            else:
+                if company:
+                    cur.execute(
+                        """
+                        update ceos set favorite = %s
+                        where name = %s and company_id = (select id from companies where name = %s)
+                        """,
+                        (favorite, name, company),
+                    )
+                else:
+                    cur.execute("update ceos set favorite = %s where name = %s", (favorite, name))
+
+    _api_cache.pop('roster', None)
+    return jsonify({'status': 'ok'})
+
+
 # --------------------------- CSV builders ---------------------------
 
 

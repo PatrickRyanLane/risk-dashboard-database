@@ -963,6 +963,7 @@ let globalStockData = {};
 let showVolume = false; // Toggle state for volume display
 let showTrends = false; // Toggle state for trends display
 let globalTrendsData = {}; // Trends data by company
+let companyTickers = new Map();
 
 const _articlesCache = new Map();
 const _serpAggCache  = new Map();
@@ -1839,18 +1840,22 @@ async function loadRoster(){
     const rows = await fetchCsvAny(ROSTER_CANDIDATES);
     rosterMap = new Map();
     companyToCeo = new Map();
+    companyTickers = new Map();
     rows.forEach(r => {
       const ceo = (r.ceo || r.CEO || '').trim();
       const company = (r.company || r.Company || '').trim();
+      const ticker = String(r.ticker || r.Ticker || r.stock_ticker || r['Stock Ticker'] || '').trim();
       if (ceo && company){
         rosterMap.set(ceo, company);
         companyToCeo.set(company, ceo);
       }
+      if (company && ticker) companyTickers.set(company, ticker);
     });
     setLoadStatus('roster', 'done');
   } catch (e){
     rosterMap = new Map();
     companyToCeo = new Map();
+    companyTickers = new Map();
     setLoadStatus('roster', 'error');
   }
 }
@@ -2139,7 +2144,7 @@ async function init(){
 
   const idleLoad = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
   idleLoad(async () => {
-    loadRoster();
+    loadRoster().then(()=>{ renderTable(); });
     loadCounts();
     loadSerpDaily();
     loadSerpFeaturesIndex();
@@ -2280,9 +2285,11 @@ function renderTable(){
   const rowsHTML = pageRows.map(r=>{
     const checked = (selectedCeo && selectedCeo===r.ceo) ? 'checked' : '';
     const stock = globalStockData[r.company];
+    const ticker = companyTickers.get(r.company) || '';
+    const hasTicker = Boolean(ticker);
     let stockPriceHtml = '<span class="muted">N/A</span>';
     let dailyChangeHtml = '<span class="muted">N/A</span>';
-    let sparklineId = '';
+    let sparklineCellHtml = '<span class="muted">N/A</span>';
     
     if (stock && stock.openingPrice !== null) {
       stockPriceHtml = `<span class="stock-price">$${stock.openingPrice.toFixed(2)}</span>`;
@@ -2293,7 +2300,12 @@ function renderTable(){
         dailyChangeHtml = `<span class="stock-change ${changeClass}">${changeSymbol} ${Math.abs(stock.dailyChange).toFixed(2)}%</span>`;
       }
       
-      sparklineId = `sparkline-${r.company.replace(/[^a-zA-Z0-9]/g, '-')}`;
+      const sparklineId = `sparkline-${r.company.replace(/[^a-zA-Z0-9]/g, '-')}`;
+      sparklineCellHtml = `<span id="${sparklineId}"></span>`;
+    } else if (!hasTicker) {
+      sparklineCellHtml = '<span class="muted">Privately Owned</span>';
+    } else {
+      sparklineCellHtml = '<span class="muted">Stock data unavailable</span>';
     }
     
     return `<tr data-company="${esc(r.company)}">
@@ -2308,7 +2320,7 @@ function renderTable(){
       </td>
       <td>${stockPriceHtml}</td>
       <td>${dailyChangeHtml}</td>
-      <td class="sparkline-cell"><span id="${sparklineId}"></span></td>
+      <td class="sparkline-cell">${sparklineCellHtml}</td>
       <td>${fmtPct(r.neg_news)}</td>
       <td>${fmtPct(r.neg_top_stories)}</td>
       <td>${fmtPct(r.neg_serp)}</td>
