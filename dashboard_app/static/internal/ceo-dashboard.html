@@ -419,7 +419,7 @@ tbody td:first-child{
 .controls button#fullHistoryBtn{font-size:12px;padding:6px 10px;min-height:30px}
 .fav-toggle.active{background:rgba(255,215,0,.18);border-color:rgba(255,215,0,.5);color:#ffd54f}
 .fav-star{color:#ffd54f;font-weight:700;margin-right:6px}
-.fav-inline{background:transparent;border:0;color:#666;cursor:pointer;font-size:14px;line-height:1;padding:0 4px}
+.fav-inline{background:transparent;border:0;color:#666;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;display:inline-flex;align-items:center;justify-content:center}
 .fav-inline.active{color:#ffd54f}
 
 
@@ -1021,6 +1021,7 @@ let showVolume = false; // Toggle state for volume display
 let showTrends = false; // Toggle state for trends display
 let globalTrendsData = {}; // Trends data by company
 let companyTickers = new Map();
+let favoriteCompanies = new Set();
 
 const _articlesCache = new Map();
 const _serpAggCache  = new Map();
@@ -1902,17 +1903,20 @@ async function loadRoster(){
     rosterMap = new Map();
     companyToCeo = new Map();
     favoriteCeos = new Set();
+    favoriteCompanies = new Set();
     companyTickers = new Map();
     rows.forEach(r => {
       const ceo = (r.ceo || r.CEO || '').trim();
       const company = (r.company || r.Company || '').trim();
       const fav = isTrue(r.ceo_favorite || r['CEO Favorite'] || r['Favorite CEO'] || r.favorite || r.Favorite);
+      const favCompany = isTrue(r.company_favorite || r['Company Favorite'] || r['Favorite Company'] || r.favorite || r.Favorite);
       const ticker = String(r.ticker || r.Ticker || r.stock_ticker || r['Stock Ticker'] || '').trim();
       if (ceo && company){
         rosterMap.set(ceo, company);
         companyToCeo.set(company, ceo);
-        if (fav) favoriteCeos.add(ceo);
+        if (fav || favCompany) favoriteCeos.add(ceo);
       }
+      if (company && favCompany) favoriteCompanies.add(company);
       if (company && ticker) companyTickers.set(company, ticker);
     });
     setLoadStatus('roster', 'done');
@@ -1920,6 +1924,7 @@ async function loadRoster(){
     rosterMap = new Map();
     companyToCeo = new Map();
     favoriteCeos = new Set();
+    favoriteCompanies = new Set();
     companyTickers = new Map();
     setLoadStatus('roster', 'error');
   }
@@ -2406,8 +2411,9 @@ function renderTable(){
       <td>
         <div class="ceo-cell-content">
           <input type="checkbox" data-ceo="${esc(r.ceo)}" class="brandCheck" ${checked} onclick="event.stopPropagation()" />
+          ${favStar}
           <div class="ceo-name-block">
-            <div class="ceo-name">${favStar}${esc(r.ceo)}</div>
+            <div class="ceo-name">${esc(r.ceo)}</div>
             <div class="company-subheader">${esc(r.company)}</div>
           </div>
         </div>

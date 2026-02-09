@@ -191,6 +191,8 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
 .ceo-name-block{display:flex;flex-direction:column;gap:2px}
 .ceo-name{font-weight:500}
 .company-subheader{font-size:11px;color:#7a9ca3;font-weight:400}
+ .fav-inline{background:transparent;border:0;color:#666;font-size:14px;line-height:1;padding:0 4px;display:inline-flex;align-items:center;justify-content:center;cursor:default}
+ .fav-inline.active{color:#ffd54f}
 
 .stock-price{font-family:'Courier New',monospace;font-weight:500;color:var(--text)}
 .stock-change{font-weight:600}
@@ -964,6 +966,8 @@ let showVolume = false; // Toggle state for volume display
 let showTrends = false; // Toggle state for trends display
 let globalTrendsData = {}; // Trends data by company
 let companyTickers = new Map();
+let favoriteCeos = new Set();
+let favoriteCompanies = new Set();
 
 const _articlesCache = new Map();
 const _serpAggCache  = new Map();
@@ -1835,26 +1839,38 @@ async function fetchCsvAny(candidates){
   return [];
 }
 
+function isTrue(val){
+  return ['true','1','yes','y'].includes(String(val || '').trim().toLowerCase());
+}
+
 async function loadRoster(){
   try{
     const rows = await fetchCsvAny(ROSTER_CANDIDATES);
     rosterMap = new Map();
     companyToCeo = new Map();
+    favoriteCeos = new Set();
+    favoriteCompanies = new Set();
     companyTickers = new Map();
     rows.forEach(r => {
       const ceo = (r.ceo || r.CEO || '').trim();
       const company = (r.company || r.Company || '').trim();
+      const fav = isTrue(r.ceo_favorite || r['CEO Favorite'] || r['Favorite CEO'] || r.favorite || r.Favorite);
+      const favCompany = isTrue(r.company_favorite || r['Company Favorite'] || r['Favorite Company'] || r.favorite || r.Favorite);
       const ticker = String(r.ticker || r.Ticker || r.stock_ticker || r['Stock Ticker'] || '').trim();
       if (ceo && company){
         rosterMap.set(ceo, company);
         companyToCeo.set(company, ceo);
       }
+      if (ceo && company && (fav || favCompany)) favoriteCeos.add(ceo);
+      if (company && favCompany) favoriteCompanies.add(company);
       if (company && ticker) companyTickers.set(company, ticker);
     });
     setLoadStatus('roster', 'done');
   } catch (e){
     rosterMap = new Map();
     companyToCeo = new Map();
+    favoriteCeos = new Set();
+    favoriteCompanies = new Set();
     companyTickers = new Map();
     setLoadStatus('roster', 'error');
   }
@@ -2287,6 +2303,8 @@ function renderTable(){
     const stock = globalStockData[r.company];
     const ticker = companyTickers.get(r.company) || '';
     const hasTicker = Boolean(ticker);
+    const favActive = favoriteCeos.has(r.ceo);
+    const favStar = `<span class="fav-inline ${favActive ? 'active' : ''}" title="Favorite">★</span>`;
     let stockPriceHtml = '<span class="muted">N/A</span>';
     let dailyChangeHtml = '<span class="muted">N/A</span>';
     let sparklineCellHtml = '<span class="muted">N/A</span>';
@@ -2312,6 +2330,7 @@ function renderTable(){
       <td>
         <div class="ceo-cell-content">
           <input type="checkbox" data-ceo="${esc(r.ceo)}" class="brandCheck" ${checked} onclick="event.stopPropagation()" />
+          ${favStar}
           <div class="ceo-name-block">
             <div class="ceo-name">${esc(r.ceo)}</div>
             <div class="company-subheader">${esc(r.company)}</div>
