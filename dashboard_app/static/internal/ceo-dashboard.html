@@ -2048,7 +2048,7 @@ async function loadSerpFeaturesIndex(){
     topStoriesNegByDate = new Map();
     topRows.forEach(r=>{
       const date = String(r.date||'').trim();
-      const entity = String(r.entity_name||'').trim().toLowerCase();
+      const entity = normEntityKey(r.entity_name);
       if (!isISODate(date) || !entity) return;
       const total = +r.total_count||0;
       const neg = +r.negative_count||0;
@@ -2114,6 +2114,12 @@ function toPct01(x){
   const n = +String(x).replace('%','').trim();
   if (!isFinite(n)) return null;
   return n > 1 ? n/100 : n;
+}
+function normEntityKey(val){
+  return String(val || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .trim();
 }
 
 async function getArticlesForDate(d){
@@ -2325,7 +2331,7 @@ async function buildRowsForDate(d){
       ctrlPct    = s.controlled / s.total;
     }
     const risk = computeRisk(negSerpPct, ctrlPct);
-    const negTopStoriesPct = topStoriesNegByDate.get(`${d}|${ceo.toLowerCase()}`) ?? null;
+    const negTopStoriesPct = topStoriesNegByDate.get(`${d}|${normEntityKey(ceo)}`) ?? null;
 
     const stock = globalStockData[a.company];
     const dailyChange = stock?.dailyChange ?? null;
