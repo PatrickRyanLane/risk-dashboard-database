@@ -696,7 +696,7 @@ def serp_feature_controls_json():
         sql = f"""
             with base as (
                 select sfi.date, sfi.entity_name, sfi.feature_type,
-                       count(*) as total_count,
+                       count(*) filter (where coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) is not null) as total_count,
                        sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
                 from serp_feature_items sfi
                 join companies c on c.id = sfi.entity_id
@@ -726,7 +726,7 @@ def serp_feature_controls_json():
         sql = f"""
             with base as (
                 select sfi.date, sfi.entity_name, sfi.feature_type,
-                       count(*) as total_count,
+                       count(*) filter (where coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) is not null) as total_count,
                        sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
                 from serp_feature_items sfi
                 join ceos ceo on ceo.id = sfi.entity_id

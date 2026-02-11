@@ -41,11 +41,15 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-
 h1{font-size:28px;margin:6px 0 18px}
 
 /* Controls */
-.controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:0 0 16px}
+.controls{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin:0 0 16px}
 .controls select,
 .controls input,
 .controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls input{min-width:220px}
+.filter-toggle.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
+.controls .spacer{flex:0 0 12px}
+.filter-block{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px;flex:1 1 420px}
+.filter-block .muted{flex:1 1 100%}
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:12px}
 select,input[type="text"]{background:var(--black);border:1px solid #23314d;border-radius:10px;color:var(--text);padding:8px 10px}
 button{background:var(--black);border:1px solid #2a3b5e;color:var(--text);border-radius:10px;padding:8px 12px;cursor:pointer}
@@ -648,13 +652,16 @@ body:has(#stockChartModal.open) {
       <div class="muted" style="font-size:12px;margin:0 0 4px">Date</div>
       <select id="dateSelect"></select>
     </div>
-    <div style="flex:1 1 420px">
+    <div class="filter-block">
       <div class="muted" style="font-size:12px;margin:0 0 4px">Filter (Company)</div>
       <input id="filterInput" type="text" placeholder="Type to filter…" />
+      <button id="clearBtn">Clear Selection</button>
     </div>
-    <button id="refreshBtn">Refresh Data</button>
-    <button id="clearBtn">Clear Selection</button>
+    <button id="fortune500Btn" class="filter-toggle" title="Filter to Fortune 500">Fortune 500</button>
+    <button id="fortune1000Btn" class="filter-toggle" title="Filter to Fortune 1000">Fortune 1000</button>
     <button id="fullHistoryBtn">Load 180 days</button>
+    <div class="spacer"></div>
+    <button id="refreshBtn">Refresh Data</button>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
       <div class="load-items" id="loadItems"></div>
@@ -873,7 +880,8 @@ function updateDateOptions(){
   const prev = sel.value;
   sel.innerHTML = dates.map(d=>`<option value="${d}">${d}</option>`).join('');
   sel.value = dates.includes(prev) ? prev : (dates[dates.length-1] || '');
-  document.getElementById('fullHistoryBtn').disabled = currentDays >= FULL_DAYS;
+  const fullHistoryBtn = document.getElementById('fullHistoryBtn');
+  if (fullHistoryBtn) fullHistoryBtn.disabled = currentDays >= FULL_DAYS;
 }
 
 function maybeRenderAll(){
@@ -915,18 +923,30 @@ function updateEntityUrlParam(param, value){
   }catch{}
 }
 
+function isTrue(val){
+  return ['true','1','yes','y'].includes(String(val || '').trim().toLowerCase());
+}
+
 async function loadRosterTickers(){
   try{
     const rows = await fetchCsv('/api/v1/roster');
     companyTickers = new Map();
+    fortuneFlags = new Map();
     rows.forEach(r=>{
       const company = String(r.company || r.Company || '').trim();
       if (!company) return;
       const ticker = String(r.ticker || r.Ticker || r.stock_ticker || r['Stock Ticker'] || '').trim();
       if (ticker) companyTickers.set(company, ticker);
+      const f500 = String(r['Fortune 500'] || r.fortune_500 || r.fortune500 || '').trim();
+      const f1000 = String(r['Fortune 1000'] || r.fortune_1000 || r.fortune1000 || '').trim();
+      fortuneFlags.set(company, {
+        f500: isTrue(f500) || f500.toLowerCase() === 'x',
+        f1000: isTrue(f1000) || f1000.toLowerCase() === 'x'
+      });
     });
   }catch(e){
     companyTickers = new Map();
+    fortuneFlags = new Map();
   }
 }
 
@@ -945,6 +965,8 @@ let showVolume = false; // Toggle state for volume display
 let showTrends = false; // Toggle state for trends display
 let globalTrendsData = {}; // Trends data by company
 let companyTickers = new Map();
+let fortuneFlags = new Map();
+let fortuneFilter = null;
 
 const _articlesCache = new Map();
 const _serpAggCache  = new Map();
@@ -1789,7 +1811,7 @@ async function fetchCsv(url){
     const r = await fetch(url, {cache:'default'}); // Changed from no-store to allow browser caching
     if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
     const contentType = r.headers.get('content-type') || '';
-    if (contentType.includes('application/json') || url.includes('/api/v1/')) {
+    if (contentType.includes('application/json')) {
       return await r.json();
     }
     const t = await r.text();
@@ -1977,6 +1999,7 @@ function toPct01(x){
 async function getArticlesForDate(d){
   if (_articlesCache.has(d)) return _articlesCache.get(d);
   const map = new Map();
+  if (!d) return map;
   try{
     const rows = await fetchCsv(ARTICLES_DAILY_PATH(d));
     rows.forEach(r=>{
@@ -1998,6 +2021,7 @@ async function getArticlesForDate(d){
 async function getSerpAggForDate(d){
   if (_serpAggCache.has(d)) return _serpAggCache.get(d);
   const map = new Map();
+  if (!d) return map;
   try{
     const rows = await fetchCsv(SERP_PROCESSED_PATH(d));
     rows.forEach(r=>{
@@ -2026,13 +2050,20 @@ async function init(){
     updateEntityUrlParam('company', null);
     renderAll();
   };
-  document.getElementById('fullHistoryBtn').onclick = async ()=>{
-    if (currentDays >= FULL_DAYS) return;
-    currentDays = FULL_DAYS;
-    document.getElementById('fullHistoryBtn').disabled = true;
-    await Promise.all([loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()]);
-    renderAll();
-  };
+  const f500Btn = document.getElementById('fortune500Btn');
+  const f1000Btn = document.getElementById('fortune1000Btn');
+  if (f500Btn) f500Btn.onclick = ()=>{ setFortuneFilter('500'); };
+  if (f1000Btn) f1000Btn.onclick = ()=>{ setFortuneFilter('1000'); };
+  const fullHistoryBtn = document.getElementById('fullHistoryBtn');
+  if (fullHistoryBtn) {
+    fullHistoryBtn.onclick = async ()=>{
+      if (currentDays >= FULL_DAYS) return;
+      currentDays = FULL_DAYS;
+      fullHistoryBtn.disabled = true;
+      await Promise.all([loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()]);
+      renderAll();
+    };
+  }
   document.getElementById('prevBtn').onclick = ()=>{ if (currentPage>1){ currentPage--; renderTable(); } };
   document.getElementById('nextBtn').onclick = ()=>{ const totalPages = Math.max(1, Math.ceil(filteredRows.length/PAGE_SIZE)); if (currentPage<totalPages){ currentPage++; renderTable(); } };
 
@@ -2078,7 +2109,7 @@ async function init(){
     loadCounts();
     loadSerpDaily();
     loadSerpFeaturesIndex();
-    loadRosterTickers().then(()=>{ renderTable(); });
+    loadRosterTickers().then(()=>{ renderAll(); });
   });
 
   const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
@@ -2108,6 +2139,13 @@ async function init(){
       closeStockChart();
     }
   };
+}
+
+function setFortuneFilter(next){
+  fortuneFilter = (fortuneFilter === next) ? null : next;
+  document.getElementById('fortune500Btn').classList.toggle('active', fortuneFilter === '500');
+  document.getElementById('fortune1000Btn').classList.toggle('active', fortuneFilter === '1000');
+  renderAll();
 }
 
 /********************** Data → view rows **********************/
@@ -2144,7 +2182,18 @@ async function buildRowsForDate(d){
 async function renderAll(){
   const d = document.getElementById('dateSelect').value;
   const filter = document.getElementById('filterInput').value.trim().toLowerCase();
-  const rows = (await buildRowsForDate(d)).filter(r => !filter || r.company.toLowerCase().includes(filter));
+  if (!d) {
+    filteredRows = [];
+    renderTable();
+    renderCharts();
+    return;
+  }
+  const rows = (await buildRowsForDate(d)).filter(r => {
+    if (filter && !r.company.toLowerCase().includes(filter)) return false;
+    if (fortuneFilter === '500' && !fortuneFlags.get(r.company)?.f500) return false;
+    if (fortuneFilter === '1000' && !fortuneFlags.get(r.company)?.f1000) return false;
+    return true;
+  });
   filteredRows = rows;
   currentPage = 1;
   if (rows.length === 1) {

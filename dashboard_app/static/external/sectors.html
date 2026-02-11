@@ -57,22 +57,32 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-
 h1{font-size:28px;margin:6px 0 18px}
 
 /* Controls */
-.controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:0 0 16px}
+.controls{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin:0 0 16px}
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:12px 12px}
 select,input[type="text"]{background:#1f2121;border:1px solid #23314d;border-radius:10px;color:var(--text);padding:8px 10px}
 button{background:#1f2121;border:1px solid #2a3b5e;color:var(--text);border-radius:10px;padding:8px 12px;cursor:pointer}
 button:hover{filter:brightness(1.08)}
+.filter-toggle.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
+.controls .spacer{flex:0 0 12px}
+.filter-block{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px;flex:1 1 420px}
+.filter-block .muted{flex:1 1 100%}
 
 /* Charts grid */
 .grid{
   display:grid;
-  grid-template-rows: minmax(360px, 42vh) minmax(360px, 42vh);
-  gap:18px;
+  grid-auto-rows:minmax(340px,40vh);
+  gap:16px;
   margin:16px 0;
 }
 .chart-card{ background:var(--card); border:1px solid var(--stroke);
   border-radius:12px; padding:12px 12px 48px; position:relative }
 .chart-card canvas{ width:100% !important; height:100% !important; display:block }
+.chart-card.loading::after{
+  content:"";position:absolute;left:12px;right:12px;top:54px;bottom:16px;border-radius:10px;
+  background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.18),rgba(255,255,255,.05));
+  background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite;pointer-events:none
+}
+.chart-card.loading canvas{opacity:.2}
 
 /* Range + pager (top right of each chart card) */
 .chart-actions{ position:absolute; top:10px; right:12px; display:flex; align-items:center; gap:10px; }
@@ -101,6 +111,9 @@ tbody td{padding:8px 4px;background:#1f2121;border-top:1px solid #0f1831;border-
 tbody td:nth-child(2){text-align:left;max-width:140px;white-space:normal}
 tbody tr td:first-child{border-left:1px solid #0f1831;border-radius:10px 0 0 10px}
 tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 0}
+.skeleton-row td{padding:10px 12px}
+.skeleton-bar{height:12px;border-radius:8px;background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.2),rgba(255,255,255,.05));background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite}
+.skeleton-bar.full{width:100%;height:16px}
 
 /* Stock styling */
 .stock-change{font-weight:600}
@@ -178,6 +191,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
   }
 }
 
+@keyframes skeleton{0%{background-position:200% 0}100%{background-position:-200% 0}}
 
 </style>
 </head>
@@ -191,12 +205,15 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
       <div class="muted" style="font-size:12px;margin:0 0 4px">Date</div>
       <select id="dateSelect"></select>
     </div>
-    <div style="flex:1 1 420px">
+    <div class="filter-block">
       <div class="muted" style="font-size:12px;margin:0 0 4px">Filter (Sector)</div>
       <input id="filterInput" type="text" placeholder="Type to filter…" />
+      <button id="clearBtn">Clear Selection</button>
     </div>
+    <button id="fortune500Btn" class="filter-toggle" title="Filter to Fortune 500">Fortune 500</button>
+    <button id="fortune1000Btn" class="filter-toggle" title="Filter to Fortune 1000">Fortune 1000</button>
+    <div class="spacer"></div>
     <button id="refreshBtn">Refresh Data</button>
-    <button id="clearBtn">Clear Selection</button>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
       <div class="load-items" id="loadItems"></div>
@@ -204,7 +221,29 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
   </div>
 
   <div class="grid">
-    <div class="chart-card">
+    <div class="chart-card loading" data-chart="features">
+      <h3>SERP Feature Negativity (stacked)</h3>
+      <div class="chart-actions">
+        <span class="dates-range muted" aria-live="polite"></span>
+        <div class="dates-pager">
+          <button class="dates-prev" title="Older window">←</button>
+          <button class="dates-next" title="Newer window">→</button>
+        </div>
+      </div>
+      <canvas id="featureChart"></canvas>
+    </div>
+    <div class="chart-card loading" data-chart="features">
+      <h3>SERP Feature Control (stacked)</h3>
+      <div class="chart-actions">
+        <span class="dates-range muted" aria-live="polite"></span>
+        <div class="dates-pager">
+          <button class="dates-prev" title="Older window">←</button>
+          <button class="dates-next" title="Newer window">→</button>
+        </div>
+      </div>
+      <canvas id="featureControlChart"></canvas>
+    </div>
+    <div class="chart-card loading" data-chart="news">
       <h3>News sentiment (percent of articles)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
@@ -215,7 +254,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
       </div>
       <canvas id="newsChart"></canvas>
     </div>
-    <div class="chart-card">
+    <div class="chart-card loading" data-chart="serps">
       <h3>Organic Search (Negative % • Control %)</h3>
       <div class="chart-actions">
         <span class="dates-range muted" aria-live="polite"></span>
@@ -250,20 +289,32 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
             </th>
             <th data-key="neg_news">
               <div class="tooltip-header">
-                Negative News % ▲▼
+                Negative News<br>% ▲▼
                 <span class="tooltip-text">Combined negative article sentiment across all companies in this sector. Aggregates sector-wide reputational pressure</span>
               </div>
             </th>
             <th data-key="neg_serp">
               <div class="tooltip-header">
-                Negative SERP % ▲▼
-                <span class="tooltip-text">Combined negative search results across all sector companies on Google Page 1. Indicates sector-wide search perception</span>
+                Negative Organic % ▲▼
+                <span class="tooltip-text">Combined negative organic search results across all sector companies on Google Page 1. Indicates sector-wide search perception</span>
               </div>
             </th>
             <th data-key="ctrl_pct">
               <div class="tooltip-header">
-                SERP Control % ▲▼
-                <span class="tooltip-text">Combined search result control by all sector companies. Shows industry's collective narrative control over search results</span>
+                Organic Control<br>% ▲▼
+                <span class="tooltip-text">Combined organic search result control by all sector companies. Shows industry's collective narrative control over organic results</span>
+              </div>
+            </th>
+            <th data-key="neg_serp_all">
+              <div class="tooltip-header">
+                Total SERP Negative<br>% ▲▼
+                <span class="tooltip-text">Negative share across all SERP features plus organic results for this sector</span>
+              </div>
+            </th>
+            <th data-key="ctrl_pct_all">
+              <div class="tooltip-header">
+                Total SERP Control<br>% ▲▼
+                <span class="tooltip-text">Control share across all SERP features plus organic results for this sector</span>
               </div>
             </th>
           </tr>
@@ -285,12 +336,18 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
 const COUNTS_CANDIDATES   = ['/api/v1/daily_counts?kind=brand_articles'];
 const SERPS_DAILY_CSV     = '/api/v1/daily_counts?kind=brand_serps';
 const ROSTER_CANDIDATES   = ['/api/v1/roster'];
+const SERP_FEATURES_PATH  = () => `/api/v1/serp_features?entity=brand&days=${DATE_WINDOW_SIZE}`;
+const SERP_FEATURES_CONTROL_PATH = () => `/api/v1/serp_feature_controls?entity=brand&days=${DATE_WINDOW_SIZE}`;
 
 let allCountsRows = [];
 let serpsDaily = [];
 let sectorFromBrand = new Map();
 let brandsBySector = new Map();
 let globalStockData = {};
+let serpFeatureRows = [];
+let serpFeatureControlRows = [];
+let fortuneFlags = new Map();
+let fortuneFilter = null;
 
 let filteredRows = [];
 let selectedSector = null;
@@ -298,19 +355,41 @@ let currentSort = { key:null, dir:1 };
 let currentPage = 1;
 const PAGE_SIZE = 25;
 
-let newsChart, serpChart;
+let newsChart, serpChart, featureChart, featureControlChart;
 
 const DATE_WINDOW_SIZE = 30;
 let dateWindowStart = null;
-const _loadSections = ['roster','news','serps','stock'];
+const _loadSections = ['roster','news','serps','features','stock'];
 const _loadLabels = {
   roster: 'Roster',
   news: 'News sentiment',
   serps: 'SERP metrics',
+  features: 'SERP features',
   stock: 'Stock data'
 };
 let _loadState = {};
 let _dataRendered = false;
+let dataReady = false;
+
+const FEATURE_ORDER_SENTIMENT = ['organic','aio_citations','paa_items','videos_items','perspectives_items','top_stories_items'];
+const FEATURE_LABELS = {
+  organic: 'Organic',
+  aio_citations: 'AIO citations',
+  paa_items: 'PAA',
+  videos_items: 'Videos',
+  perspectives_items: 'Perspectives',
+  top_stories_items: 'Top stories'
+};
+
+function updateChartSkeletons(){
+  const byChart = {news:'news',serps:'serps',features:'features'};
+  document.querySelectorAll('.chart-card[data-chart]').forEach(card=>{
+    const key = card.getAttribute('data-chart');
+    const loadKey = byChart[key] || key;
+    const done = _loadState[loadKey] === 'done';
+    card.classList.toggle('loading', !done);
+  });
+}
 
 function initLoadStatus(){
   _loadState = Object.fromEntries(_loadSections.map(k => [k, 'loading']));
@@ -332,6 +411,7 @@ function setLoadStatus(key, state){
     pill.classList.toggle('error', state === 'error');
   }
   updateLoadBar();
+  updateChartSkeletons();
 }
 
 function updateLoadBar(){
@@ -468,7 +548,7 @@ async function fetchCsv(url){
   const r = await fetch(url, {cache:'no-store'});
   if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
   const contentType = r.headers.get('content-type') || '';
-  if (contentType.includes('application/json') || url.includes('/api/v1/')) {
+  if (contentType.includes('application/json')) {
     return await r.json();
   }
   const t = await r.text();
@@ -523,27 +603,61 @@ async function loadSerpDaily(){
   }
 }
 
+async function loadSerpFeatures(){
+  try{
+    const rows = await fetchCsv(SERP_FEATURES_PATH());
+    serpFeatureRows = rows.map(r => ({
+      date: String(r.date || '').trim(),
+      entity: String(r.entity_name || r.entity || '').trim(),
+      feature: String(r.feature_type || '').trim(),
+      total: +r.total_count || +r.total || 0,
+      neg: +r.negative_count || +r.negative || 0
+    })).filter(r => isISODate(r.date) && r.entity && r.feature);
+    const ctrlRows = await fetchCsv(SERP_FEATURES_CONTROL_PATH());
+    serpFeatureControlRows = ctrlRows.map(r => ({
+      date: String(r.date || '').trim(),
+      entity: String(r.entity_name || r.entity || '').trim(),
+      feature: String(r.feature_type || '').trim(),
+      total: +r.total_count || +r.total || 0,
+      ctrl: +r.controlled_count || +r.controlled || 0
+    })).filter(r => isISODate(r.date) && r.entity && r.feature);
+    setLoadStatus('features', 'done');
+  } catch (e){
+    serpFeatureRows = [];
+    serpFeatureControlRows = [];
+    setLoadStatus('features', 'error');
+  }
+}
+
 async function loadRosterSectors() {
   try{
     const rows = await fetchCsvAny(ROSTER_CANDIDATES);
 
     sectorFromBrand.clear();
     brandsBySector.clear();
+    fortuneFlags = new Map();
 
     rows.forEach(r => {
       const brandRaw  = r.company || r.Company || r.brand || r.Brand || '';
       const sector    = r.sector  || r.Sector  || '';
+      const f500 = String(r['Fortune 500'] || r.fortune_500 || r.fortune500 || '').trim();
+      const f1000 = String(r['Fortune 1000'] || r.fortune_1000 || r.fortune1000 || '').trim();
       const brandKey  = canonBrand(brandRaw);
       if (!brandKey || !sector) return;
 
       sectorFromBrand.set(brandKey, sector);
       if (!brandsBySector.has(sector)) brandsBySector.set(sector, new Set());
       brandsBySector.get(sector).add(brandKey);
+      fortuneFlags.set(brandKey, {
+        f500: ['true','1','yes','y','x'].includes(f500.toLowerCase()),
+        f1000: ['true','1','yes','y','x'].includes(f1000.toLowerCase())
+      });
     });
     setLoadStatus('roster', 'done');
   } catch (e){
     sectorFromBrand.clear();
     brandsBySector.clear();
+    fortuneFlags = new Map();
     setLoadStatus('roster', 'error');
   }
 }
@@ -552,10 +666,12 @@ async function loadRosterSectors() {
 /* ================= Init ================= */
 async function init(){
   initLoadStatus();
+  dataReady = false;
   await Promise.all([
     loadRosterSectors(),
     loadCounts(),
     loadSerpDaily(),
+    loadSerpFeatures(),
     loadStockData().then(data => {
       globalStockData = data;
       if (Object.keys(globalStockData).length > 0) {
@@ -578,6 +694,8 @@ async function init(){
   document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll(); });
   document.getElementById('refreshBtn').onclick = async ()=>{ await init(); };
   document.getElementById('clearBtn').onclick = ()=>{ selectedSector=null; document.getElementById('filterInput').value=''; renderAll(); };
+  document.getElementById('fortune500Btn').onclick = ()=>{ setFortuneFilter('500'); };
+  document.getElementById('fortune1000Btn').onclick = ()=>{ setFortuneFilter('1000'); };
   document.getElementById('prevBtn').onclick = ()=>{ if (currentPage>1){ currentPage--; renderTable(); } };
   document.getElementById('nextBtn').onclick = ()=>{ const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE)); if (currentPage<totalPages){ currentPage++; renderTable(); } };
 
@@ -593,9 +711,19 @@ async function init(){
   const ro = new ResizeObserver(() => {
     if (newsChart) newsChart.resize();
     if (serpChart) serpChart.resize();
+    if (featureChart) featureChart.resize();
+    if (featureControlChart) featureControlChart.resize();
   });
   document.querySelectorAll('.chart-card').forEach(el => ro.observe(el));
 
+  dataReady = true;
+  renderAll();
+}
+
+function setFortuneFilter(next){
+  fortuneFilter = (fortuneFilter === next) ? null : next;
+  document.getElementById('fortune500Btn').classList.toggle('active', fortuneFilter === '500');
+  document.getElementById('fortune1000Btn').classList.toggle('active', fortuneFilter === '1000');
   renderAll();
 }
 
@@ -628,14 +756,30 @@ async function buildSectorRowsForDate(d) {
   const sectors = [];
   brandsBySector.forEach((brandSet, sectorName) => {
     let nPos=0, nNeu=0, nNeg=0, sTot=0, sNeg=0, sCtrl=0;
+    let sfTot=0, sfNeg=0, sfCtrl=0;
     let dailyChanges = [];
     let sevenDayChanges = [];
 
     brandSet.forEach(bKey => {
+      if (fortuneFilter === '500' && !fortuneFlags.get(bKey)?.f500) return;
+      if (fortuneFilter === '1000' && !fortuneFlags.get(bKey)?.f1000) return;
       const n = newsByBrand.get(bKey);
       if (n) { nPos += n.pos; nNeu += n.neu; nNeg += n.neg; }
       const s = serpByBrand.get(bKey);
       if (s) { sTot += s.total; sNeg += s.neg; sCtrl += s.ctrl; }
+      serpFeatureRows.forEach(r=>{
+        if (r.date !== d) return;
+        if (canonBrand(r.entity || '') !== bKey) return;
+        if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+        sfTot += r.total || 0;
+        sfNeg += r.neg || 0;
+      });
+      serpFeatureControlRows.forEach(r=>{
+        if (r.date !== d) return;
+        if (canonBrand(r.entity || '') !== bKey) return;
+        if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+        sfCtrl += r.ctrl || 0;
+      });
       
       // Get stock data for this brand
       for (const [company, stock] of Object.entries(globalStockData)) {
@@ -652,13 +796,16 @@ async function buildSectorRowsForDate(d) {
     const neg_news = newsTot ? (nNeg / newsTot) : null;
     const neg_serp = sTot    ? (sNeg / sTot)    : null;
     const ctrl_pct = sTot    ? (sCtrl / sTot)   : null;
+    const total_serp = (sTot + sfTot);
+    const neg_serp_all = total_serp ? ((sNeg + sfNeg) / total_serp) : null;
+    const ctrl_pct_all = total_serp ? ((sCtrl + sfCtrl) / total_serp) : null;
     const avg_daily_change = dailyChanges.length ? 
       (dailyChanges.reduce((a,b) => a+b, 0) / dailyChanges.length) : null;
     const avg_stock_change = sevenDayChanges.length ? 
       (sevenDayChanges.reduce((a,b) => a+b, 0) / sevenDayChanges.length) : null;
 
-    if (newsTot || sTot) {
-      sectors.push({ sector: sectorName, neg_news, neg_serp, ctrl_pct, avg_daily_change, avg_stock_change });
+    if (newsTot || sTot || sfTot) {
+      sectors.push({ sector: sectorName, neg_news, neg_serp, ctrl_pct, neg_serp_all, ctrl_pct_all, avg_daily_change, avg_stock_change });
     }
   });
 
@@ -693,6 +840,14 @@ async function renderAll(){
 
 function renderTable(){
   const tbody = document.getElementById('tbody');
+  if (!dataReady) {
+    tbody.innerHTML = Array.from({length: 6}).map(() => `
+      <tr class="skeleton-row">
+        <td colspan="9"><div class="skeleton-bar full"></div></td>
+      </tr>
+    `).join('');
+    return;
+  }
   let rows = [...filteredRows];
 
   if (currentSort.key){
@@ -731,6 +886,8 @@ function renderTable(){
       <td>${fmtPct(r.neg_news)}</td>
       <td>${fmtPct(r.neg_serp)}</td>
       <td>${fmtPct(r.ctrl_pct)}</td>
+      <td>${fmtPct(r.neg_serp_all)}</td>
+      <td>${fmtPct(r.ctrl_pct_all)}</td>
     </tr>`;
   }).join('');
 
@@ -801,8 +958,110 @@ function getDateSeries(){
   return {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct};
 }
 
+function getFeatureSeries(){
+  const byDate = new Map();
+  const totalByDate = new Map();
+  let allowed = null;
+  if (selectedSector && brandsBySector.has(selectedSector)){
+    allowed = brandsBySector.get(selectedSector);
+  }
+  const organicByDate = new Map();
+  serpsDaily.forEach(r=>{
+    const brandKey = canonBrand(r.company || r.brand || '');
+    if (allowed && !allowed.has(brandKey)) return;
+    const key = r.date;
+    if (!organicByDate.has(key)) organicByDate.set(key, {total:0, neg:0});
+    const o = organicByDate.get(key);
+    o.total += +r.total || 0;
+    o.neg += +r.neg_serp || 0;
+  });
+  serpFeatureRows.forEach(r=>{
+    const brandKey = canonBrand(r.entity || '');
+    if (allowed && !allowed.has(brandKey)) return;
+    if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+    if (!totalByDate.has(r.date)) totalByDate.set(r.date, 0);
+    totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
+    if (!byDate.has(r.date)) byDate.set(r.date, {});
+    const bucket = byDate.get(r.date);
+    if (!bucket[r.feature]) bucket[r.feature] = {neg:0};
+    bucket[r.feature].neg += r.neg || 0;
+  });
+  organicByDate.forEach((o, date)=>{
+    if (!totalByDate.has(date)) totalByDate.set(date, 0);
+    totalByDate.set(date, totalByDate.get(date) + o.total);
+    if (!byDate.has(date)) byDate.set(date, {});
+    const bucket = byDate.get(date);
+    if (!bucket.organic) bucket.organic = {neg:0};
+    bucket.organic.neg += o.neg || 0;
+  });
+  const dates = [...totalByDate.keys()].filter(isISODate).sort();
+  const series = {};
+  FEATURE_ORDER_SENTIMENT.forEach(f => { series[f] = []; });
+  dates.forEach(d=>{
+    const bucket = byDate.get(d) || {};
+    const dayTotal = totalByDate.get(d) || 0;
+    FEATURE_ORDER_SENTIMENT.forEach(f=>{
+      const v = bucket[f] || {neg:0};
+      series[f].push(dayTotal ? (v.neg / dayTotal * 100) : 0);
+    });
+  });
+  return {dates, series, order: FEATURE_ORDER_SENTIMENT, countsByDate: byDate, totalsByDate: totalByDate};
+}
+
+function getFeatureControlSeries(){
+  const byDate = new Map();
+  const totalByDate = new Map();
+  let allowed = null;
+  if (selectedSector && brandsBySector.has(selectedSector)){
+    allowed = brandsBySector.get(selectedSector);
+  }
+  const organicByDate = new Map();
+  serpsDaily.forEach(r=>{
+    const brandKey = canonBrand(r.company || r.brand || '');
+    if (allowed && !allowed.has(brandKey)) return;
+    const key = r.date;
+    if (!organicByDate.has(key)) organicByDate.set(key, {total:0, ctrl:0});
+    const o = organicByDate.get(key);
+    o.total += +r.total || 0;
+    o.ctrl += +r.ctrl || 0;
+  });
+  serpFeatureControlRows.forEach(r=>{
+    const brandKey = canonBrand(r.entity || '');
+    if (allowed && !allowed.has(brandKey)) return;
+    if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+    if (!byDate.has(r.date)) byDate.set(r.date, {});
+    const bucket = byDate.get(r.date);
+    if (!bucket[r.feature]) bucket[r.feature] = {ctrl:0};
+    bucket[r.feature].ctrl += r.ctrl || 0;
+    if (!totalByDate.has(r.date)) totalByDate.set(r.date, 0);
+    totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
+  });
+  organicByDate.forEach((o, date)=>{
+    if (!byDate.has(date)) byDate.set(date, {});
+    const bucket = byDate.get(date);
+    if (!bucket.organic) bucket.organic = {ctrl:0};
+    bucket.organic.ctrl += o.ctrl || 0;
+    if (!totalByDate.has(date)) totalByDate.set(date, 0);
+    totalByDate.set(date, totalByDate.get(date) + o.total);
+  });
+  const dates = [...totalByDate.keys()].filter(isISODate).sort();
+  const series = {};
+  FEATURE_ORDER_SENTIMENT.forEach(f => { series[f] = []; });
+  dates.forEach(d=>{
+    const bucket = byDate.get(d) || {};
+    const dayTotal = totalByDate.get(d) || 0;
+    FEATURE_ORDER_SENTIMENT.forEach(f=>{
+      const v = bucket[f] || {ctrl:0};
+      series[f].push(dayTotal ? (v.ctrl / dayTotal * 100) : 0);
+    });
+  });
+  return {dates, series, order: FEATURE_ORDER_SENTIMENT, countsByDate: byDate, totalsByDate: totalByDate};
+}
+
 function renderCharts(){
   const {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct} = getDateSeries();
+  const {dates: featureDates, series: featureSeries, order: featureOrder, countsByDate: featureCountsByDate} = getFeatureSeries();
+  const {dates: featureCtrlDates, series: featureCtrlSeries, order: featureCtrlOrder, countsByDate: featureCtrlCountsByDate} = getFeatureControlSeries();
 
   if (dateWindowStart === null){
     dateWindowStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
@@ -814,6 +1073,24 @@ function renderCharts(){
   const nG = sliceWindow(newsNeg,     start, DATE_WINDOW_SIZE);
   const sN = sliceWindow(serpNegPct,  start, DATE_WINDOW_SIZE);
   const sC = sliceWindow(serpCtrlPct, start, DATE_WINDOW_SIZE);
+  const featureIndex = new Map(featureDates.map((d,i)=>[d,i]));
+  const fDates = featureDates.length ? featureDates : d;
+  const featureData = featureOrder.map(f=>{
+    const arr = featureSeries[f] || [];
+    return fDates.map(dt=>{
+      const idx = featureIndex.get(dt);
+      return idx == null ? 0 : (arr[idx] || 0);
+    });
+  });
+  const featureCtrlIndex = new Map(featureCtrlDates.map((d,i)=>[d,i]));
+  const fcDates = featureCtrlDates.length ? featureCtrlDates : d;
+  const featureCtrlData = featureCtrlOrder.map(f=>{
+    const arr = featureCtrlSeries[f] || [];
+    return fcDates.map(dt=>{
+      const idx = featureCtrlIndex.get(dt);
+      return idx == null ? 0 : (arr[idx] || 0);
+    });
+  });
 
   updateDateRangeUI(dates);
   hookDatePager(dates);
@@ -872,6 +1149,74 @@ function renderCharts(){
       ]
     },
     options: { ...commonOpts }
+  });
+
+  const fh = document.getElementById('featureChart').getContext('2d');
+  if (featureChart) featureChart.destroy();
+  featureChart = new Chart(fh, {
+    type: 'line',
+    data: {
+      labels: fDates,
+      datasets: featureOrder.map((feature, idx) => ({
+        label: FEATURE_LABELS[feature] || feature,
+        data: featureData[idx],
+        tension: .25,
+        borderColor: ['#ff3b30', '#ff5e57', '#ff7a59', '#ff9f43', '#ff6f91', '#e63946'][idx % 6],
+        backgroundColor: ['rgba(255,59,48,.35)','rgba(255,94,87,.35)','rgba(255,122,89,.35)','rgba(255,159,67,.35)','rgba(255,111,145,.35)','rgba(230,57,70,.35)'][idx % 6],
+        fill: true,
+        stack: 'features'
+      }))
+    },
+    options: {
+      ...commonOpts,
+      plugins: {
+        ...commonOpts.plugins,
+        title: { ...commonOpts.plugins.title, text: `${who} • SERP Feature Negative Share` },
+        tooltip: { callbacks: { label: (ctx) => {
+          const label = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
+          const val = (ctx.parsed && typeof ctx.parsed.y === 'number') ? ctx.parsed.y : (typeof ctx.parsed === 'number' ? ctx.parsed : 0);
+          const date = ctx.label;
+          const feature = featureOrder[ctx.datasetIndex];
+          const bucket = featureCountsByDate.get(date) || {};
+          const count = bucket[feature]?.neg || 0;
+          return `${label}${fmtPctInt(val)} (${count})`;
+        }}}
+      }
+    }
+  });
+
+  const fch = document.getElementById('featureControlChart').getContext('2d');
+  if (featureControlChart) featureControlChart.destroy();
+  featureControlChart = new Chart(fch, {
+    type: 'line',
+    data: {
+      labels: fcDates,
+      datasets: featureCtrlOrder.map((feature, idx) => ({
+        label: FEATURE_LABELS[feature] || feature,
+        data: featureCtrlData[idx],
+        tension: .25,
+        borderColor: ['#2d9cdb', '#1b84d1', '#1769aa', '#115293', '#0d3b66', '#0a2742'][idx % 6],
+        backgroundColor: ['rgba(45,156,219,.35)','rgba(27,132,209,.35)','rgba(23,105,170,.35)','rgba(17,82,147,.35)','rgba(13,59,102,.35)','rgba(10,39,66,.35)'][idx % 6],
+        fill: true,
+        stack: 'features'
+      }))
+    },
+    options: {
+      ...commonOpts,
+      plugins: {
+        ...commonOpts.plugins,
+        title: { ...commonOpts.plugins.title, text: `${who} • SERP Feature Control Share` },
+        tooltip: { callbacks: { label: (ctx) => {
+          const label = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
+          const val = (ctx.parsed && typeof ctx.parsed.y === 'number') ? ctx.parsed.y : (typeof ctx.parsed === 'number' ? ctx.parsed : 0);
+          const date = ctx.label;
+          const feature = featureCtrlOrder[ctx.datasetIndex];
+          const bucket = featureCtrlCountsByDate.get(date) || {};
+          const count = bucket[feature]?.ctrl || 0;
+          return `${label}${fmtPctInt(val)} (${count})`;
+        }}}
+      }
+    }
   });
 }
 
