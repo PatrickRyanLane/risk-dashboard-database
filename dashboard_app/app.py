@@ -62,6 +62,14 @@ _refresh_last_status = {
 REFRESH_LOCK_KEY = int(os.getenv("REFRESH_LOCK_KEY", "918273645"))
 
 
+def _set_application_name(conn, name: str) -> None:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("set application_name = %s", (name,))
+    except Exception:
+        pass
+
+
 def _try_acquire_refresh_lock(conn) -> bool:
     with conn.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s)", (REFRESH_LOCK_KEY,))
@@ -246,16 +254,21 @@ def get_conn():
         raise RuntimeError('DATABASE_URL is required')
     global _db_pool
     if DB_POOL_MAX < 1:
-        return psycopg2.connect(DB_DSN)
+        conn = psycopg2.connect(DB_DSN)
+        _set_application_name(conn, "risk_dashboard_web")
+        return conn
     if _db_pool is None:
         with _db_pool_lock:
             if _db_pool is None:
                 _db_pool = ThreadedConnectionPool(DB_POOL_MIN, DB_POOL_MAX, dsn=DB_DSN)
     try:
-        return _db_pool.getconn()
+        conn = _db_pool.getconn()
+        _set_application_name(conn, "risk_dashboard_web")
+        return conn
     except PoolError:
         app.logger.warning("db_pool_exhausted_fallback")
         conn = psycopg2.connect(DB_DSN)
+        _set_application_name(conn, "risk_dashboard_web")
         with _db_fallback_lock:
             _db_fallback_ids.add(id(conn))
         return conn
@@ -1508,6 +1521,7 @@ def refresh_negative_summary():
     if lock_conn is None:
         return jsonify({'error': 'db_unavailable'}), 503
     lock_conn.autocommit = True
+    _set_application_name(lock_conn, "refresh_negative_summary")
     if not _try_acquire_refresh_lock(lock_conn):
         put_conn(lock_conn)
         return jsonify({'status': 'busy'}), 202
@@ -1546,6 +1560,7 @@ def refresh_aggregates():
                 _refresh_in_progress = False
             return
         lock_conn.autocommit = True
+        _set_application_name(lock_conn, "refresh_aggregates")
         if not _try_acquire_refresh_lock(lock_conn):
             with _refresh_lock:
                 _refresh_last_status = {
@@ -1751,6 +1766,7 @@ def apply_override():
                 app.logger.warning("refresh after override skipped: db unavailable")
                 return
             lock_conn.autocommit = True
+            _set_application_name(lock_conn, "refresh_after_override")
             if not _try_acquire_refresh_lock(lock_conn):
                 app.logger.info("refresh after override skipped: refresh already running")
                 put_conn(lock_conn)
@@ -2461,6 +2477,7 @@ def refresh_negative_summary_view(conn=None) -> None:
         conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
+    _set_application_name(conn, "refresh_negative_summary_view")
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -2480,6 +2497,7 @@ def refresh_serp_feature_daily_view(conn=None) -> None:
         conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
+    _set_application_name(conn, "refresh_serp_feature_daily_view")
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -2499,6 +2517,7 @@ def refresh_serp_feature_control_daily_view(conn=None) -> None:
         conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
+    _set_application_name(conn, "refresh_serp_feature_control_daily_view")
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -2518,6 +2537,7 @@ def refresh_serp_feature_daily_index_view(conn=None) -> None:
         conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
+    _set_application_name(conn, "refresh_serp_feature_daily_index_view")
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -2537,6 +2557,7 @@ def refresh_serp_feature_control_daily_index_view(conn=None) -> None:
         conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
+    _set_application_name(conn, "refresh_serp_feature_control_daily_index_view")
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -2556,6 +2577,7 @@ def refresh_article_daily_counts_view(conn=None) -> None:
         conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
+    _set_application_name(conn, "refresh_article_daily_counts_view")
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -2575,6 +2597,7 @@ def refresh_serp_daily_counts_view(conn=None) -> None:
         conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
+    _set_application_name(conn, "refresh_serp_daily_counts_view")
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
