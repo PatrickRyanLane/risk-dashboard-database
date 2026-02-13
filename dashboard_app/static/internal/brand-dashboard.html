@@ -264,7 +264,20 @@ tbody td:first-child{background:var(--black)}
 
 /* SERP cards */
 .serp-cards{display:grid;gap:12px;margin-top:12px}
-.serp-card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:14px 16px}
+.serp-card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:14px 16px;position:relative}
+.serp-feature-flag{
+  position:absolute;
+  top:10px;
+  right:12px;
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.3px;
+  padding:3px 8px;
+  border-radius:999px;
+  background:rgba(88,219,237,.12);
+  border:1px solid rgba(88,219,237,.35);
+  color:#58dbed;
+}
 .serp-domain{font-size:12px;color:var(--muted);margin-bottom:4px}
 .serp-title a{color:var(--text);text-decoration:underline}
 .serp-snippet{color:var(--muted);margin-top:6px;line-height:1.35}
@@ -880,8 +893,10 @@ const HEADLINES_PATH      = (d, company, offset = 0) =>
 const SERP_PROCESSED_PATH = d => `/api/v1/processed_serps?date=${d}&entity=brand&kind=table`;
 const SERP_ROWS_PATH      = (d, company, offset = 0) =>
   `/api/v1/processed_serps?date=${d}&entity=brand&kind=modal&entity_name=${encodeURIComponent(company)}&limit=${MODAL_LIMIT}&offset=${offset}`;
-const SERP_FEATURE_ITEMS_PATH = (d, company, feature, offset = 0, limit = FEATURE_MODAL_LIMIT) =>
-  `/api/v1/serp_feature_items?date=${d}&entity=brand&entity_name=${encodeURIComponent(company)}&feature_type=${encodeURIComponent(feature)}&limit=${limit}&offset=${offset}`;
+const SERP_FEATURE_ITEMS_PATH = (d, company, feature, offset = 0, limit = FEATURE_MODAL_LIMIT) => {
+  const featParam = feature ? `&feature_type=${encodeURIComponent(feature)}` : '';
+  return `/api/v1/serp_feature_items?date=${d}&entity=brand&entity_name=${encodeURIComponent(company)}${featParam}&limit=${limit}&offset=${offset}`;
+};
 const SERP_FEATURE_SERIES_PATH = (company, feature, days = 30) =>
   `/api/v1/serp_feature_series?entity=brand&entity_name=${encodeURIComponent(company)}&feature_type=${encodeURIComponent(feature)}&days=${days}`;
 
@@ -1044,6 +1059,7 @@ const FEATURE_ITEM_MAP = {
   top_stories: 'top_stories_items'
 };
 const FEATURE_LABELS = {
+  all: 'All Features',
   organic: 'Organic',
   aio_citations: 'AIO citations',
   paa_items: 'PAA',
@@ -1056,6 +1072,7 @@ const FEATURE_LABELS = {
   top_stories_items: 'Top stories',
   top_stories: 'Top stories'
 };
+const FEATURE_ALL_KEY = 'all';
 const FEATURE_MODAL_ORDER = ['aio_citations','paa_items','videos_items','perspectives_items','top_stories_items'];
 const FEATURE_MODAL_LIMIT = 100;
 const FEATURE_MODAL_DAYS = 30;
@@ -2021,6 +2038,8 @@ async function loadSerpFeaturesForEntity(entityName){
       entity: String(r.entity_name||'').trim(),
       feature: String(r.feature_type||'').trim(),
       total: +r.total_count||0,
+      pos: +r.positive_count||0,
+      neu: +r.neutral_count||0,
       neg: +r.negative_count||0
     })).filter(r=>isISODate(r.date) && r.entity && r.feature);
     _serpFeatureCache.set(entityName, parsed);
@@ -3255,9 +3274,11 @@ async function showSerp({company}){
 }
 
 async function fetchSerpFeatureItems(date, company, feature, offset, limit){
-  const key = `${date}|${company}|${feature}|${offset}|${limit}`;
+  const featureKey = feature || FEATURE_ALL_KEY;
+  const key = `${date}|${company}|${featureKey}|${offset}|${limit}`;
   if (_serpFeatureItemsCache.has(key)) return _serpFeatureItemsCache.get(key);
-  const rows = await fetchCsv(SERP_FEATURE_ITEMS_PATH(date, company, feature, offset, limit));
+  const featureParam = feature === FEATURE_ALL_KEY ? '' : feature;
+  const rows = await fetchCsv(SERP_FEATURE_ITEMS_PATH(date, company, featureParam, offset, limit));
   _serpFeatureItemsCache.set(key, rows);
   return rows;
 }
@@ -3271,11 +3292,15 @@ async function showSerpFeatures({company}){
     if (!isItemFeature(r.feature)) return;
     totalsByFeature.set(r.feature, (totalsByFeature.get(r.feature) || 0) + (r.total || 0));
   });
-  const options = FEATURE_MODAL_ORDER.map(f=>{
-    const count = totalsByFeature.get(f) ?? 0;
-    const label = FEATURE_LABELS[f] || f;
-    return `<option value="${f}">${label} (${count})</option>`;
-  }).join('');
+  const totalAll = FEATURE_MODAL_ORDER.reduce((sum, f) => sum + (totalsByFeature.get(f) || 0), 0);
+  const options = [
+    `<option value="${FEATURE_ALL_KEY}">${FEATURE_LABELS[FEATURE_ALL_KEY]} (${totalAll})</option>`,
+    ...FEATURE_MODAL_ORDER.map(f=>{
+      const count = totalsByFeature.get(f) ?? 0;
+      const label = FEATURE_LABELS[f] || f;
+      return `<option value="${f}">${label} (${count})</option>`;
+    })
+  ].join('');
   openModal(`SERP Features — ${esc(company)}`, `
     <div class="serp-metrics">
       <label for="serpFeatureSelect"><b>Feature</b></label>
@@ -3291,8 +3316,11 @@ async function showSerpFeatures({company}){
         <canvas id="serpFeatureControlChart"></canvas>
       </div>
     <div id="serpFeatureSummary" class="serp-card" style="flex:2 1 320px">
-      <h3 style="margin:0 0 6px">AI Summary</h3>
-      <div class="serp-snippet muted">Loading summary…</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <h3 style="margin:0">AI Summary</h3>
+        <button id="serpFeatureSummaryBtn" class="ghost-btn">Generate Summary</button>
+      </div>
+      <div class="serp-snippet muted" style="margin-top:8px">Summary not generated.</div>
     </div>
     </div>
     <div id="serpFeatureList" class="serp-cards"><div class="muted">Loading…</div></div>
@@ -3305,6 +3333,7 @@ async function showSerpFeatures({company}){
   const totalEl = modalContent.querySelector('#serpFeatureTotal');
   const countsEl = modalContent.querySelector('#serpFeatureCounts');
   const summaryEl = modalContent.querySelector('#serpFeatureSummary');
+  const summaryBtn = modalContent.querySelector('#serpFeatureSummaryBtn');
   const vizEl = modalContent.querySelector('#serpFeatureViz');
   if (summaryEl) summaryEl.style.display = 'none';
   if (vizEl) vizEl.style.display = 'none';
@@ -3316,8 +3345,37 @@ async function showSerpFeatures({company}){
   const moreBtn = modalContent.querySelector('#serpFeatureMore');
   let currentOffset = 0;
 
+  const featuresFor = (feature) => (
+    feature === FEATURE_ALL_KEY ? FEATURE_MODAL_ORDER : [feature]
+  );
+
+  const computeCountsForDate = (feature) => {
+    const features = featuresFor(feature);
+    let total = 0;
+    let pos = 0;
+    let neu = 0;
+    let neg = 0;
+    let ctrl = 0;
+    serpFeatureEntityRows.forEach(r=>{
+      if (r.date !== d || r.entity !== company) return;
+      if (!features.includes(r.feature)) return;
+      total += r.total || 0;
+      pos += r.pos || 0;
+      neu += r.neu || 0;
+      neg += r.neg || 0;
+    });
+    serpFeatureControlEntityRows.forEach(r=>{
+      if (r.date !== d || r.entity !== company) return;
+      if (!features.includes(r.feature)) return;
+      ctrl += r.ctrl || 0;
+    });
+    if (!total) return null;
+    return {pos, neu, neg, ctrl, total};
+  };
+
   async function renderFeature(reset = false){
     const feature = select.value;
+    const label = FEATURE_LABELS[feature] || feature;
     if (reset){
       currentOffset = 0;
       listEl.innerHTML = '<div class="muted">Loading…</div>';
@@ -3326,11 +3384,11 @@ async function showSerpFeatures({company}){
     try{
       rows = await fetchSerpFeatureItems(d, company, feature, currentOffset, FEATURE_MODAL_LIMIT);
     }catch(e){
-      listEl.innerHTML = `<div class="muted">Could not load ${FEATURE_LABELS[feature] || feature} items.</div>`;
+      listEl.innerHTML = `<div class="muted">Could not load ${label} items.</div>`;
       return;
     }
     if (!rows.length && currentOffset === 0){
-      listEl.innerHTML = `<div class="muted">No ${FEATURE_LABELS[feature] || feature} items for ${esc(company)} on ${d}.</div>`;
+      listEl.innerHTML = `<div class="muted">No ${label} items for ${esc(company)} on ${d}.</div>`;
       pager.style.display = 'none';
       return;
     }
@@ -3348,6 +3406,8 @@ async function showSerpFeatures({company}){
       const s = sRaw==='positive'?'positive':(sRaw==='negative'?'negative':'neutral');
       const ctrl = String(r.control_class||'').toLowerCase();
       const flags = flagIcons(r);
+      const featureLabel = FEATURE_LABELS[r.feature_type] || r.feature_type || '';
+      const featureFlag = featureLabel ? `<div class="serp-feature-flag">${esc(featureLabel)}</div>` : '';
       return `<div class="serp-card"
         data-serp-feature-item-id="${esc(itemId)}"
         data-sentiment-override="${esc(r.sentiment_override||'')}"
@@ -3355,6 +3415,7 @@ async function showSerpFeatures({company}){
         data-llm-label="${esc(r.llm_label||'')}"
         data-current-sentiment="${esc(s)}"
         data-current-control="${esc(ctrl)}">
+        ${featureFlag}
         <div class="serp-domain">${esc(sourceLabel || '')}</div>
         <div class="serp-title">${link}</div>
         ${snippet ? `<div class="serp-snippet">${snippet}</div>` : ''}
@@ -3387,8 +3448,92 @@ async function showSerpFeatures({company}){
     }
   }
 
+  let featureHasItems = false;
+
   async function renderFeatureSeries(){
     const feature = select.value;
+    if (feature === FEATURE_ALL_KEY) {
+      const countsForDate = computeCountsForDate(feature);
+      featureHasItems = !!(countsForDate && countsForDate.total);
+      if (totalEl) {
+        totalEl.textContent = countsForDate ? `Total URLs: ${countsForDate.total}` : '';
+      }
+      if (countsEl) {
+        countsEl.textContent = countsForDate
+          ? `Counts for ${d}: ${countsForDate.pos} positive, ${countsForDate.neu} neutral, ${countsForDate.neg} negative (total ${countsForDate.total})`
+          : '';
+      }
+      if (featureSentChart) featureSentChart.destroy();
+      if (featureCtrlChart) featureCtrlChart.destroy();
+      if (!countsForDate || !countsForDate.total){
+        if (vizEl) vizEl.style.display = 'none';
+        if (summaryEl) summaryEl.style.display = 'none';
+        if (countsEl) countsEl.textContent = `No items for ${d}.`;
+        return;
+      }
+      if (vizEl) vizEl.style.display = 'flex';
+      const negativeCount = countsForDate.neg;
+      const sentimentData = [negativeCount, Math.max(0, countsForDate.total - negativeCount)];
+      const uncontrolled = Math.max(0, countsForDate.total - countsForDate.ctrl);
+      const controlData = [countsForDate.ctrl, uncontrolled];
+      const pct = (n, d) => d ? Math.round((n / d) * 100) : 0;
+      const sentimentPct = pct(negativeCount, countsForDate.total);
+      const controlPct = pct(countsForDate.ctrl, countsForDate.total);
+      const centerTextPlugin = (text) => ({
+        id: `centerText-${text}`,
+        afterDraw(chart) {
+          const {ctx} = chart;
+          if (!ctx) return;
+          const {left, right, top, bottom} = chart.chartArea;
+          const x = (left + right) / 2;
+          const y = (top + bottom) / 2;
+          ctx.save();
+          ctx.fillStyle = '#ebf2f2';
+          ctx.font = '600 20px "Manrope", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(text, x, y);
+          ctx.restore();
+        }
+      });
+      featureSentChart = new Chart(sentCtx, {
+        type: 'doughnut',
+        data: {
+          labels: ['Negative', 'Other'],
+          datasets: [{
+            data: sentimentData,
+            backgroundColor: ['#ff826166', 'rgba(207,219,221,0.08)'],
+            borderColor: ['#ff8261', '#cfdbdd'],
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: '#ebf2f2' } } }
+        },
+        plugins: [centerTextPlugin(`${sentimentPct}%`)]
+      });
+      featureCtrlChart = new Chart(ctrlCtx, {
+        type: 'doughnut',
+        data: {
+          labels: ['Controlled', 'Uncontrolled/Unknown'],
+          datasets: [{
+            data: controlData,
+            backgroundColor: ['#58dbed66', 'rgba(88,219,237,0.03)'],
+            borderColor: ['#58dbed', '#58dbed'],
+            borderWidth: [1, 2]
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: '#ebf2f2' } } }
+        },
+        plugins: [centerTextPlugin(`${controlPct}%`)]
+      });
+      return;
+    }
     let series = [];
     try{
       series = await fetchCsv(SERP_FEATURE_SERIES_PATH(company, feature, FEATURE_MODAL_DAYS));
@@ -3418,6 +3563,7 @@ async function showSerpFeatures({company}){
         ? `Counts for ${d}: ${countsForDate.pos} positive, ${countsForDate.neu} neutral, ${countsForDate.neg} negative (total ${countsForDate.total})`
         : '';
     }
+    featureHasItems = !!(countsForDate && countsForDate.total);
     if (featureSentChart) featureSentChart.destroy();
     if (featureCtrlChart) featureCtrlChart.destroy();
     if (!countsForDate || !countsForDate.total){
@@ -3492,16 +3638,37 @@ async function showSerpFeatures({company}){
   async function renderFeatureSummary(){
     if (!summaryEl) return;
     const feature = select.value;
-    summaryEl.querySelector('.serp-snippet').textContent = 'Loading summary…';
-    try{
-      const data = await fetchCsv(`/api/internal/serp_feature_summary?date=${d}&entity=brand&entity_name=${encodeURIComponent(company)}&feature_type=${encodeURIComponent(feature)}`);
-      const text = (data && data.summary) ? data.summary : '';
-      summaryEl.querySelector('.serp-snippet').textContent = text || 'No summary available.';
-      summaryEl.style.display = 'block';
-    }catch{
-      summaryEl.querySelector('.serp-snippet').textContent = 'Summary unavailable.';
-      summaryEl.style.display = 'block';
+    if (feature === FEATURE_ALL_KEY) {
+      summaryEl.style.display = 'none';
+      return;
     }
+    if (!featureHasItems) {
+      summaryEl.style.display = 'none';
+      return;
+    }
+    const snippetEl = summaryEl.querySelector('.serp-snippet');
+    if (snippetEl) snippetEl.textContent = 'Summary not generated.';
+    if (summaryBtn) {
+      summaryBtn.disabled = false;
+      summaryBtn.textContent = 'Generate Summary';
+      summaryBtn.onclick = async () => {
+        summaryBtn.disabled = true;
+        summaryBtn.textContent = 'Generating…';
+        if (snippetEl) snippetEl.textContent = 'Generating summary…';
+        try{
+          const data = await fetchCsv(`/api/internal/serp_feature_summary?date=${d}&entity=brand&entity_name=${encodeURIComponent(company)}&feature_type=${encodeURIComponent(feature)}`);
+          const text = (data && data.summary) ? data.summary : '';
+          if (snippetEl) snippetEl.textContent = text || 'No summary available.';
+          summaryBtn.textContent = 'Regenerate Summary';
+          summaryBtn.disabled = false;
+        }catch{
+          if (snippetEl) snippetEl.textContent = 'Summary unavailable.';
+          summaryBtn.textContent = 'Generate Summary';
+          summaryBtn.disabled = false;
+        }
+      };
+    }
+    summaryEl.style.display = 'block';
   }
 
   select.addEventListener('change', async () => {
