@@ -726,7 +726,7 @@ body:has(#stockChartModal.open) {
     <!-- <button id="fullHistoryBtn">Load 180 days</button> -->
     <div class="spacer"></div>
     <button id="refreshBtn">Refresh Data</button>
-    <span id="refreshStatus" class="muted" style="font-size:12px"></span>
+    <span id="refreshStatus" class="muted" style="font-size:12px;align-self:center"></span>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
       <div class="load-items" id="loadItems"></div>
@@ -899,16 +899,19 @@ const ROSTER_CANDIDATES   = ['/api/v1/roster'];
 const BOARDS_CSV          = ['/api/v1/boards'];
 const SERPS_DAILY_CSV     = () => `/api/v1/daily_counts?kind=ceo_serps&days=${currentDays}`;
 const SERP_FEATURES_INDEX_PATH  = () => `/api/v1/serp_features?entity=ceo&days=${currentDays}&mode=index`;
-const SERP_FEATURES_TOP_STORIES_PATH = () => `/api/v1/serp_features?entity=ceo&days=${currentDays}&feature_type=top_stories_items`;
+const SERP_FEATURES_TOP_STORIES_PATH = (date) => `/api/v1/serp_features?entity=ceo&days=${currentDays}&feature_type=top_stories_items${date ? `&date=${date}` : ''}`;
 const SERP_FEATURES_ENTITY_PATH = name => `/api/v1/serp_features?entity=ceo&days=${currentDays}&entity_name=${encodeURIComponent(name)}`;
 const SERP_FEATURES_CONTROL_INDEX_PATH  = () => `/api/v1/serp_feature_controls?entity=ceo&days=${currentDays}&mode=index`;
 const SERP_FEATURES_CONTROL_ENTITY_PATH = name => `/api/v1/serp_feature_controls?entity=ceo&days=${currentDays}&entity_name=${encodeURIComponent(name)}`;
 const NEGATIVE_SUMMARY_PATH = '/api/v1/negative_summary?days=30';
 const PRELOAD_MODAL_DATA = false;
+const MODAL_LIMIT = 200;
 const ARTICLES_DAILY_PATH = d => `/api/v1/processed_articles?date=${d}&entity=ceo&kind=table`;
-const HEADLINES_PATH_CEO  = d => `/api/v1/processed_articles?date=${d}&entity=ceo&kind=modal`;
+const HEADLINES_PATH_CEO  = (d, ceo, offset = 0) =>
+  `/api/v1/processed_articles?date=${d}&entity=ceo&kind=modal&entity_name=${encodeURIComponent(ceo)}&limit=${MODAL_LIMIT}&offset=${offset}`;
 const SERP_PROCESSED_PATH = d => `/api/v1/processed_serps?date=${d}&entity=ceo&kind=table`;
-const SERP_ROWS_PATH      = d => `/api/v1/processed_serps?date=${d}&entity=ceo&kind=modal`;
+const SERP_ROWS_PATH      = (d, ceo, offset = 0) =>
+  `/api/v1/processed_serps?date=${d}&entity=ceo&kind=modal&entity_name=${encodeURIComponent(ceo)}&limit=${MODAL_LIMIT}&offset=${offset}`;
 const SERP_FEATURE_ITEMS_PATH = (d, ceo, feature, offset = 0, limit = FEATURE_MODAL_LIMIT) =>
   `/api/v1/serp_feature_items?date=${d}&entity=ceo&entity_name=${encodeURIComponent(ceo)}&feature_type=${encodeURIComponent(feature)}&limit=${limit}&offset=${offset}`;
 const SERP_FEATURE_SERIES_PATH = (ceo, feature, days = 30) =>
@@ -1892,11 +1895,8 @@ async function fetchCsv(url){
 
 // Preload modal data in background for faster popup
 function preloadModalData(date) {
-  const headlinesUrl = HEADLINES_PATH_CEO(date);
-  const serpUrl = SERP_ROWS_PATH(date);
-  fetchCsv(headlinesUrl).catch(() => {});
-  fetchCsv(serpUrl).catch(() => {});
-  console.log(`📦 Preloading modal data for ${date}`);
+  // Modal endpoints now require an entity; skip global preloading.
+  console.log(`📦 Skipping modal preload for ${date} (entity required)`);
 }
 
 async function fetchCsvAny(candidates){
@@ -2030,7 +2030,6 @@ async function loadSerpFeaturesIndex(){
   try{
     const rows = await fetchCsv(SERP_FEATURES_INDEX_PATH());
     const ctrlRows = await fetchCsv(SERP_FEATURES_CONTROL_INDEX_PATH());
-    const topRows = await fetchCsv(SERP_FEATURES_TOP_STORIES_PATH());
     serpFeatureIndexRows = rows.map(r=>({
       date: String(r.date||'').trim(),
       entity: String(r.entity_name||'').trim(),
@@ -2045,15 +2044,10 @@ async function loadSerpFeaturesIndex(){
       total: +r.total_count||0,
       ctrl: +r.controlled_count||0
     })).filter(r=>isISODate(r.date) && r.entity && r.feature);
-    topStoriesNegByDate = new Map();
-    topRows.forEach(r=>{
-      const date = String(r.date||'').trim();
-      const entity = normEntityKey(r.entity_name);
-      if (!isISODate(date) || !entity) return;
-      const total = +r.total_count||0;
-      const neg = +r.negative_count||0;
-      topStoriesNegByDate.set(`${date}|${entity}`, total > 0 ? (neg / total) : null);
-    });
+    const d = document.getElementById('dateSelect').value;
+    if (d) {
+      await loadTopStoriesForDate(d);
+    }
     setLoadStatus('features', 'done');
     if (document.getElementById('dateSelect').value) {
       renderCharts();
@@ -2063,6 +2057,24 @@ async function loadSerpFeaturesIndex(){
     serpFeatureControlIndexRows = [];
     topStoriesNegByDate = new Map();
     setLoadStatus('features', 'error');
+  }
+}
+
+async function loadTopStoriesForDate(d){
+  if (!d) return;
+  try{
+    const topRows = await fetchCsv(SERP_FEATURES_TOP_STORIES_PATH(d));
+    topStoriesNegByDate = new Map();
+    topRows.forEach(r=>{
+      const date = String(r.date||'').trim();
+      const entity = normEntityKey(r.entity_name);
+      if (!isISODate(date) || !entity) return;
+      const total = +r.total_count||0;
+      const neg = +r.negative_count||0;
+      topStoriesNegByDate.set(`${date}|${entity}`, total > 0 ? (neg / total) : null);
+    });
+  }catch(e){
+    topStoriesNegByDate = new Map();
   }
 }
 
@@ -2260,6 +2272,9 @@ async function init(){
     sel.addEventListener('change', ()=>{ 
       currentPage=1; 
       selectedCeo=null; 
+      if (sel.value) {
+        loadTopStoriesForDate(sel.value).then(()=>{ renderAll(); });
+      }
       renderAll(); 
       if (PRELOAD_MODAL_DATA) {
         setTimeout(()=>{ if (sel.value) preloadModalData(sel.value); }, 150);
@@ -3019,12 +3034,14 @@ function updateCachedOverrides(mentionId, serpResultId, updates){
     }
   };
   for (const rows of _modalHeadlinesCache.values()) {
-    for (const r of rows) {
+    const list = rows.rows || rows;
+    for (const r of list) {
       if (mentionId && String(r.mention_id || '') === mentionId) apply(r);
     }
   }
   for (const rows of _modalSerpCache.values()) {
-    for (const r of rows) {
+    const list = rows.rows || rows;
+    for (const r of list) {
       if (serpResultId && String(r.serp_result_id || '') === serpResultId) apply(r);
     }
   }
@@ -3206,16 +3223,21 @@ function showBoards(ceo){
 
 async function showHeadlines({ ceo }) {
   const d = document.getElementById('dateSelect').value;
-  const file = HEADLINES_PATH_CEO(d);
-
   openModal(`Headlines — ${esc(ceo)}`, `<div class="muted">Loading…</div>`);
+  const cacheKey = `${d}|${ceo}`;
   let rows = [];
+  let total = null;
+  let offset = 0;
   try {
-    if (_modalHeadlinesCache.has(d)) {
-      rows = _modalHeadlinesCache.get(d);
+    if (_modalHeadlinesCache.has(cacheKey)) {
+      const cached = _modalHeadlinesCache.get(cacheKey);
+      rows = cached.rows || [];
+      total = cached.total;
     } else {
-      rows = await fetchCsv(file);
-      _modalHeadlinesCache.set(d, rows);
+      const data = await fetchCsv(HEADLINES_PATH_CEO(d, ceo, offset));
+      rows = data.rows || data;
+      total = data.total;
+      _modalHeadlinesCache.set(cacheKey, { rows, total });
     }
   } catch (e) {
     openModal(`Headlines — ${esc(ceo)}`,
@@ -3223,7 +3245,7 @@ async function showHeadlines({ ceo }) {
     return;
   }
 
-  const list = rows.filter(r => String(r.ceo || '').trim() === ceo);
+  let list = rows.filter(r => String(r.ceo || '').trim() === ceo);
 
   if (!list.length) {
     openModal(`Headlines — ${esc(ceo)}`,
@@ -3231,7 +3253,7 @@ async function showHeadlines({ ceo }) {
     return;
   }
 
-  const cards = list.map(r => {
+  const renderCards = (items) => items.map(r => {
     const url = String(r.url || '').trim();
     const mentionId = String(r.mention_id || '').trim();
     let domain = '';
@@ -3261,9 +3283,8 @@ async function showHeadlines({ ceo }) {
             <option value="negative" ${s==='negative'?'selected':''}>negative</option>
           </select>
           <select class="edit-controlled">
-            <option value="" ${!ctrl?'selected':''}>control</option>
             <option value="true" ${ctrl==='controlled'?'selected':''}>controlled</option>
-            <option value="false" ${ctrl==='uncontrolled'?'selected':''}>uncontrolled</option>
+            <option value="false" ${ctrl!=='controlled'?'selected':''}>uncontrolled</option>
           </select>
           <span class="edit-status"></span>
         </div>` : `<div class="badges" style="margin-top:8px"><span class="badge ${s}">${s}</span>${ctrl?`<span class="badge ${ctrl}">${ctrl}</span>`:''}</div>`}
@@ -3271,22 +3292,50 @@ async function showHeadlines({ ceo }) {
     `;
   }).join('');
 
-  openModal(`Headlines — ${esc(ceo)}`, `<div class="serp-cards">${cards}</div>`);
+  const renderModal = () => {
+    const cards = renderCards(list);
+    const showMore = total ? list.length < total : list.length % MODAL_LIMIT === 0;
+    const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
+    const totalLabel = total ? `<div class="muted" style="margin-bottom:8px">Showing ${list.length} of ${total}</div>` : '';
+    openModal(`Headlines — ${esc(ceo)}`, `${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`);
+    const btn = modalContent.querySelector('#modalLoadMore');
+    if (btn) {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        offset = list.length;
+        const data = await fetchCsv(HEADLINES_PATH_CEO(d, ceo, offset));
+        const more = data.rows || data;
+        if (Array.isArray(more) && more.length) {
+          rows = rows.concat(more);
+          if (data.total) total = data.total;
+          _modalHeadlinesCache.set(cacheKey, { rows, total });
+          list = rows.filter(r => String(r.ceo || '').trim() === ceo);
+        }
+        renderModal();
+      };
+    }
+  };
+
+  renderModal();
   modalContent.querySelectorAll('.serp-card').forEach(updatePillClasses);
 }
 
 async function showSerp(row){
   const d = document.getElementById('dateSelect').value;
-  const path = SERP_ROWS_PATH(d);
-
   openModal(`SERP — ${esc(row.ceo)}`, `<div class="muted">Loading…</div>`);
+  const cacheKey = `${d}|${row.ceo}`;
   let rows = [];
+  let total = null;
   try {
-    if (_modalSerpCache.has(d)) {
-      rows = _modalSerpCache.get(d);
+    if (_modalSerpCache.has(cacheKey)) {
+      const cached = _modalSerpCache.get(cacheKey);
+      rows = cached.rows || [];
+      total = cached.total;
     } else {
-      rows = await fetchCsv(path);
-      _modalSerpCache.set(d, rows);
+      const data = await fetchCsv(SERP_ROWS_PATH(d, row.ceo, 0));
+      rows = data.rows || data;
+      total = data.total;
+      _modalSerpCache.set(cacheKey, { rows, total });
     }
   }
   catch { openModal(`SERP — ${esc(row.ceo)}`, `<div class="muted">Could not load SERP file for ${d}.</div>`); return; }
@@ -3295,7 +3344,7 @@ async function showSerp(row){
   const canon = s => String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 
   const wantCEO = canon(row.ceo), wantCo = canon(row.company);
-  const matches = rows.filter(r => {
+  let matches = rows.filter(r => {
     const rCEO = canon(r.ceo), rCo = canon(r.company);
     return (r.ceo===row.ceo && r.company===row.company) || (rCEO===wantCEO && rCo===wantCo);
   });
@@ -3304,16 +3353,16 @@ async function showSerp(row){
     openModal(`SERP — ${esc(row.ceo)}`, `<div class="muted">No SERPs for ${esc(row.ceo)} on ${d}.</div>`); return;
   }
 
-  const total = matches.length;
+  const totalMatches = matches.length;
   const negCount = matches.filter(r => String(r.sentiment||'').toLowerCase()==='negative').length;
   const ctrlCount = matches.filter(r => (/^controlled|true|1$/i).test(String(r.controlled||''))).length;
-  const negPct = total? (negCount/total) : 0;
-  const ctrlPct = total? (ctrlCount/total) : 0;
+  const negPct = totalMatches ? (negCount/totalMatches) : 0;
+  const ctrlPct = totalMatches ? (ctrlCount/totalMatches) : 0;
   const risk = computeRisk(negPct, ctrlPct);
 
   matches.sort((a,b)=>(+a.position||9999) - (+b.position||9999));
 
-  const cards = matches.map(r=>{
+  const renderCards = (items) => items.map(r=>{
     const url = String(r.url||'').trim();
     const serpResultId = String(r.serp_result_id || '').trim();
     let domain = '';
@@ -3350,7 +3399,34 @@ async function showSerp(row){
     <b>Risk:</b> ${esc(risk)}
   </div>`;
 
-  openModal(`SERP — ${esc(row.ceo)}`, `${metrics}<div class="serp-cards">${cards}</div>`);
+  const renderModal = () => {
+    const cards = renderCards(matches);
+    const showMore = total ? matches.length < total : matches.length % MODAL_LIMIT === 0;
+    const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
+    const totalLabel = total ? `<div class="muted" style="margin:6px 0 8px">Showing ${matches.length} of ${total}</div>` : '';
+    openModal(`SERP — ${esc(row.ceo)}`, `${metrics}${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`);
+    const btn = modalContent.querySelector('#modalLoadMore');
+    if (btn) {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        const offset = matches.length;
+        const data = await fetchCsv(SERP_ROWS_PATH(d, row.ceo, offset));
+        const more = data.rows || data;
+        if (Array.isArray(more) && more.length) {
+          rows = rows.concat(more);
+          if (data.total) total = data.total;
+          _modalSerpCache.set(cacheKey, { rows, total });
+          matches = rows.filter(r => {
+            const rCEO = canon(r.ceo), rCo = canon(r.company);
+            return (r.ceo===row.ceo && r.company===row.company) || (rCEO===wantCEO && rCo===wantCo);
+          });
+        }
+        renderModal();
+      };
+    }
+  };
+
+  renderModal();
   modalContent.querySelectorAll('.serp-card').forEach(updatePillClasses);
 }
 
@@ -3466,9 +3542,8 @@ async function showSerpFeatures({ceo}){
             <option value="negative" ${s==='negative'?'selected':''}>Negative</option>
           </select>
           <select class="edit-controlled">
-            <option value="">–</option>
             <option value="true" ${ctrl==='controlled'?'selected':''}>Controlled</option>
-            <option value="false" ${ctrl==='uncontrolled'?'selected':''}>Uncontrolled</option>
+            <option value="false" ${ctrl!=='controlled'?'selected':''}>Uncontrolled</option>
           </select>
           <span class="edit-status muted"></span>
         </div>

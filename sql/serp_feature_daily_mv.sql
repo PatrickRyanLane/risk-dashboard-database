@@ -14,3 +14,12 @@ group by sfi.date, sfi.entity_type, sfi.entity_id, sfi.entity_name, sfi.feature_
 
 create unique index if not exists serp_feature_daily_mv_unique_idx
     on serp_feature_daily_mv (date, entity_type, entity_id, feature_type);
+
+create index if not exists serp_feature_daily_mv_entity_name_date_idx
+    on serp_feature_daily_mv (entity_type, entity_name, date);
+
+create index if not exists serp_feature_daily_mv_date_idx
+    on serp_feature_daily_mv (date);
+
+create index if not exists serp_feature_daily_mv_entity_feature_date_idx
+    on serp_feature_daily_mv (entity_type, feature_type, date);

@@ -833,16 +833,19 @@ let currentDays = DEFAULT_DAYS;
 const COUNTS_PATH = () => `/api/v1/daily_counts?kind=brand_articles&days=${currentDays}`;
 const SERPS_DAILY_CSV = () => `/api/v1/daily_counts?kind=brand_serps&days=${currentDays}`;
 const SERP_FEATURES_INDEX_PATH  = () => `/api/v1/serp_features?entity=brand&days=${currentDays}&mode=index`;
-const SERP_FEATURES_TOP_STORIES_PATH = () => `/api/v1/serp_features?entity=brand&days=${currentDays}&feature_type=top_stories_items`;
+const SERP_FEATURES_TOP_STORIES_PATH = (date) => `/api/v1/serp_features?entity=brand&days=${currentDays}&feature_type=top_stories_items${date ? `&date=${date}` : ''}`;
 const SERP_FEATURES_ENTITY_PATH = name => `/api/v1/serp_features?entity=brand&days=${currentDays}&entity_name=${encodeURIComponent(name)}`;
 const SERP_FEATURES_CONTROL_INDEX_PATH  = () => `/api/v1/serp_feature_controls?entity=brand&days=${currentDays}&mode=index`;
 const SERP_FEATURES_CONTROL_ENTITY_PATH = name => `/api/v1/serp_feature_controls?entity=brand&days=${currentDays}&entity_name=${encodeURIComponent(name)}`;
 const NEGATIVE_SUMMARY_PATH = '/api/v1/negative_summary?days=30';
 const PRELOAD_MODAL_DATA = false;
+const MODAL_LIMIT = 200;
 const ARTICLES_DAILY_PATH = d => `/api/v1/processed_articles?date=${d}&entity=brand&kind=table`;
-const HEADLINES_PATH      = d => `/api/v1/processed_articles?date=${d}&entity=brand&kind=modal`;
+const HEADLINES_PATH      = (d, company, offset = 0) =>
+  `/api/v1/processed_articles?date=${d}&entity=brand&kind=modal&entity_name=${encodeURIComponent(company)}&limit=${MODAL_LIMIT}&offset=${offset}`;
 const SERP_PROCESSED_PATH = d => `/api/v1/processed_serps?date=${d}&entity=brand&kind=table`;
-const SERP_ROWS_PATH      = d => `/api/v1/processed_serps?date=${d}&entity=brand&kind=modal`;
+const SERP_ROWS_PATH      = (d, company, offset = 0) =>
+  `/api/v1/processed_serps?date=${d}&entity=brand&kind=modal&entity_name=${encodeURIComponent(company)}&limit=${MODAL_LIMIT}&offset=${offset}`;
 
 /********************** Runtime **********************/
 let allCountsRows = [];
@@ -1839,15 +1842,8 @@ async function fetchCsvAny(cands){
 
 // Preload modal data in background for faster popup
 function preloadModalData(date) {
-  // Fire and forget - preload into our JS cache
-  const headlinesUrl = HEADLINES_PATH(date);
-  const serpUrl = SERP_ROWS_PATH(date);
-  
-  // Start fetches using fetchCsv (populates _preloadCache)
-  fetchCsv(headlinesUrl).catch(() => {}); // Ignore errors
-  fetchCsv(serpUrl).catch(() => {});
-  
-  console.log(`📦 Preloading modal data for ${date}`);
+  // Modal endpoints now require an entity; skip global preloading.
+  console.log(`📦 Skipping modal preload for ${date} (entity required)`);
 }
 
 /********************** Loaders **********************/
@@ -1898,7 +1894,6 @@ async function loadSerpFeaturesIndex(){
   try{
     const rows = await fetchCsv(SERP_FEATURES_INDEX_PATH());
     const ctrlRows = await fetchCsv(SERP_FEATURES_CONTROL_INDEX_PATH());
-    const topRows = await fetchCsv(SERP_FEATURES_TOP_STORIES_PATH());
     serpFeatureIndexRows = rows.map(r=>({
       date: String(r.date||'').trim(),
       entity: String(r.entity_name||'').trim(),
@@ -1913,15 +1908,10 @@ async function loadSerpFeaturesIndex(){
       total: +r.total_count||0,
       ctrl: +r.controlled_count||0
     })).filter(r=>isISODate(r.date) && r.entity && r.feature);
-    topStoriesNegByDate = new Map();
-    topRows.forEach(r=>{
-      const date = String(r.date||'').trim();
-      const entity = normEntityKey(r.entity_name);
-      if (!isISODate(date) || !entity) return;
-      const total = +r.total_count||0;
-      const neg = +r.negative_count||0;
-      topStoriesNegByDate.set(`${date}|${entity}`, total > 0 ? (neg / total) : null);
-    });
+    const d = document.getElementById('dateSelect').value;
+    if (d) {
+      await loadTopStoriesForDate(d);
+    }
     setLoadStatus('features', 'done');
     if (document.getElementById('dateSelect').value) {
       renderCharts();
@@ -1931,6 +1921,24 @@ async function loadSerpFeaturesIndex(){
     serpFeatureControlIndexRows = [];
     topStoriesNegByDate = new Map();
     setLoadStatus('features', 'error');
+  }
+}
+
+async function loadTopStoriesForDate(d){
+  if (!d) return;
+  try{
+    const topRows = await fetchCsv(SERP_FEATURES_TOP_STORIES_PATH(d));
+    topStoriesNegByDate = new Map();
+    topRows.forEach(r=>{
+      const date = String(r.date||'').trim();
+      const entity = normEntityKey(r.entity_name);
+      if (!isISODate(date) || !entity) return;
+      const total = +r.total_count||0;
+      const neg = +r.negative_count||0;
+      topStoriesNegByDate.set(`${date}|${entity}`, total > 0 ? (neg / total) : null);
+    });
+  }catch(e){
+    topStoriesNegByDate = new Map();
   }
 }
 
@@ -2100,6 +2108,9 @@ async function init(){
     sel.addEventListener('change', ()=>{ 
       currentPage=1; 
       selectedCompany=null; 
+      if (sel.value) {
+        loadTopStoriesForDate(sel.value).then(()=>{ renderAll(); });
+      }
       renderAll(); 
       if (PRELOAD_MODAL_DATA) {
         setTimeout(()=>{ if (sel.value) preloadModalData(sel.value); }, 150);
@@ -2752,21 +2763,28 @@ function openModal(title,html){ modalTitle.textContent=title; modalContent.inner
 async function showHeadlines({company}){
   const d=document.getElementById('dateSelect').value;
   openModal(`Headlines — ${esc(company)}`, `<div class="muted">Loading…</div>`);
+  const cacheKey = `${d}|${company}`;
   let rows=[];
+  let total = null;
+  let offset = 0;
   try{
-    if (_modalHeadlinesCache.has(d)) {
-      rows = _modalHeadlinesCache.get(d);
+    if (_modalHeadlinesCache.has(cacheKey)) {
+      const cached = _modalHeadlinesCache.get(cacheKey);
+      rows = cached.rows || [];
+      total = cached.total;
     } else {
-      rows = await fetchCsv(HEADLINES_PATH(d));
-      _modalHeadlinesCache.set(d, rows);
+      const data = await fetchCsv(HEADLINES_PATH(d, company, offset));
+      rows = data.rows || data;
+      total = data.total;
+      _modalHeadlinesCache.set(cacheKey, { rows, total });
     }
   }catch(e){
     openModal(`Headlines — ${esc(company)}`, `<div class="muted">Could not load headlines for ${d}.</div>`); return;
   }
-  const list=rows.filter(r=>String(r.company||'').trim()===company);
+  let list=rows.filter(r=>String(r.company||'').trim()===company);
   if (!list.length){ openModal(`Headlines — ${esc(company)}`, `<div class="muted">No headlines for ${esc(company)} on ${d}.</div>`); return; }
 
-  const cards=list.map(r=>{
+  const renderCards = (items) => items.map(r=>{
     const url=String(r.url||'').trim();
     let domain=''; try{ domain=new URL(url).hostname.replace(/^www\./,''); }catch{}
     const source=esc(r.source||'');
@@ -2789,18 +2807,49 @@ async function showHeadlines({company}){
     </div>`;
   }).join('');
 
-  openModal(`Headlines — ${esc(company)}`, `<div class="serp-cards">${cards}</div>`);
+  const renderModal = () => {
+    const cards = renderCards(list);
+    const showMore = total ? list.length < total : list.length % MODAL_LIMIT === 0;
+    const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
+    const totalLabel = total ? `<div class="muted" style="margin-bottom:8px">Showing ${list.length} of ${total}</div>` : '';
+    openModal(`Headlines — ${esc(company)}`, `${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`);
+    const btn = modalContent.querySelector('#modalLoadMore');
+    if (btn) {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        offset = list.length;
+        const data = await fetchCsv(HEADLINES_PATH(d, company, offset));
+        const more = data.rows || data;
+        if (Array.isArray(more) && more.length) {
+          rows = rows.concat(more);
+          if (data.total) total = data.total;
+          _modalHeadlinesCache.set(cacheKey, { rows, total });
+          list = rows.filter(r=>String(r.company||'').trim()===company);
+        }
+        renderModal();
+      };
+    }
+  };
+
+  renderModal();
 }
 
 async function showSerp({company}){
   const d=document.getElementById('dateSelect').value;
   openModal(`SERP — ${esc(company)}`, `<div class="muted">Loading…</div>`);
-  let rows=[]; try{
-    if (_modalSerpCache.has(d)) {
-      rows = _modalSerpCache.get(d);
+  const cacheKey = `${d}|${company}`;
+  let rows=[];
+  let total=null;
+  try{
+    if (_modalSerpCache.has(cacheKey)) {
+      const cached = _modalSerpCache.get(cacheKey);
+      rows = cached.rows || [];
+      total = cached.total;
     } else {
-      rows = await fetchCsv(SERP_ROWS_PATH(d));
-      _modalSerpCache.set(d, rows);
+      const data = await fetchCsv(SERP_ROWS_PATH(d, company, 0));
+      rows = data.rows || data;
+      total = data.total;
+      _modalSerpCache.set(cacheKey, { rows, total });
     }
   }
   catch{ openModal(`SERP — ${esc(company)}`, `<div class="muted">Could not load SERP file for ${d}.</div>`); return; }
@@ -2808,18 +2857,18 @@ async function showSerp({company}){
 
   const canon=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
   const wantCo=canon(company);
-  const matches=rows.filter(r=>canon(r.company)===wantCo);
+  let matches=rows.filter(r=>canon(r.company)===wantCo);
   if (!matches.length){ openModal(`SERP — ${esc(company)}`, `<div class="muted">No SERPs for ${esc(company)} on ${d}.</div>`); return; }
 
-  const total=matches.length;
+  const totalMatches=matches.length;
   const negCount=matches.filter(r=>String(r.sentiment||'').toLowerCase()==='negative').length;
   const ctrlCount=matches.filter(r=>(/^controlled|true|1$/i).test(String(r.controlled||''))).length;
-  const negPct= total ? (negCount/total) : 0;
-  const ctrlPct= total ? (ctrlCount/total) : 0;
+  const negPct= totalMatches ? (negCount/totalMatches) : 0;
+  const ctrlPct= totalMatches ? (ctrlCount/totalMatches) : 0;
   const risk=computeRisk(negPct,ctrlPct);
 
   matches.sort((a,b)=>(+a.position||9999)-(+b.position||9999));
-  const cards=matches.map(r=>{
+  const renderCards = (items) => items.map(r=>{
     const url=String(r.url||'').trim();
     let domain=''; try{ domain=new URL(url).hostname.replace(/^www\./,''); }catch{}
     const title=esc(r.title||domain||'(no title)');
@@ -2846,7 +2895,31 @@ async function showSerp({company}){
     <b>Risk:</b> ${esc(risk)}
   </div>`;
 
-  openModal(`SERP — ${esc(company)}`, `${metrics}<div class="serp-cards">${cards}</div>`);
+  const renderModal = () => {
+    const cards = renderCards(matches);
+    const showMore = total ? matches.length < total : matches.length % MODAL_LIMIT === 0;
+    const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
+    const totalLabel = total ? `<div class="muted" style="margin:6px 0 8px">Showing ${matches.length} of ${total}</div>` : '';
+    openModal(`SERP — ${esc(company)}`, `${metrics}${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`);
+    const btn = modalContent.querySelector('#modalLoadMore');
+    if (btn) {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        const offset = matches.length;
+        const data = await fetchCsv(SERP_ROWS_PATH(d, company, offset));
+        const more = data.rows || data;
+        if (Array.isArray(more) && more.length) {
+          rows = rows.concat(more);
+          if (data.total) total = data.total;
+          _modalSerpCache.set(cacheKey, { rows, total });
+          matches = rows.filter(r=>canon(r.company)===wantCo);
+        }
+        renderModal();
+      };
+    }
+  };
+
+  renderModal();
 }
 
 /********************** Init **********************/

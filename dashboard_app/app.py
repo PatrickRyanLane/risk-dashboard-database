@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Tuple
 
 import psycopg2
+from psycopg2.pool import PoolError, ThreadedConnectionPool
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory, abort
 from google.auth.transport import requests as google_requests
@@ -26,6 +27,8 @@ logging.basicConfig(level=logging.INFO)
 
 PORT = int(os.environ.get('PORT', 8080))
 DB_DSN = os.environ.get('DATABASE_URL')
+DB_POOL_MIN = int(os.environ.get('DB_POOL_MIN', '1'))
+DB_POOL_MAX = int(os.environ.get('DB_POOL_MAX', '5'))
 DEFAULT_VIEW = os.environ.get('DEFAULT_VIEW', 'external')
 PUBLIC_MODE = os.environ.get('PUBLIC_MODE', 'false').lower() in {'1', 'true', 'yes'}
 ALLOW_EDITS = os.environ.get('ALLOW_EDITS', 'true').lower() in {'1', 'true', 'yes'}
@@ -42,8 +45,19 @@ IAP_CERTS_URL = os.environ.get('IAP_CERTS_URL', 'https://www.gstatic.com/iap/ver
 
 _api_cache = {}
 _api_cache_ttl = int(os.environ.get('API_CACHE_TTL', '300'))
+_db_pool = None
+_db_pool_lock = threading.Lock()
+_db_fallback_ids = set()
+_db_fallback_lock = threading.Lock()
 _refresh_lock = threading.Lock()
 _refresh_in_progress = False
+_refresh_last_status = {
+    'status': 'idle',
+    'started_at': None,
+    'finished_at': None,
+    'duration_ms': None,
+    'error': None,
+}
 
 DATE_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-(brand|ceo)-(articles|serps)-(modal|table)\.csv$')
 STOCK_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-stock-data\.csv$')
@@ -214,7 +228,39 @@ def scope_clause(column: str, params: List):
 def get_conn():
     if not DB_DSN:
         raise RuntimeError('DATABASE_URL is required')
-    return psycopg2.connect(DB_DSN)
+    global _db_pool
+    if DB_POOL_MAX < 1:
+        return psycopg2.connect(DB_DSN)
+    if _db_pool is None:
+        with _db_pool_lock:
+            if _db_pool is None:
+                _db_pool = ThreadedConnectionPool(DB_POOL_MIN, DB_POOL_MAX, dsn=DB_DSN)
+    try:
+        return _db_pool.getconn()
+    except PoolError:
+        app.logger.warning("db_pool_exhausted_fallback")
+        conn = psycopg2.connect(DB_DSN)
+        with _db_fallback_lock:
+            _db_fallback_ids.add(id(conn))
+        return conn
+
+
+def put_conn(conn) -> None:
+    if conn is None:
+        return
+    with _db_fallback_lock:
+        if id(conn) in _db_fallback_ids:
+            _db_fallback_ids.remove(id(conn))
+            conn.close()
+            return
+    if _db_pool is None:
+        conn.close()
+        return
+    try:
+        conn.autocommit = False
+    except Exception:
+        pass
+    _db_pool.putconn(conn)
 
 
 def rows_to_csv(headers: List[str], rows: Iterable[Tuple]) -> str:
@@ -228,10 +274,20 @@ def rows_to_csv(headers: List[str], rows: Iterable[Tuple]) -> str:
 
 def query_rows(sql: str, params: Tuple = ()) -> List[Tuple]:
     start = time.perf_counter()
-    with get_conn() as conn:
+    conn = get_conn()
+    conn.autocommit = True
+    try:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        put_conn(conn)
     elapsed = (time.perf_counter() - start) * 1000
     if os.environ.get('PERF_LOG', '0') == '1' or elapsed > 500:
         head = (sql.strip().splitlines()[0] if sql else '').strip()
@@ -241,11 +297,20 @@ def query_rows(sql: str, params: Tuple = ()) -> List[Tuple]:
 
 def query_dict(sql: str, params: Tuple = ()) -> List[Dict]:
     start = time.perf_counter()
-    with get_conn() as conn:
+    conn = get_conn()
+    try:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        put_conn(conn)
     elapsed = (time.perf_counter() - start) * 1000
     if os.environ.get('PERF_LOG', '0') == '1' or elapsed > 500:
         head = (sql.strip().splitlines()[0] if sql else '').strip()
@@ -493,10 +558,121 @@ def daily_counts_json():
 
 @app.route('/api/v1/processed_articles')
 def processed_articles_json():
+    debug = (request.args.get('debug') or '').strip().lower() in {'1', 'true', 'yes'}
     dstr = request.args.get('date', '')
     entity = request.args.get('entity', 'brand')
     kind = request.args.get('kind', 'modal')
+    entity_name = request.args.get('entity_name', '').strip()
+    if not dstr:
+        return jsonify({'error': 'date is required (YYYY-MM-DD)'}), 400
+    try:
+        limit = max(1, int(request.args.get('limit', '200')))
+    except ValueError:
+        limit = 200
+    try:
+        offset = max(0, int(request.args.get('offset', '0')))
+    except ValueError:
+        offset = 0
+    if limit > 1000:
+        limit = 1000
+
     filename = f"{dstr}-{entity}-articles-{kind}.csv"
+    if kind == 'modal':
+        try:
+            if entity == 'brand':
+                params = [dstr]
+                scope_sql, params = scope_clause("c.id", params)
+                name_sql = ""
+                if entity_name:
+                    params.append(entity_name)
+                    name_sql = "and c.name = %s"
+                params.extend([limit, offset])
+                total_params = params[:-2]
+                rows = query_rows(
+                    f"""
+                    select c.name as company, a.title, a.canonical_url as url, a.publisher as source,
+                           coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
+                           coalesce(ov.override_control_class, cm.control_class) as control_class,
+                           ov.override_sentiment_label as sentiment_override,
+                           ov.override_control_class as control_override,
+                           coalesce(cm.llm_sentiment_label, cm.llm_risk_label) as llm_label,
+                           cm.id as mention_id
+                    from company_article_mentions_daily cad
+                    join companies c on c.id = cad.company_id
+                    join articles a on a.id = cad.article_id
+                    left join company_article_mentions cm on cm.company_id = cad.company_id and cm.article_id = cad.article_id
+                    left join company_article_overrides ov on ov.company_id = cad.company_id and ov.article_id = cad.article_id
+                    where cad.date = %s {scope_sql} {name_sql}
+                    order by c.name, a.title
+                    limit %s offset %s
+                    """,
+                    tuple(params)
+                )
+                total_rows = query_rows(
+                    f"""
+                    select count(*)
+                    from company_article_mentions_daily cad
+                    join companies c on c.id = cad.company_id
+                    join articles a on a.id = cad.article_id
+                    left join company_article_mentions cm on cm.company_id = cad.company_id and cm.article_id = cad.article_id
+                    left join company_article_overrides ov on ov.company_id = cad.company_id and ov.article_id = cad.article_id
+                    where cad.date = %s {scope_sql} {name_sql}
+                    """,
+                    tuple(total_params)
+                )
+                total = int(total_rows[0][0]) if total_rows else 0
+                headers = ['company','title','url','source','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
+            else:
+                params = [dstr]
+                scope_sql, params = scope_clause("c.id", params)
+                name_sql = ""
+                if entity_name:
+                    params.append(entity_name)
+                    name_sql = "and ceo.name = %s"
+                params.extend([limit, offset])
+                total_params = params[:-2]
+                rows = query_rows(
+                    f"""
+                    select ceo.name as ceo, c.name as company, a.title, a.canonical_url as url, a.publisher as source,
+                           coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
+                           coalesce(ov.override_control_class, cm.control_class) as control_class,
+                           ov.override_sentiment_label as sentiment_override,
+                           ov.override_control_class as control_override,
+                           coalesce(cm.llm_sentiment_label, cm.llm_risk_label) as llm_label,
+                           cm.id as mention_id
+                    from ceo_article_mentions_daily cad
+                    join ceos ceo on ceo.id = cad.ceo_id
+                    join companies c on c.id = ceo.company_id
+                    join articles a on a.id = cad.article_id
+                    left join ceo_article_mentions cm on cm.ceo_id = cad.ceo_id and cm.article_id = cad.article_id
+                    left join ceo_article_overrides ov on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+                    where cad.date = %s {scope_sql} {name_sql}
+                    order by ceo.name, a.title
+                    limit %s offset %s
+                    """,
+                    tuple(params)
+                )
+                total_rows = query_rows(
+                    f"""
+                    select count(*)
+                    from ceo_article_mentions_daily cad
+                    join ceos ceo on ceo.id = cad.ceo_id
+                    join companies c on c.id = ceo.company_id
+                    join articles a on a.id = cad.article_id
+                    left join ceo_article_mentions cm on cm.ceo_id = cad.ceo_id and cm.article_id = cad.article_id
+                    left join ceo_article_overrides ov on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+                    where cad.date = %s {scope_sql} {name_sql}
+                    """,
+                    tuple(total_params)
+                )
+                total = int(total_rows[0][0]) if total_rows else 0
+                headers = ['ceo','company','title','url','source','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
+            return jsonify({"rows": [dict(zip(headers, row)) for row in rows], "total": total})
+        except Exception as exc:
+            app.logger.exception("processed_articles failed")
+            if debug:
+                return jsonify({'error': 'processed_articles_failed', 'detail': str(exc)}), 500
+            raise
     resp = processed_articles_csv(filename)
     if resp.status_code != 200:
         return resp
@@ -509,7 +685,116 @@ def processed_serps_json():
     dstr = request.args.get('date', '')
     entity = request.args.get('entity', 'brand')
     kind = request.args.get('kind', 'modal')
+    entity_name = request.args.get('entity_name', '').strip()
+    try:
+        limit = max(1, int(request.args.get('limit', '200')))
+    except ValueError:
+        limit = 200
+    try:
+        offset = max(0, int(request.args.get('offset', '0')))
+    except ValueError:
+        offset = 0
+    if limit > 1000:
+        limit = 1000
     filename = f"{dstr}-{entity}-serps-{kind}.csv"
+    if kind == 'modal':
+        if entity == 'brand':
+            params = [dstr, dstr]
+            scope_sql, params = scope_clause("c.id", params)
+            name_sql = ""
+            if entity_name:
+                params.append(entity_name)
+                name_sql = "and c.name = %s"
+            params.extend([limit, offset])
+            total_params = params[:-2]
+            rows = query_rows(
+                f"""
+                select c.name as company, r.title, r.url, r.rank as position, r.snippet,
+                       coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) as sentiment,
+                       coalesce(ov.override_control_class, r.llm_control_class, r.control_class) as controlled,
+                       ov.override_sentiment_label as sentiment_override,
+                       ov.override_control_class as control_override,
+                       coalesce(r.llm_sentiment_label, r.llm_risk_label) as llm_label,
+                       r.id as serp_result_id
+                from serp_runs sr
+                join companies c on c.id = sr.company_id
+                join serp_results r on r.serp_run_id = sr.id
+                left join serp_result_overrides ov on ov.serp_result_id = r.id
+                where sr.entity_type='company'
+                  and sr.run_at >= %s::date
+                  and sr.run_at < (%s::date + interval '1 day')
+                  {scope_sql} {name_sql}
+                order by c.name, r.rank
+                limit %s offset %s
+                """,
+                tuple(params)
+            )
+            total_rows = query_rows(
+                f"""
+                select count(*)
+                from serp_runs sr
+                join companies c on c.id = sr.company_id
+                join serp_results r on r.serp_run_id = sr.id
+                left join serp_result_overrides ov on ov.serp_result_id = r.id
+                where sr.entity_type='company'
+                  and sr.run_at >= %s::date
+                  and sr.run_at < (%s::date + interval '1 day')
+                  {scope_sql} {name_sql}
+                """,
+                tuple(total_params)
+            )
+            total = int(total_rows[0][0]) if total_rows else 0
+            headers = ['company','title','url','position','snippet','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
+        else:
+            params = [dstr, dstr]
+            scope_sql, params = scope_clause("c.id", params)
+            name_sql = ""
+            if entity_name:
+                params.append(entity_name)
+                name_sql = "and ceo.name = %s"
+            params.extend([limit, offset])
+            total_params = params[:-2]
+            rows = query_rows(
+                f"""
+                select ceo.name as ceo, c.name as company, r.title, r.url, r.rank as position, r.snippet,
+                       coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) as sentiment,
+                       coalesce(ov.override_control_class, r.llm_control_class, r.control_class) as controlled,
+                       ov.override_sentiment_label as sentiment_override,
+                       ov.override_control_class as control_override,
+                       coalesce(r.llm_sentiment_label, r.llm_risk_label) as llm_label,
+                       r.id as serp_result_id
+                from serp_runs sr
+                join ceos ceo on ceo.id = sr.ceo_id
+                join companies c on c.id = ceo.company_id
+                join serp_results r on r.serp_run_id = sr.id
+                left join serp_result_overrides ov on ov.serp_result_id = r.id
+                where sr.entity_type='ceo'
+                  and sr.run_at >= %s::date
+                  and sr.run_at < (%s::date + interval '1 day')
+                  {scope_sql} {name_sql}
+                order by ceo.name, r.rank
+                limit %s offset %s
+                """,
+                tuple(params)
+            )
+            total_rows = query_rows(
+                f"""
+                select count(*)
+                from serp_runs sr
+                join ceos ceo on ceo.id = sr.ceo_id
+                join companies c on c.id = ceo.company_id
+                join serp_results r on r.serp_run_id = sr.id
+                left join serp_result_overrides ov on ov.serp_result_id = r.id
+                where sr.entity_type='ceo'
+                  and sr.run_at >= %s::date
+                  and sr.run_at < (%s::date + interval '1 day')
+                  {scope_sql} {name_sql}
+                """,
+                tuple(total_params)
+            )
+            total = int(total_rows[0][0]) if total_rows else 0
+            headers = ['ceo','company','title','url','position','snippet','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
+        return jsonify({"rows": [dict(zip(headers, row)) for row in rows], "total": total})
     resp = processed_serps_csv(filename)
     if resp.status_code != 200:
         return resp
@@ -521,233 +806,248 @@ def processed_serps_json():
 def serp_features_json():
     entity = request.args.get('entity', 'brand')
     days = int(request.args.get('days', '90') or 90)
+    date_str = (request.args.get('date') or '').strip()
     entity_name = request.args.get('entity_name', '').strip()
     mode = request.args.get('mode', '').strip()
+    debug = (request.args.get('debug') or '').strip().lower() in {'1', 'true', 'yes'}
+    cache_key = f"serp_features:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
     entity_type = 'company' if entity == 'brand' else 'ceo'
     entity_types = ['brand', 'company'] if entity_type == 'company' else [entity_type]
 
     if entity_type == 'company':
-        entity_types = ['brand', 'company']
         if mode == "index":
-            name_sql_base = ""
-            name_sql_live = ""
-            feat_sql_base = ""
-            feat_sql_live = ""
-        else:
-            name_sql_base = "and s.entity_name = %s" if entity_name else ""
-            name_sql_live = "and sfi.entity_name = %s" if entity_name else ""
-            feat_val = request.args.get('feature_type')
-            feat_sql_base = "and s.feature_type = %s" if feat_val else ""
-            feat_sql_live = "and sfi.feature_type = %s" if feat_val else ""
-
-        params_base = [entity_types, days]
-        scope_sql_base, params_base = scope_clause("c.id", params_base)
-        params_live = [entity_types]
-        scope_sql_live, params_live = scope_clause("c.id", params_live)
-
-        if entity_name:
-            params_base.append(entity_name)
-            params_live.append(entity_name)
-        if request.args.get('feature_type'):
-            params_base.append(request.args.get('feature_type'))
-            params_live.append(request.args.get('feature_type'))
-
-        base_sql = f"""
-            select s.date, s.entity_name, s.feature_type,
-                   s.total_count, s.positive_count, s.neutral_count, s.negative_count
-            from serp_feature_daily_mv s
-            join companies c on c.id = s.entity_id
-            where s.entity_type = any(%s)
-              and s.date >= (current_date - (%s || ' days')::interval)
-              and s.date < current_date
-              {scope_sql_base}
-              {name_sql_base}
-              {feat_sql_base}
-            union all
-            select sfi.date, sfi.entity_name, sfi.feature_type,
-                   count(*) as total_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count
-            from serp_feature_items sfi
-            join companies c on c.id = sfi.entity_id
-            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
-            where sfi.entity_type = any(%s)
-              and sfi.date = current_date
-              {scope_sql_live}
-              {name_sql_live}
-              {feat_sql_live}
-            group by sfi.date, sfi.entity_name, sfi.feature_type
-        """
-        params = params_base + params_live
-        if mode == "index":
+            if date_str:
+                params = [entity_types, date_str]
+                date_sql = "and date = %s"
+            else:
+                params = [entity_types, days]
+                date_sql = "and date >= (current_date - (%s || ' days')::interval) and date <= current_date"
             sql = f"""
-                with base as ({base_sql})
                 select date, 'Index' as entity_name, feature_type,
                        sum(total_count) as total_count,
                        sum(positive_count) as positive_count,
                        sum(neutral_count) as neutral_count,
                        sum(negative_count) as negative_count
-                from base
+                from serp_feature_daily_index_mv
+                where entity_type = any(%s)
+                  {date_sql}
                 group by date, feature_type
                 order by date, feature_type
             """
         else:
+            name_sql_base = "and s.entity_name = %s" if entity_name else ""
+            feat_val = request.args.get('feature_type')
+            feat_sql_base = "and s.feature_type = %s" if feat_val else ""
+
+        if mode == "index":
+            params = params
+        else:
+            params_base = [entity_types]
+            scope_sql_base, params_base = scope_clause("c.id", params_base)
+            if date_str:
+                params_base.append(date_str)
+                date_sql = "and s.date = %s"
+            else:
+                params_base.append(days)
+                date_sql = "and s.date >= (current_date - (%s || ' days')::interval) and s.date <= current_date"
+
+            if entity_name:
+                params_base.append(entity_name)
+            if request.args.get('feature_type'):
+                params_base.append(request.args.get('feature_type'))
+
+            join_sql = "join companies c on c.id = s.entity_id" if scope_sql_base else ""
             sql = f"""
-                with base as ({base_sql})
-                select * from base
-                order by date, entity_name, feature_type
+                select s.date, s.entity_name, s.feature_type,
+                       s.total_count, s.positive_count, s.neutral_count, s.negative_count
+                from serp_feature_daily_mv s
+                {join_sql}
+                where s.entity_type = any(%s)
+                  {date_sql}
+                  {scope_sql_base}
+                  {name_sql_base}
+                  {feat_sql_base}
+                order by date, feature_type
             """
+            params = params_base
     else:
         if mode == "index":
-            name_sql_base = ""
-            name_sql_live = ""
-            feat_sql_base = ""
-            feat_sql_live = ""
-        else:
-            name_sql_base = "and s.entity_name = %s" if entity_name else ""
-            name_sql_live = "and sfi.entity_name = %s" if entity_name else ""
-            feat_val = request.args.get('feature_type')
-            feat_sql_base = "and s.feature_type = %s" if feat_val else ""
-            feat_sql_live = "and sfi.feature_type = %s" if feat_val else ""
-
-        params_base = [entity_type, days]
-        scope_sql_base, params_base = scope_clause("c.id", params_base)
-        params_live = [entity_type]
-        scope_sql_live, params_live = scope_clause("c.id", params_live)
-
-        if entity_name:
-            params_base.append(entity_name)
-            params_live.append(entity_name)
-        if request.args.get('feature_type'):
-            params_base.append(request.args.get('feature_type'))
-            params_live.append(request.args.get('feature_type'))
-
-        base_sql = f"""
-            select s.date, s.entity_name, s.feature_type,
-                   s.total_count, s.positive_count, s.neutral_count, s.negative_count
-            from serp_feature_daily_mv s
-            join ceos ceo on ceo.id = s.entity_id
-            join companies c on c.id = ceo.company_id
-            where s.entity_type = %s
-              and s.date >= (current_date - (%s || ' days')::interval)
-              and s.date < current_date
-              {scope_sql_base}
-              {name_sql_base}
-              {feat_sql_base}
-            union all
-            select sfi.date, sfi.entity_name, sfi.feature_type,
-                   count(*) as total_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count
-            from serp_feature_items sfi
-            join ceos ceo on ceo.id = sfi.entity_id
-            join companies c on c.id = ceo.company_id
-            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
-            where sfi.entity_type = %s
-              and sfi.date = current_date
-              {scope_sql_live}
-              {name_sql_live}
-              {feat_sql_live}
-            group by sfi.date, sfi.entity_name, sfi.feature_type
-        """
-        params = params_base + params_live
-        if mode == "index":
+            if date_str:
+                params = [entity_type, date_str]
+                date_sql = "and date = %s"
+            else:
+                params = [entity_type, days]
+                date_sql = "and date >= (current_date - (%s || ' days')::interval) and date <= current_date"
             sql = f"""
-                with base as ({base_sql})
                 select date, 'Index' as entity_name, feature_type,
                        sum(total_count) as total_count,
                        sum(positive_count) as positive_count,
                        sum(neutral_count) as neutral_count,
                        sum(negative_count) as negative_count
-                from base
+                from serp_feature_daily_index_mv
+                where entity_type = %s
+                  {date_sql}
                 group by date, feature_type
                 order by date, feature_type
             """
         else:
+            name_sql_base = "and s.entity_name = %s" if entity_name else ""
+            feat_val = request.args.get('feature_type')
+            feat_sql_base = "and s.feature_type = %s" if feat_val else ""
+
+            params_base = [entity_type]
+            scope_sql_base, params_base = scope_clause("c.id", params_base)
+            if date_str:
+                params_base.append(date_str)
+                date_sql = "and s.date = %s"
+            else:
+                params_base.append(days)
+                date_sql = "and s.date >= (current_date - (%s || ' days')::interval) and s.date <= current_date"
+
+            if entity_name:
+                params_base.append(entity_name)
+            if request.args.get('feature_type'):
+                params_base.append(request.args.get('feature_type'))
+
+            join_sql = "join ceos ceo on ceo.id = s.entity_id join companies c on c.id = ceo.company_id" if scope_sql_base else ""
             sql = f"""
-                with base as ({base_sql})
-                select * from base
-                order by date, entity_name, feature_type
+                select s.date, s.entity_name, s.feature_type,
+                       s.total_count, s.positive_count, s.neutral_count, s.negative_count
+                from serp_feature_daily_mv s
+                {join_sql}
+                where s.entity_type = %s
+                  {date_sql}
+                  {scope_sql_base}
+                  {name_sql_base}
+                  {feat_sql_base}
+                order by date, feature_type
             """
-    rows = query_dict(sql, tuple(params))
-    return jsonify(serialize_rows(rows))
+            params = params_base
+    try:
+        rows = query_dict(sql, tuple(params))
+        data = serialize_rows(rows)
+        set_cached_json(cache_key, data)
+        return jsonify(data)
+    except Exception as exc:
+        app.logger.exception("serp_features failed")
+        if debug:
+            return jsonify({'error': 'serp_features_failed', 'detail': str(exc)}), 500
+        raise
 
 
 @app.route('/api/v1/serp_feature_controls')
 def serp_feature_controls_json():
     entity = request.args.get('entity', 'brand')
     days = int(request.args.get('days', '90') or 90)
+    date_str = (request.args.get('date') or '').strip()
     entity_name = request.args.get('entity_name', '').strip()
     mode = request.args.get('mode', '').strip()
+    debug = (request.args.get('debug') or '').strip().lower() in {'1', 'true', 'yes'}
+    cache_key = f"serp_feature_controls:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
     entity_type = 'company' if entity == 'brand' else 'ceo'
     entity_types = ['brand', 'company'] if entity_type == 'company' else [entity_type]
 
     if entity_type == 'company':
         if mode == "index":
-            name_sql = ""
+            if date_str:
+                params = [entity_types, date_str]
+                date_sql = "and date = %s"
+            else:
+                params = [entity_types, days]
+                date_sql = "and date >= (current_date - (%s || ' days')::interval) and date <= current_date"
+            sql = f"""
+                select date, 'Index' as entity_name, feature_type,
+                       sum(total_count) as total_count,
+                       sum(controlled_count) as controlled_count
+                from serp_feature_control_daily_index_mv
+                where entity_type = any(%s)
+                  {date_sql}
+                group by date, feature_type
+                order by date, feature_type
+            """
         else:
-            name_sql = "and sfi.entity_name = %s" if entity_name else ""
-        params = [entity_types, days]
-        scope_sql, params = scope_clause("c.id", params)
-        if entity_name:
-            params.append(entity_name)
-        sql = f"""
-            with base as (
-                select sfi.date, sfi.entity_name, sfi.feature_type,
-                       count(*) filter (where coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) is not null) as total_count,
-                       sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
-                from serp_feature_items sfi
-                join companies c on c.id = sfi.entity_id
-                left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
-                where sfi.entity_type = any(%s)
-                  and sfi.date >= (current_date - (%s || ' days')::interval)
+            name_sql = "and s.entity_name = %s" if entity_name else ""
+            params = [entity_types]
+            scope_sql, params = scope_clause("c.id", params)
+            if date_str:
+                params.append(date_str)
+                date_sql = "and s.date = %s"
+            else:
+                params.append(days)
+                date_sql = "and s.date >= (current_date - (%s || ' days')::interval) and s.date <= current_date"
+            if entity_name:
+                params.append(entity_name)
+            join_sql = "join companies c on c.id = s.entity_id" if scope_sql else ""
+            sql = f"""
+                select s.date, s.entity_name, s.feature_type,
+                       s.total_count, s.controlled_count
+                from serp_feature_control_daily_mv s
+                {join_sql}
+                where s.entity_type = any(%s)
+                  {date_sql}
                   {scope_sql}
                   {name_sql}
-                group by sfi.date, sfi.entity_name, sfi.feature_type
-            )
-            select date, {("'Index'" if mode == "index" else "entity_name")} as entity_name, feature_type,
-                   sum(total_count) as total_count,
-                   sum(controlled_count) as controlled_count
-            from base
-            {"group by date, feature_type" if mode == "index" else "group by date, entity_name, feature_type"}
-            order by date, feature_type
-        """
+                order by date, feature_type
+            """
     else:
         if mode == "index":
-            name_sql = ""
+            if date_str:
+                params = [entity_type, date_str]
+                date_sql = "and date = %s"
+            else:
+                params = [entity_type, days]
+                date_sql = "and date >= (current_date - (%s || ' days')::interval) and date <= current_date"
+            sql = f"""
+                select date, 'Index' as entity_name, feature_type,
+                       sum(total_count) as total_count,
+                       sum(controlled_count) as controlled_count
+                from serp_feature_control_daily_index_mv
+                where entity_type = %s
+                  {date_sql}
+                group by date, feature_type
+                order by date, feature_type
+            """
         else:
-            name_sql = "and sfi.entity_name = %s" if entity_name else ""
-        params = [entity_type, days]
-        scope_sql, params = scope_clause("c.id", params)
-        if entity_name:
-            params.append(entity_name)
-        sql = f"""
-            with base as (
-                select sfi.date, sfi.entity_name, sfi.feature_type,
-                       count(*) filter (where coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) is not null) as total_count,
-                       sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
-                from serp_feature_items sfi
-                join ceos ceo on ceo.id = sfi.entity_id
-                join companies c on c.id = ceo.company_id
-                left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
-                where sfi.entity_type = %s
-                  and sfi.date >= (current_date - (%s || ' days')::interval)
+            name_sql = "and s.entity_name = %s" if entity_name else ""
+            params = [entity_type]
+            scope_sql, params = scope_clause("c.id", params)
+            if date_str:
+                params.append(date_str)
+                date_sql = "and s.date = %s"
+            else:
+                params.append(days)
+                date_sql = "and s.date >= (current_date - (%s || ' days')::interval) and s.date <= current_date"
+            if entity_name:
+                params.append(entity_name)
+            join_sql = "join ceos ceo on ceo.id = s.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
+            sql = f"""
+                select s.date, s.entity_name, s.feature_type,
+                       s.total_count, s.controlled_count
+                from serp_feature_control_daily_mv s
+                {join_sql}
+                where s.entity_type = %s
+                  {date_sql}
                   {scope_sql}
                   {name_sql}
-                group by sfi.date, sfi.entity_name, sfi.feature_type
-            )
-            select date, {("'Index'" if mode == "index" else "entity_name")} as entity_name, feature_type,
-                   sum(total_count) as total_count,
-                   sum(controlled_count) as controlled_count
-            from base
-            {"group by date, feature_type" if mode == "index" else "group by date, entity_name, feature_type"}
-            order by date, feature_type
-        """
+                order by date, feature_type
+            """
 
-    rows = query_dict(sql, tuple(params))
-    return jsonify(serialize_rows(rows))
+    try:
+        rows = query_dict(sql, tuple(params))
+        data = serialize_rows(rows)
+        set_cached_json(cache_key, data)
+        return jsonify(data)
+    except Exception as exc:
+        app.logger.exception("serp_feature_controls failed")
+        if debug:
+            return jsonify({'error': 'serp_feature_controls_failed', 'detail': str(exc)}), 500
+        raise
 
 
 @app.route('/api/v1/serp_feature_items')
@@ -966,9 +1266,7 @@ def negative_summary_json():
                 (start_date,),
             )
         else:
-            rows = negative_summary_view(days=days)
-            if company_filter:
-                rows = [r for r in rows if (r.get('company') or '').strip() == company_filter]
+            rows = negative_summary_view(days=days, company=company_filter or None)
         if not rows:
             resp = negative_articles_summary(days=days)
             if resp.status_code != 200:
@@ -1099,7 +1397,8 @@ def serp_feature_summary():
             'llm_summary_items': LLM_SUMMARY_ITEMS,
             'llm_key_set': bool(LLM_API_KEY),
         })
-    with get_conn() as conn:
+    conn = get_conn()
+    try:
         with conn.cursor() as cur:
             if entity_type == 'company':
                 cur.execute("select id, name from companies where name = %s", (entity_name,))
@@ -1173,6 +1472,8 @@ def serp_feature_summary():
                 """,
                 (date_str, entity_type, entity_id, canonical_name, feature_type, summary_text, LLM_PROVIDER, LLM_MODEL),
             )
+    finally:
+        put_conn(conn)
 
     return jsonify({
         'summary': summary_text,
@@ -1201,19 +1502,55 @@ def refresh_aggregates():
     user_email = require_internal_user()
     if not user_email:
         return jsonify({'error': 'unauthorized'}), 401
-    global _refresh_in_progress
+    global _refresh_in_progress, _refresh_last_status
 
     def run_refresh():
-        global _refresh_in_progress
+        global _refresh_in_progress, _refresh_last_status
+        started = datetime.utcnow()
+        with _refresh_lock:
+            _refresh_last_status = {
+                'status': 'in_progress',
+                'started_at': started.isoformat() + 'Z',
+                'finished_at': None,
+                'duration_ms': None,
+                'error': None,
+            }
+        app.logger.info("refresh_aggregates: started")
         try:
             refresh_negative_summary_view()
             refresh_serp_feature_daily_view()
+            refresh_serp_feature_control_daily_view()
+            refresh_serp_feature_daily_index_view()
+            refresh_serp_feature_control_daily_index_view()
             refresh_article_daily_counts_view()
             refresh_serp_daily_counts_view()
             clear_api_cache_prefix("negative_summary:")
             clear_api_cache_prefix("daily_counts:")
+            clear_api_cache_prefix("serp_features:")
+            clear_api_cache_prefix("serp_feature_controls:")
+            finished = datetime.utcnow()
+            duration_ms = int((finished - started).total_seconds() * 1000)
+            with _refresh_lock:
+                _refresh_last_status = {
+                    'status': 'ok',
+                    'started_at': started.isoformat() + 'Z',
+                    'finished_at': finished.isoformat() + 'Z',
+                    'duration_ms': duration_ms,
+                    'error': None,
+                }
+            app.logger.info("refresh_aggregates: ok duration_ms=%s", duration_ms)
         except Exception:
             app.logger.exception("refresh_aggregates failed")
+            finished = datetime.utcnow()
+            duration_ms = int((finished - started).total_seconds() * 1000)
+            with _refresh_lock:
+                _refresh_last_status = {
+                    'status': 'failed',
+                    'started_at': started.isoformat() + 'Z',
+                    'finished_at': finished.isoformat() + 'Z',
+                    'duration_ms': duration_ms,
+                    'error': 'refresh_failed',
+                }
         finally:
             with _refresh_lock:
                 _refresh_in_progress = False
@@ -1233,8 +1570,10 @@ def refresh_aggregates_status():
     if not user_email:
         return jsonify({'error': 'unauthorized'}), 401
     with _refresh_lock:
-        status = 'in_progress' if _refresh_in_progress else 'idle'
-    return jsonify({'status': status})
+        status = 'in_progress' if _refresh_in_progress else _refresh_last_status.get('status', 'idle')
+        payload = {'status': status}
+        payload.update(_refresh_last_status)
+    return jsonify(payload)
 
 @app.route('/api/internal/overrides', methods=['POST'])
 def apply_override():
@@ -1266,7 +1605,8 @@ def apply_override():
     if control_override not in (None, 'controlled', 'uncontrolled'):
         return jsonify({'error': 'invalid control_override'}), 400
 
-    with get_conn() as conn:
+    conn = get_conn()
+    try:
         with conn.cursor() as cur:
             if mention_type == 'company_article':
                 cur.execute(
@@ -1341,22 +1681,42 @@ def apply_override():
             else:
                 return jsonify({'error': 'invalid mention_type'}), 400
             row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        put_conn(conn)
 
     try:
-        if mention_type in {'company_article', 'ceo_article'}:
-            refresh_negative_summary_view()
-            refresh_article_daily_counts_view()
-            clear_api_cache_prefix("negative_summary:")
-            clear_api_cache_prefix("daily_counts:")
-        if mention_type == 'serp_feature_item':
-            refresh_serp_feature_daily_view()
-        if mention_type == 'serp_result':
-            refresh_serp_daily_counts_view()
-            clear_api_cache_prefix("daily_counts:")
-    except Exception:
-        app.logger.exception("refresh after override failed")
+        def _refresh_after_override():
+            try:
+                if mention_type in {'company_article', 'ceo_article'}:
+                    refresh_negative_summary_view()
+                    refresh_article_daily_counts_view()
+                    clear_api_cache_prefix("negative_summary:")
+                    clear_api_cache_prefix("daily_counts:")
+                if mention_type == 'serp_feature_item':
+                    refresh_serp_feature_daily_view()
+                    refresh_serp_feature_control_daily_view()
+                    refresh_serp_feature_daily_index_view()
+                    refresh_serp_feature_control_daily_index_view()
+                    clear_api_cache_prefix("serp_features:")
+                    clear_api_cache_prefix("serp_feature_controls:")
+                if mention_type == 'serp_result':
+                    refresh_serp_daily_counts_view()
+                    clear_api_cache_prefix("daily_counts:")
+            except Exception:
+                app.logger.exception("refresh after override failed")
 
-    return jsonify({'status': 'ok', 'id': row[0] if row else None})
+        threading.Thread(target=_refresh_after_override, daemon=True).start()
+    except Exception:
+        app.logger.exception("override refresh setup failed")
+
+    return jsonify({'status': 'ok', 'id': row[0] if row else None, 'refresh': 'started'})
 
 
 @app.route('/api/internal/favorites', methods=['POST'])
@@ -1379,7 +1739,8 @@ def update_favorite():
         return jsonify({'error': 'favorite is required'}), 400
 
     favorite = bool(favorite)
-    with get_conn() as conn:
+    conn = get_conn()
+    try:
         with conn.cursor() as cur:
             if entity_type == 'company':
                 cur.execute("update companies set favorite = %s where name = %s", (favorite, name))
@@ -1394,6 +1755,15 @@ def update_favorite():
                     )
                 else:
                     cur.execute("update ceos set favorite = %s where name = %s", (favorite, name))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        put_conn(conn)
 
     _api_cache.pop('roster', None)
     return jsonify({'status': 'ok'})
@@ -1985,11 +2355,15 @@ def negative_articles_summary(days: int | None = None):
     return Response(csv_text, content_type='text/csv')
 
 
-def negative_summary_view(days: int | None = None):
+def negative_summary_view(days: int | None = None, company: str | None = None):
     lookback_days = days or int(os.environ.get('NEGATIVE_SUMMARY_LOOKBACK_DAYS', '90'))
     start_date = datetime.utcnow().date() - timedelta(days=lookback_days)
     params = [start_date]
     scope_sql, params = scope_clause("mv.company_id", params)
+    company_sql = ""
+    if company:
+        params.append(company)
+        company_sql = " and mv.company = %s"
     rows = query_dict(
         f"""
         select mv.date,
@@ -2000,7 +2374,7 @@ def negative_summary_view(days: int | None = None):
                mv.article_type,
                mv.crisis_risk_count
         from negative_articles_summary_mv mv
-        where mv.date >= %s {scope_sql}
+        where mv.date >= %s {scope_sql}{company_sql}
         order by mv.date desc, mv.company
         """,
         tuple(params),
@@ -2029,7 +2403,7 @@ def refresh_negative_summary_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view negative_articles_summary_mv")
     finally:
-        conn.close()
+        put_conn(conn)
 
 
 def refresh_serp_feature_daily_view() -> None:
@@ -2045,7 +2419,55 @@ def refresh_serp_feature_daily_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view serp_feature_daily_mv")
     finally:
-        conn.close()
+        put_conn(conn)
+
+
+def refresh_serp_feature_control_daily_view() -> None:
+    conn = get_conn()
+    if conn is None:
+        raise RuntimeError("DATABASE_URL is not configured")
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("refresh materialized view concurrently serp_feature_control_daily_mv")
+    except Exception:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("refresh materialized view serp_feature_control_daily_mv")
+    finally:
+        put_conn(conn)
+
+
+def refresh_serp_feature_daily_index_view() -> None:
+    conn = get_conn()
+    if conn is None:
+        raise RuntimeError("DATABASE_URL is not configured")
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("refresh materialized view concurrently serp_feature_daily_index_mv")
+    except Exception:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("refresh materialized view serp_feature_daily_index_mv")
+    finally:
+        put_conn(conn)
+
+
+def refresh_serp_feature_control_daily_index_view() -> None:
+    conn = get_conn()
+    if conn is None:
+        raise RuntimeError("DATABASE_URL is not configured")
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("refresh materialized view concurrently serp_feature_control_daily_index_mv")
+    except Exception:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("refresh materialized view serp_feature_control_daily_index_mv")
+    finally:
+        put_conn(conn)
 
 
 def refresh_article_daily_counts_view() -> None:
@@ -2061,7 +2483,7 @@ def refresh_article_daily_counts_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view article_daily_counts_mv")
     finally:
-        conn.close()
+        put_conn(conn)
 
 
 def refresh_serp_daily_counts_view() -> None:
@@ -2077,7 +2499,7 @@ def refresh_serp_daily_counts_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view serp_daily_counts_mv")
     finally:
-        conn.close()
+        put_conn(conn)
 
 
 if __name__ == '__main__':

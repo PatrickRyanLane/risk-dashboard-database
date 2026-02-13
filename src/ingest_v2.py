@@ -1,8 +1,11 @@
 import csv
 import re
+import time
+import zlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+import psycopg2
 from psycopg2.extras import execute_values
 
 from src.url_utils import normalize_url, url_hash
@@ -28,6 +31,23 @@ def fetch_company_domains(conn) -> dict[str, set[str]]:
     with conn.cursor() as cur:
         cur.execute("select name, websites from companies")
         return {name: parse_company_domains(websites or "") for name, websites in cur.fetchall()}
+
+
+ARTICLES_LOCK_KEY = zlib.crc32(b"risk_dashboard_articles") & 0x7FFFFFFF
+
+
+def run_with_deadlock_retry(conn, fn, retries: int = 3, base_delay: float = 0.5):
+    for attempt in range(retries):
+        try:
+            return fn()
+        except (psycopg2.errors.DeadlockDetected, psycopg2.errors.SerializationFailure):
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            if attempt >= retries - 1:
+                raise
+            time.sleep(base_delay * (2 ** attempt))
 
 
 def upsert_companies_ceos(conn, roster_file_obj):
@@ -132,9 +152,12 @@ def upsert_articles(conn, rows):
           published_at = coalesce(excluded.published_at, articles.published_at),
           last_seen_at = excluded.last_seen_at
     """
-    with conn:
-        with conn.cursor() as cur:
-            execute_values(cur, sql, rows, page_size=1000)
+    def _do_upsert():
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("select pg_advisory_xact_lock(%s)", (ARTICLES_LOCK_KEY,))
+                execute_values(cur, sql, rows, page_size=1000)
+    run_with_deadlock_retry(conn, _do_upsert)
 
 
 def fetch_article_map(conn, urls):
