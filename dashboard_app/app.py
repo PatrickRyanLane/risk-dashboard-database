@@ -1746,24 +1746,36 @@ def apply_override():
 
     try:
         def _refresh_after_override():
+            lock_conn = get_conn()
+            if lock_conn is None:
+                app.logger.warning("refresh after override skipped: db unavailable")
+                return
+            lock_conn.autocommit = True
+            if not _try_acquire_refresh_lock(lock_conn):
+                app.logger.info("refresh after override skipped: refresh already running")
+                put_conn(lock_conn)
+                return
             try:
                 if mention_type in {'company_article', 'ceo_article'}:
-                    refresh_negative_summary_view()
-                    refresh_article_daily_counts_view()
+                    refresh_negative_summary_view(conn=lock_conn)
+                    refresh_article_daily_counts_view(conn=lock_conn)
                     clear_api_cache_prefix("negative_summary:")
                     clear_api_cache_prefix("daily_counts:")
                 if mention_type == 'serp_feature_item':
-                    refresh_serp_feature_daily_view()
-                    refresh_serp_feature_control_daily_view()
-                    refresh_serp_feature_daily_index_view()
-                    refresh_serp_feature_control_daily_index_view()
+                    refresh_serp_feature_daily_view(conn=lock_conn)
+                    refresh_serp_feature_control_daily_view(conn=lock_conn)
+                    refresh_serp_feature_daily_index_view(conn=lock_conn)
+                    refresh_serp_feature_control_daily_index_view(conn=lock_conn)
                     clear_api_cache_prefix("serp_features:")
                     clear_api_cache_prefix("serp_feature_controls:")
                 if mention_type == 'serp_result':
-                    refresh_serp_daily_counts_view()
+                    refresh_serp_daily_counts_view(conn=lock_conn)
                     clear_api_cache_prefix("daily_counts:")
             except Exception:
                 app.logger.exception("refresh after override failed")
+            finally:
+                _release_refresh_lock(lock_conn)
+                put_conn(lock_conn)
 
         threading.Thread(target=_refresh_after_override, daemon=True).start()
     except Exception:

@@ -3092,9 +3092,12 @@ function flagIcons(r){
   return parts.join(' ');
 }
 
+const _nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+
 async function showHeadlines({company}){
   const d=document.getElementById('dateSelect').value;
   openModal(`Headlines — ${esc(company)}`, `<div class="muted">Loading…</div>`);
+  await _nextFrame();
   const cacheKey = `${d}|${company}`;
   let rows=[];
   let total = null;
@@ -3179,6 +3182,7 @@ async function showHeadlines({company}){
 async function showSerp({company}){
   const d=document.getElementById('dateSelect').value;
   openModal(`SERP — ${esc(company)}`, `<div class="muted">Loading…</div>`);
+  await _nextFrame();
   const cacheKey = `${d}|${company}`;
   let rows=[];
   let total=null;
@@ -3285,6 +3289,8 @@ async function fetchSerpFeatureItems(date, company, feature, offset, limit){
 
 async function showSerpFeatures({company}){
   const d = document.getElementById('dateSelect').value;
+  openModal(`SERP Features — ${esc(company)}`, `<div class="muted">Loading…</div>`);
+  await _nextFrame();
   await loadSerpFeaturesForEntity(company);
   const totalsByFeature = new Map();
   serpFeatureEntityRows.forEach(r=>{

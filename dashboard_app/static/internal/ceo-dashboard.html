@@ -3216,6 +3216,8 @@ function flagIcons(r){
   return parts.join(' ');
 }
 
+const _nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+
 function showBoards(ceo){
   const key = canonName(ceo);
   let boards = boardsByCeo.get(ceo) || boardsByCeo.get(key);
@@ -3243,6 +3245,7 @@ function showBoards(ceo){
 async function showHeadlines({ ceo }) {
   const d = document.getElementById('dateSelect').value;
   openModal(`Headlines — ${esc(ceo)}`, `<div class="muted">Loading…</div>`);
+  await _nextFrame();
   const cacheKey = `${d}|${ceo}`;
   let rows = [];
   let total = null;
@@ -3342,6 +3345,7 @@ async function showHeadlines({ ceo }) {
 async function showSerp(row){
   const d = document.getElementById('dateSelect').value;
   openModal(`SERP — ${esc(row.ceo)}`, `<div class="muted">Loading…</div>`);
+  await _nextFrame();
   const cacheKey = `${d}|${row.ceo}`;
   let rows = [];
   let total = null;
@@ -3461,6 +3465,8 @@ async function fetchSerpFeatureItems(date, ceo, feature, offset, limit){
 
 async function showSerpFeatures({ceo}){
   const d = document.getElementById('dateSelect').value;
+  openModal(`SERP Features — ${esc(ceo)}`, `<div class="muted">Loading…</div>`);
+  await _nextFrame();
   await loadSerpFeaturesForEntity(ceo);
   const totalsByFeature = new Map();
   serpFeatureEntityRows.forEach(r=>{
