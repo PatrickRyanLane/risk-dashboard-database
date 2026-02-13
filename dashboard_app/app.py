@@ -59,6 +59,22 @@ _refresh_last_status = {
     'error': None,
 }
 
+REFRESH_LOCK_KEY = int(os.getenv("REFRESH_LOCK_KEY", "918273645"))
+
+
+def _try_acquire_refresh_lock(conn) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("select pg_try_advisory_lock(%s)", (REFRESH_LOCK_KEY,))
+        return bool(cur.fetchone()[0])
+
+
+def _release_refresh_lock(conn) -> None:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select pg_advisory_unlock(%s)", (REFRESH_LOCK_KEY,))
+    except Exception:
+        pass
+
 DATE_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-(brand|ceo)-(articles|serps)-(modal|table)\.csv$')
 STOCK_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-stock-data\.csv$')
 TRENDS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-trends-data\.csv$')
@@ -1488,13 +1504,23 @@ def refresh_negative_summary():
     user_email = require_internal_user()
     if not user_email:
         return jsonify({'error': 'unauthorized'}), 401
+    lock_conn = get_conn()
+    if lock_conn is None:
+        return jsonify({'error': 'db_unavailable'}), 503
+    lock_conn.autocommit = True
+    if not _try_acquire_refresh_lock(lock_conn):
+        put_conn(lock_conn)
+        return jsonify({'status': 'busy'}), 202
     try:
-        refresh_negative_summary_view()
+        refresh_negative_summary_view(conn=lock_conn)
         clear_api_cache_prefix("negative_summary:")
         return jsonify({'status': 'ok'})
     except Exception as exc:
         app.logger.exception("refresh_negative_summary failed")
         return jsonify({'error': 'refresh_failed', 'detail': str(exc)}), 500
+    finally:
+        _release_refresh_lock(lock_conn)
+        put_conn(lock_conn)
 
 
 @app.route('/api/internal/refresh_aggregates', methods=['POST'])
@@ -1507,6 +1533,31 @@ def refresh_aggregates():
     def run_refresh():
         global _refresh_in_progress, _refresh_last_status
         started = datetime.utcnow()
+        lock_conn = get_conn()
+        if lock_conn is None:
+            with _refresh_lock:
+                _refresh_last_status = {
+                    'status': 'failed',
+                    'started_at': started.isoformat() + 'Z',
+                    'finished_at': started.isoformat() + 'Z',
+                    'duration_ms': 0,
+                    'error': 'db_unavailable',
+                }
+                _refresh_in_progress = False
+            return
+        lock_conn.autocommit = True
+        if not _try_acquire_refresh_lock(lock_conn):
+            with _refresh_lock:
+                _refresh_last_status = {
+                    'status': 'skipped',
+                    'started_at': started.isoformat() + 'Z',
+                    'finished_at': datetime.utcnow().isoformat() + 'Z',
+                    'duration_ms': 0,
+                    'error': 'refresh_locked',
+                }
+                _refresh_in_progress = False
+            put_conn(lock_conn)
+            return
         with _refresh_lock:
             _refresh_last_status = {
                 'status': 'in_progress',
@@ -1517,13 +1568,13 @@ def refresh_aggregates():
             }
         app.logger.info("refresh_aggregates: started")
         try:
-            refresh_negative_summary_view()
-            refresh_serp_feature_daily_view()
-            refresh_serp_feature_control_daily_view()
-            refresh_serp_feature_daily_index_view()
-            refresh_serp_feature_control_daily_index_view()
-            refresh_article_daily_counts_view()
-            refresh_serp_daily_counts_view()
+            refresh_negative_summary_view(conn=lock_conn)
+            refresh_serp_feature_daily_view(conn=lock_conn)
+            refresh_serp_feature_control_daily_view(conn=lock_conn)
+            refresh_serp_feature_daily_index_view(conn=lock_conn)
+            refresh_serp_feature_control_daily_index_view(conn=lock_conn)
+            refresh_article_daily_counts_view(conn=lock_conn)
+            refresh_serp_daily_counts_view(conn=lock_conn)
             clear_api_cache_prefix("negative_summary:")
             clear_api_cache_prefix("daily_counts:")
             clear_api_cache_prefix("serp_features:")
@@ -1552,6 +1603,8 @@ def refresh_aggregates():
                     'error': 'refresh_failed',
                 }
         finally:
+            _release_refresh_lock(lock_conn)
+            put_conn(lock_conn)
             with _refresh_lock:
                 _refresh_in_progress = False
 
@@ -2390,8 +2443,10 @@ def clear_api_cache_prefix(prefix: str) -> None:
         _api_cache.pop(key, None)
 
 
-def refresh_negative_summary_view() -> None:
-    conn = get_conn()
+def refresh_negative_summary_view(conn=None) -> None:
+    owned = conn is None
+    if conn is None:
+        conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
     try:
@@ -2403,11 +2458,14 @@ def refresh_negative_summary_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view negative_articles_summary_mv")
     finally:
-        put_conn(conn)
+        if owned:
+            put_conn(conn)
 
 
-def refresh_serp_feature_daily_view() -> None:
-    conn = get_conn()
+def refresh_serp_feature_daily_view(conn=None) -> None:
+    owned = conn is None
+    if conn is None:
+        conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
     try:
@@ -2419,11 +2477,14 @@ def refresh_serp_feature_daily_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view serp_feature_daily_mv")
     finally:
-        put_conn(conn)
+        if owned:
+            put_conn(conn)
 
 
-def refresh_serp_feature_control_daily_view() -> None:
-    conn = get_conn()
+def refresh_serp_feature_control_daily_view(conn=None) -> None:
+    owned = conn is None
+    if conn is None:
+        conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
     try:
@@ -2435,11 +2496,14 @@ def refresh_serp_feature_control_daily_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view serp_feature_control_daily_mv")
     finally:
-        put_conn(conn)
+        if owned:
+            put_conn(conn)
 
 
-def refresh_serp_feature_daily_index_view() -> None:
-    conn = get_conn()
+def refresh_serp_feature_daily_index_view(conn=None) -> None:
+    owned = conn is None
+    if conn is None:
+        conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
     try:
@@ -2451,11 +2515,14 @@ def refresh_serp_feature_daily_index_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view serp_feature_daily_index_mv")
     finally:
-        put_conn(conn)
+        if owned:
+            put_conn(conn)
 
 
-def refresh_serp_feature_control_daily_index_view() -> None:
-    conn = get_conn()
+def refresh_serp_feature_control_daily_index_view(conn=None) -> None:
+    owned = conn is None
+    if conn is None:
+        conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
     try:
@@ -2467,11 +2534,14 @@ def refresh_serp_feature_control_daily_index_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view serp_feature_control_daily_index_mv")
     finally:
-        put_conn(conn)
+        if owned:
+            put_conn(conn)
 
 
-def refresh_article_daily_counts_view() -> None:
-    conn = get_conn()
+def refresh_article_daily_counts_view(conn=None) -> None:
+    owned = conn is None
+    if conn is None:
+        conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
     try:
@@ -2483,11 +2553,14 @@ def refresh_article_daily_counts_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view article_daily_counts_mv")
     finally:
-        put_conn(conn)
+        if owned:
+            put_conn(conn)
 
 
-def refresh_serp_daily_counts_view() -> None:
-    conn = get_conn()
+def refresh_serp_daily_counts_view(conn=None) -> None:
+    owned = conn is None
+    if conn is None:
+        conn = get_conn()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured")
     try:
@@ -2499,7 +2572,8 @@ def refresh_serp_daily_counts_view() -> None:
         with conn.cursor() as cur:
             cur.execute("refresh materialized view serp_daily_counts_mv")
     finally:
-        put_conn(conn)
+        if owned:
+            put_conn(conn)
 
 
 if __name__ == '__main__':
