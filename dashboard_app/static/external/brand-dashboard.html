@@ -898,6 +898,12 @@ function maybeRenderAll(){
   renderAll();
 }
 
+function chartsDataReady(){
+  return _loadState.news !== 'loading' &&
+    _loadState.serps !== 'loading' &&
+    _loadState.features !== 'loading';
+}
+
 function updateEntityUrlParam(param, value){
   try{
     const url = new URL(window.location.href);
@@ -959,7 +965,7 @@ async function selectCompany(name){
   updateEntityUrlParam('company', selectedCompany);
   await loadSerpFeaturesForEntity(selectedCompany);
   renderTable();
-  renderCharts();
+  if (chartsDataReady()) renderCharts();
 }
 
 let newsChart, serpChart, stockChart, featureChart, featureControlChart;
@@ -1862,9 +1868,6 @@ async function loadCounts(){
     })).filter(r=>isISODate(r.date) && r.company);
     setLoadStatus('news', 'done');
     updateDateOptions();
-    if (document.getElementById('dateSelect').value) {
-      renderCharts();
-    }
     maybeRenderAll();
   } catch (e){
     allCountsRows = [];
@@ -1883,9 +1886,6 @@ async function loadSerpDaily(){
     })).filter(r=>isISODate(r.date) && r.company);
     setLoadStatus('serps', 'done');
     updateDateOptions();
-    if (document.getElementById('dateSelect').value) {
-      renderCharts();
-    }
     maybeRenderAll();
   }catch(e){
     serpsDaily = [];
@@ -1916,14 +1916,13 @@ async function loadSerpFeaturesIndex(){
       await loadTopStoriesForDate(d);
     }
     setLoadStatus('features', 'done');
-    if (document.getElementById('dateSelect').value) {
-      renderCharts();
-    }
+    maybeRenderAll();
   }catch(e){
     serpFeatureIndexRows = [];
     serpFeatureControlIndexRows = [];
     topStoriesNegByDate = new Map();
     setLoadStatus('features', 'error');
+    maybeRenderAll();
   }
 }
 
@@ -2205,7 +2204,7 @@ async function renderAll(){
   if (!d) {
     filteredRows = [];
     renderTable();
-    renderCharts();
+    if (chartsDataReady()) renderCharts();
     return;
   }
   const rows = (await buildRowsForDate(d)).filter(r => {
@@ -2226,7 +2225,7 @@ async function renderAll(){
     await loadSerpFeaturesForEntity(selectedCompany);
   }
   renderTable();
-  renderCharts();
+  if (chartsDataReady()) renderCharts();
   _dataRendered = true;
   maybeHideLoadStatus();
 }
@@ -2345,7 +2344,7 @@ function renderTable(){
       if (selectedCompany) {
         await loadSerpFeaturesForEntity(selectedCompany);
       }
-      renderCharts();
+      if (chartsDataReady()) renderCharts();
     });
   });
   tbody.querySelectorAll('.serpBtn').forEach(btn=>{

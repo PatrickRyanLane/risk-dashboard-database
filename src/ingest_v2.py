@@ -228,7 +228,12 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
             if not company_id:
                 continue
             if control_class is None:
-                control_class = "controlled" if classify_control(company, canonical, company_domains) else "uncontrolled"
+                control_class = "controlled" if classify_control(
+                    company,
+                    canonical,
+                    company_domains,
+                    publisher=publisher,
+                ) else "uncontrolled"
             mentions.append((
                 company_id, canonical, sentiment, control_class, finance_routine, uncertain, uncertain_reason,
                 llm_label, llm_severity, llm_reason, date_str
@@ -249,6 +254,7 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
                     company_domains,
                     entity_type="ceo",
                     person_name=ceo,
+                    publisher=publisher,
                 ) else "uncontrolled"
             mentions.append((
                 ceo_id, canonical, sentiment, control_class, finance_routine, uncertain, uncertain_reason,

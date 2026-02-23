@@ -346,6 +346,8 @@ let brandsBySector = new Map();
 let globalStockData = {};
 let serpFeatureRows = [];
 let serpFeatureControlRows = [];
+let featureNegByDateBrand = new Map();
+let featureCtrlByDateBrand = new Map();
 let fortuneFlags = new Map();
 let fortuneFilter = null;
 
@@ -440,6 +442,37 @@ const esc = (s) => String(s ?? '').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt
 const fmtPct = v => (v==null) ? 'N/A' : (Math.round(v*100) + '%');
 
 const canonBrand = s => String(s || '').toLowerCase().replace(/\s+/g,' ').trim();
+
+function featureIndexKey(date, brandKey){
+  return `${date}|${brandKey}`;
+}
+
+function rebuildFeatureIndexes(){
+  featureNegByDateBrand = new Map();
+  featureCtrlByDateBrand = new Map();
+
+  serpFeatureRows.forEach(r => {
+    if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+    const brandKey = canonBrand(r.entity || '');
+    if (!brandKey || !isISODate(r.date)) return;
+    const key = featureIndexKey(r.date, brandKey);
+    const cur = featureNegByDateBrand.get(key) || {total: 0, neg: 0};
+    cur.total += r.total || 0;
+    cur.neg += r.neg || 0;
+    featureNegByDateBrand.set(key, cur);
+  });
+
+  serpFeatureControlRows.forEach(r => {
+    if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+    const brandKey = canonBrand(r.entity || '');
+    if (!brandKey || !isISODate(r.date)) return;
+    const key = featureIndexKey(r.date, brandKey);
+    const cur = featureCtrlByDateBrand.get(key) || {total: 0, ctrl: 0};
+    cur.total += r.total || 0;
+    cur.ctrl += r.ctrl || 0;
+    featureCtrlByDateBrand.set(key, cur);
+  });
+}
 
 /********************** Stock Data **********************/
 async function loadStockData() {
@@ -624,10 +657,13 @@ async function loadSerpFeatures(){
       total: +r.total_count || +r.total || 0,
       ctrl: +r.controlled_count || +r.controlled || 0
     })).filter(r => isISODate(r.date) && r.entity && r.feature);
+    rebuildFeatureIndexes();
     setLoadStatus('features', 'done');
   } catch (e){
     serpFeatureRows = [];
     serpFeatureControlRows = [];
+    featureNegByDateBrand = new Map();
+    featureCtrlByDateBrand = new Map();
     setLoadStatus('features', 'error');
   }
 }
@@ -770,19 +806,16 @@ async function buildSectorRowsForDate(d) {
       if (n) { nPos += n.pos; nNeu += n.neu; nNeg += n.neg; }
       const s = serpByBrand.get(bKey);
       if (s) { sTot += s.total; sNeg += s.neg; sCtrl += s.ctrl; }
-      serpFeatureRows.forEach(r=>{
-        if (r.date !== d) return;
-        if (canonBrand(r.entity || '') !== bKey) return;
-        if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
-        sfTot += r.total || 0;
-        sfNeg += r.neg || 0;
-      });
-      serpFeatureControlRows.forEach(r=>{
-        if (r.date !== d) return;
-        if (canonBrand(r.entity || '') !== bKey) return;
-        if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
-        sfCtrl += r.ctrl || 0;
-      });
+      const featureKey = featureIndexKey(d, bKey);
+      const sf = featureNegByDateBrand.get(featureKey);
+      if (sf) {
+        sfTot += sf.total;
+        sfNeg += sf.neg;
+      }
+      const sc = featureCtrlByDateBrand.get(featureKey);
+      if (sc) {
+        sfCtrl += sc.ctrl;
+      }
       
       // Get stock data for this brand
       for (const [company, stock] of Object.entries(globalStockData)) {

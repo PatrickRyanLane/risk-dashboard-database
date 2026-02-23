@@ -987,6 +987,12 @@ function maybeRenderAll(){
   renderAll();
 }
 
+function chartsDataReady(){
+  return _loadState.news !== 'loading' &&
+    _loadState.serps !== 'loading' &&
+    _loadState.features !== 'loading';
+}
+
 function updateEntityUrlParam(param, value){
   try{
     const url = new URL(window.location.href);
@@ -1034,7 +1040,7 @@ async function selectCeo(name){
   updateEntityUrlParam('ceo', selectedCeo);
   await loadSerpFeaturesForEntity(selectedCeo);
   renderTable();
-  renderCharts();
+  if (chartsDataReady()) renderCharts();
 }
 
 function isTrue(val){
@@ -2013,9 +2019,6 @@ async function loadCounts(){
       .filter(r => isISODate(r.date) && r.ceo);
     setLoadStatus('news', 'done');
     updateDateOptions();
-    if (document.getElementById('dateSelect').value) {
-      renderCharts();
-    }
     maybeRenderAll();
   } catch (e){
     allCountsRows = [];
@@ -2036,9 +2039,6 @@ async function loadSerpDaily(){
     })).filter(r => isISODate(r.date));
     setLoadStatus('serps', 'done');
     updateDateOptions();
-    if (document.getElementById('dateSelect').value) {
-      renderCharts();
-    }
     maybeRenderAll();
   }catch(e){
     serpsDaily = [];
@@ -2069,14 +2069,13 @@ async function loadSerpFeaturesIndex(){
       await loadTopStoriesForDate(d);
     }
     setLoadStatus('features', 'done');
-    if (document.getElementById('dateSelect').value) {
-      renderCharts();
-    }
+    maybeRenderAll();
   }catch(e){
     serpFeatureIndexRows = [];
     serpFeatureControlIndexRows = [];
     topStoriesNegByDate = new Map();
     setLoadStatus('features', 'error');
+    maybeRenderAll();
   }
 }
 
@@ -2426,7 +2425,7 @@ async function renderAll(){
   }
 
   renderTable();
-  renderCharts();
+  if (chartsDataReady()) renderCharts();
   if (selectedCeo) updateEntityUrlParam('ceo', selectedCeo);
   _dataRendered = true;
   maybeHideLoadStatus();
@@ -2587,7 +2586,7 @@ function renderTable(){
       if (selectedCeo) {
         await loadSerpFeaturesForEntity(selectedCeo);
       }
-      renderCharts();
+      if (chartsDataReady()) renderCharts();
     });
   });
   
