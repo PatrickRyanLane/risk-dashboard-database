@@ -9,11 +9,29 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 from src.url_utils import normalize_url, url_hash
-from src.risk_rules import classify_control, parse_company_domains
+from src.risk_rules import (
+    classify_control,
+    is_financial_routine,
+    parse_company_domains,
+    should_neutralize_finance_routine,
+)
 
 
 def parse_bool(value):
     return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def parse_optional_bool(value):
+    if value is None:
+        return None
+    val = str(value).strip().lower()
+    if val == "":
+        return None
+    if val in {"true", "1", "yes", "y"}:
+        return True
+    if val in {"false", "0", "no", "n"}:
+        return False
+    return None
 
 
 
@@ -210,9 +228,14 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
             continue
 
         publisher = (row.get('source') or '').strip()
+        snippet = (row.get('snippet') or '').strip()
         sentiment = (row.get('sentiment') or '').strip().lower() or None
         control_class = parse_control_class(row.get('controlled') or row.get('control_class'))
-        finance_routine = parse_bool(row.get('finance_routine'))
+        finance_routine = parse_optional_bool(row.get('finance_routine'))
+        if finance_routine is None:
+            finance_routine = is_financial_routine(title, snippet, canonical, publisher)
+        if should_neutralize_finance_routine(sentiment, title, snippet, canonical, publisher, finance_routine):
+            sentiment = "neutral"
         uncertain = parse_bool(row.get('uncertain'))
         uncertain_reason = (row.get('uncertain_reason') or '').strip() or None
         llm_label = (row.get('llm_label') or '').strip() or None
@@ -388,6 +411,8 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
         company = (row.get('company') or '').strip()
         ceo = (row.get('ceo') or '').strip()
         title = (row.get('title') or '').strip()
+        snippet = (row.get('snippet') or '').strip()
+        source = (row.get('source') or '').strip()
         url = (row.get('url') or row.get('link') or '').strip()
         if not title or not url:
             continue
@@ -407,7 +432,11 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
             domain = ''
 
         sentiment = (row.get('sentiment') or '').strip().lower() or None
-        finance_routine = parse_bool(row.get('finance_routine'))
+        finance_routine = parse_optional_bool(row.get('finance_routine'))
+        if finance_routine is None:
+            finance_routine = is_financial_routine(title, snippet, canonical, source)
+        if should_neutralize_finance_routine(sentiment, title, snippet, canonical, source, finance_routine):
+            sentiment = 'neutral'
         uncertain = parse_bool(row.get('uncertain'))
         uncertain_reason = (row.get('uncertain_reason') or '').strip() or None
         llm_label = (row.get('llm_label') or '').strip() or None
@@ -445,7 +474,7 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
             }
 
         result_rows.append((
-            run_key, rank, url, url_hash(canonical), title, row.get('snippet') or '', domain,
+            run_key, rank, url, url_hash(canonical), title, snippet, domain,
             sentiment, control_class, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason
         ))
 

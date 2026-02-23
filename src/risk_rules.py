@@ -35,9 +35,21 @@ FINANCE_TERMS_RE = re.compile("|".join(FINANCE_TERMS), flags=re.IGNORECASE)
 FINANCE_SOURCES = {
     "yahoo.com", "marketwatch.com", "fool.com", "benzinga.com",
     "seekingalpha.com", "thefly.com", "barrons.com", "wsj.com",
-    "investorplace.com", "nasdaq.com", "foolcdn.com"
+    "investorplace.com", "nasdaq.com", "foolcdn.com",
+    "primaryignition.com", "tradingview.com", "marketscreener.com",
+    "gurufocus.com",
 }
 TICKER_RE = re.compile(r"\b(?:NYSE|NASDAQ|AMEX):\s?[A-Z]{1,5}\b")
+MATERIAL_RISK_TERMS = [
+    r"\blawsuits?\b", r"\blegal action\b", r"\bclass action\b", r"\bsu(?:e|es|ed|ing)\b",
+    r"\bsettle(?:ment|d|s)?\b", r"\bprobe\b", r"\binvestigat(?:e|es|ed|ion|ions)\b",
+    r"\bsubpoena(?:s)?\b", r"\bsec (?:probe|investigation|charge|charges)\b", r"\bdoj\b",
+    r"\bcharge(?:d|s)?\b", r"\bindict(?:ed|ment)?\b", r"\bfraud\b", r"\bscandal\b",
+    r"\bbankrupt(?:cy|cies)?\b", r"\blayoffs?\b", r"\brecall(?:s|ed)?\b", r"\bdata breach(?:es)?\b",
+    r"\bcyber(?:attack|attacks|breach|breaches)\b", r"\bwhistleblower(?:s)?\b",
+    r"\bmisconduct\b", r"\bboycott(?:s|ed)?\b",
+]
+MATERIAL_RISK_TERMS_RE = re.compile("|".join(MATERIAL_RISK_TERMS), flags=re.IGNORECASE)
 
 NAME_IGNORE_TOKENS = {
     "inc", "incorporated", "corporation", "corp", "company", "co",
@@ -344,3 +356,26 @@ def is_financial_routine(title: str, snippet: str = "", url: str = "", source: s
     if host and any(host == d or host.endswith("." + d) for d in FINANCE_SOURCES):
         return True
     return False
+
+
+def has_material_risk_terms(title: str, snippet: str = "", source: str = "") -> bool:
+    hay = f"{title} {snippet} {source}".strip()
+    return bool(MATERIAL_RISK_TERMS_RE.search(hay))
+
+
+def should_neutralize_finance_routine(
+    sentiment: str | None,
+    title: str,
+    snippet: str = "",
+    url: str = "",
+    source: str = "",
+    finance_routine: bool | None = None,
+) -> bool:
+    if sentiment not in {"positive", "negative"}:
+        return False
+    is_routine = finance_routine if finance_routine is not None else is_financial_routine(title, snippet, url, source)
+    if not is_routine:
+        return False
+    if has_material_risk_terms(title, snippet, source):
+        return False
+    return True
