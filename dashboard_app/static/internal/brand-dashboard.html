@@ -1140,6 +1140,7 @@ function maybeHideLoadStatus(){
 
 const DATE_WINDOW_SIZE = 30;
 let dateWindowStart = null;
+let dateWindowPinned = false;
 
 /********************** Utils **********************/
 const isISODate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s||'').trim());
@@ -1856,6 +1857,7 @@ function hookDatePager(allDates){
   const goPrev = () => {
     const total = allDates.length;
     if (total <= DATE_WINDOW_SIZE) return;
+    dateWindowPinned = true;
     dateWindowStart = clampDateStart(total) - DATE_WINDOW_SIZE;
     if (dateWindowStart < 0) dateWindowStart = 0;
     renderCharts();
@@ -1864,6 +1866,7 @@ function hookDatePager(allDates){
     const total = allDates.length;
     if (total <= DATE_WINDOW_SIZE) return;
     const maxStart = total - DATE_WINDOW_SIZE;
+    dateWindowPinned = true;
     dateWindowStart = Math.min(maxStart, clampDateStart(total) + DATE_WINDOW_SIZE);
     renderCharts();
   };
@@ -2140,7 +2143,8 @@ async function init(){
   }
   document.getElementById('refreshBtn').onclick = async ()=>{
     const statusEl = document.getElementById('refreshStatus');
-    if (statusEl) statusEl.textContent = 'Refreshing…';
+    const refreshTargets = 'News, Organic SERP, SERP Features, Negative Summary';
+    if (statusEl) statusEl.textContent = `Refreshing charts: ${refreshTargets}…`;
     try {
       const resp = await fetch('/api/internal/refresh_aggregates', { method: 'POST' });
       if (!resp.ok) throw new Error('refresh_failed');
@@ -2149,15 +2153,25 @@ async function init(){
           const r = await fetch('/api/internal/refresh_aggregates/status');
           if (!r.ok) throw new Error('status_failed');
           const data = await r.json();
-          if (data.status !== 'in_progress') return true;
+          if (data.status !== 'in_progress') return data;
           await new Promise(res => setTimeout(res, 1000));
         }
-        return false;
+        return { status: 'timeout' };
       };
-      const done = await wait();
-      if (statusEl) statusEl.textContent = done ? 'Refreshed' : 'Still refreshing…';
+      const result = await wait();
+      if (statusEl) {
+        if (result.status === 'ok') {
+          statusEl.textContent = `Refreshed charts: ${refreshTargets}`;
+        } else if (result.status === 'skipped') {
+          statusEl.textContent = `Refresh skipped (locked): ${refreshTargets}`;
+        } else if (result.status === 'timeout') {
+          statusEl.textContent = `Still refreshing: ${refreshTargets}`;
+        } else {
+          statusEl.textContent = `Refresh failed: ${refreshTargets}`;
+        }
+      }
     } catch (e) {
-      if (statusEl) statusEl.textContent = 'Refresh failed';
+      if (statusEl) statusEl.textContent = `Refresh failed: ${refreshTargets}`;
     }
     if (statusEl) {
       setTimeout(() => {
@@ -2653,8 +2667,9 @@ function renderCharts(){
   const {dates: featureDates, series: featureSeries, order: featureOrder, countsByDate: featureCountsByDate} = getFeatureSeries();
   const {dates: featureCtrlDates, series: featureCtrlSeries, order: featureCtrlOrder, countsByDate: featureCtrlCountsByDate} = getFeatureControlSeries();
 
-  if (dateWindowStart === null){
-    dateWindowStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
+  const maxStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
+  if (!dateWindowPinned || dateWindowStart === null){
+    dateWindowStart = maxStart;
   }
   const start = clampDateStart(dates.length);
   const d  = sliceWindow(dates,       start, DATE_WINDOW_SIZE);
@@ -2666,7 +2681,7 @@ function renderCharts(){
   const sNAll = sliceWindow(serpNegPctAll, start, DATE_WINDOW_SIZE);
   const sCAll = sliceWindow(serpCtrlPctAll, start, DATE_WINDOW_SIZE);
   const featureIndex = new Map(featureDates.map((d,i)=>[d,i]));
-  const fDates = featureDates.length ? featureDates : d;
+  const fDates = d;
   const featureData = featureOrder.map(f=>{
     const arr = featureSeries[f] || [];
     return fDates.map(dt=>{
@@ -2675,7 +2690,7 @@ function renderCharts(){
     });
   });
   const featureCtrlIndex = new Map(featureCtrlDates.map((d,i)=>[d,i]));
-  const fcDates = featureCtrlDates.length ? featureCtrlDates : d;
+  const fcDates = d;
   const featureCtrlData = featureCtrlOrder.map(f=>{
     const arr = featureCtrlSeries[f] || [];
     return fcDates.map(dt=>{

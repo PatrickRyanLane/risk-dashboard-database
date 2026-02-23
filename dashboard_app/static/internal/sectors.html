@@ -214,6 +214,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
     <button id="fortune1000Btn" class="filter-toggle" title="Filter to Fortune 1000">Fortune 1000</button>
     <div class="spacer"></div>
     <button id="refreshBtn">Refresh Data</button>
+    <span id="refreshStatus" class="muted" style="font-size:12px;align-self:center"></span>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
       <div class="load-items" id="loadItems"></div>
@@ -359,6 +360,7 @@ let newsChart, serpChart, featureChart, featureControlChart;
 
 const DATE_WINDOW_SIZE = 30;
 let dateWindowStart = null;
+let dateWindowPinned = false;
 const _loadSections = ['roster','news','serps','features','stock'];
 const _loadLabels = {
   roster: 'Roster',
@@ -528,6 +530,7 @@ function hookDatePager(allDates){
   const goPrev = () => {
     const total = allDates.length;
     if (total <= DATE_WINDOW_SIZE) return;
+    dateWindowPinned = true;
     dateWindowStart = clampDateStart(total) - DATE_WINDOW_SIZE;
     if (dateWindowStart < 0) dateWindowStart = 0;
     renderCharts();
@@ -536,6 +539,7 @@ function hookDatePager(allDates){
     const total = allDates.length;
     if (total <= DATE_WINDOW_SIZE) return;
     const maxStart = total - DATE_WINDOW_SIZE;
+    dateWindowPinned = true;
     dateWindowStart = Math.min(maxStart, clampDateStart(total) + DATE_WINDOW_SIZE);
     renderCharts();
   };
@@ -692,7 +696,45 @@ async function init(){
   sel.addEventListener('change', ()=>{ currentPage=1; selectedSector=null; renderAll(); });
 
   document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll(); });
-  document.getElementById('refreshBtn').onclick = async ()=>{ await init(); };
+  document.getElementById('refreshBtn').onclick = async ()=>{
+    const statusEl = document.getElementById('refreshStatus');
+    const refreshTargets = 'News, Organic SERP, SERP Features, Negative Summary';
+    if (statusEl) statusEl.textContent = `Refreshing charts: ${refreshTargets}…`;
+    try {
+      const resp = await fetch('/api/internal/refresh_aggregates', { method: 'POST' });
+      if (!resp.ok) throw new Error('refresh_failed');
+      const wait = async () => {
+        for (let i = 0; i < 240; i++){
+          const r = await fetch('/api/internal/refresh_aggregates/status');
+          if (!r.ok) throw new Error('status_failed');
+          const data = await r.json();
+          if (data.status !== 'in_progress') return data;
+          await new Promise(res => setTimeout(res, 1000));
+        }
+        return { status: 'timeout' };
+      };
+      const result = await wait();
+      if (statusEl) {
+        if (result.status === 'ok') {
+          statusEl.textContent = `Refreshed charts: ${refreshTargets}`;
+        } else if (result.status === 'skipped') {
+          statusEl.textContent = `Refresh skipped (locked): ${refreshTargets}`;
+        } else if (result.status === 'timeout') {
+          statusEl.textContent = `Still refreshing: ${refreshTargets}`;
+        } else {
+          statusEl.textContent = `Refresh failed: ${refreshTargets}`;
+        }
+      }
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `Refresh failed: ${refreshTargets}`;
+    }
+    if (statusEl) {
+      setTimeout(() => {
+        statusEl.textContent = '';
+      }, 3000);
+    }
+    await init();
+  };
   document.getElementById('clearBtn').onclick = ()=>{ selectedSector=null; document.getElementById('filterInput').value=''; renderAll(); };
   document.getElementById('fortune500Btn').onclick = ()=>{ setFortuneFilter('500'); };
   document.getElementById('fortune1000Btn').onclick = ()=>{ setFortuneFilter('1000'); };
@@ -1063,8 +1105,9 @@ function renderCharts(){
   const {dates: featureDates, series: featureSeries, order: featureOrder, countsByDate: featureCountsByDate} = getFeatureSeries();
   const {dates: featureCtrlDates, series: featureCtrlSeries, order: featureCtrlOrder, countsByDate: featureCtrlCountsByDate} = getFeatureControlSeries();
 
-  if (dateWindowStart === null){
-    dateWindowStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
+  const maxStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
+  if (!dateWindowPinned || dateWindowStart === null){
+    dateWindowStart = maxStart;
   }
   const start = clampDateStart(dates.length);
   const d  = sliceWindow(dates,       start, DATE_WINDOW_SIZE);
@@ -1074,7 +1117,7 @@ function renderCharts(){
   const sN = sliceWindow(serpNegPct,  start, DATE_WINDOW_SIZE);
   const sC = sliceWindow(serpCtrlPct, start, DATE_WINDOW_SIZE);
   const featureIndex = new Map(featureDates.map((d,i)=>[d,i]));
-  const fDates = featureDates.length ? featureDates : d;
+  const fDates = d;
   const featureData = featureOrder.map(f=>{
     const arr = featureSeries[f] || [];
     return fDates.map(dt=>{
@@ -1083,7 +1126,7 @@ function renderCharts(){
     });
   });
   const featureCtrlIndex = new Map(featureCtrlDates.map((d,i)=>[d,i]));
-  const fcDates = featureCtrlDates.length ? featureCtrlDates : d;
+  const fcDates = d;
   const featureCtrlData = featureCtrlOrder.map(f=>{
     const arr = featureCtrlSeries[f] || [];
     return fcDates.map(dt=>{

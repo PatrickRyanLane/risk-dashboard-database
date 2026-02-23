@@ -1073,6 +1073,7 @@ function maybeHideLoadStatus(){
 
 const DATE_WINDOW_SIZE = 30;
 let dateWindowStart = null;
+let dateWindowPinned = false;
 const negativeSummaryCache = new Map();
 let negativeSummaryIndex = null;
 const NEGATIVE_ARTICLE_THRESHOLD = 3;
@@ -1771,6 +1772,7 @@ function hookDatePager(allDates){
   const goPrev = () => {
     const total = allDates.length;
     if (total <= DATE_WINDOW_SIZE) return;
+    dateWindowPinned = true;
     dateWindowStart = clampDateStart(total) - DATE_WINDOW_SIZE;
     if (dateWindowStart < 0) dateWindowStart = 0;
     renderCharts();
@@ -1779,6 +1781,7 @@ function hookDatePager(allDates){
     const total = allDates.length;
     if (total <= DATE_WINDOW_SIZE) return;
     const maxStart = total - DATE_WINDOW_SIZE;
+    dateWindowPinned = true;
     dateWindowStart = Math.min(maxStart, clampDateStart(total) + DATE_WINDOW_SIZE);
     renderCharts();
   };
@@ -2630,8 +2633,9 @@ function renderCharts(){
   const {dates: featureDates, series: featureSeries, order: featureOrder, countsByDate: featureCountsByDate} = getFeatureSeries();
   const {dates: featureCtrlDates, series: featureCtrlSeries, order: featureCtrlOrder, countsByDate: featureCtrlCountsByDate} = getFeatureControlSeries();
 
-  if (dateWindowStart === null){
-    dateWindowStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
+  const maxStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
+  if (!dateWindowPinned || dateWindowStart === null){
+    dateWindowStart = maxStart;
   }
   const start = clampDateStart(dates.length);
   const d  = sliceWindow(dates,       start, DATE_WINDOW_SIZE);
@@ -2643,7 +2647,7 @@ function renderCharts(){
   const sNAll = sliceWindow(serpNegPctAll, start, DATE_WINDOW_SIZE);
   const sCAll = sliceWindow(serpCtrlPctAll, start, DATE_WINDOW_SIZE);
   const featureIndex = new Map(featureDates.map((d,i)=>[d,i]));
-  const fDates = featureDates.length ? featureDates : d;
+  const fDates = d;
   const featureData = featureOrder.map(f=>{
     const arr = featureSeries[f] || [];
     return fDates.map(dt=>{
@@ -2652,7 +2656,7 @@ function renderCharts(){
     });
   });
   const featureCtrlIndex = new Map(featureCtrlDates.map((d,i)=>[d,i]));
-  const fcDates = featureCtrlDates.length ? featureCtrlDates : d;
+  const fcDates = d;
   const featureCtrlData = featureCtrlOrder.map(f=>{
     const arr = featureCtrlSeries[f] || [];
     return fcDates.map(dt=>{

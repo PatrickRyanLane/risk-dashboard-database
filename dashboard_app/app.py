@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Tuple
 
 import psycopg2
+from psycopg2 import extensions as pg_ext
 from psycopg2.pool import PoolError, ThreadedConnectionPool
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory, abort
@@ -66,6 +67,17 @@ def _set_application_name(conn, name: str) -> None:
     try:
         with conn.cursor() as cur:
             cur.execute("set application_name = %s", (name,))
+    except Exception:
+        pass
+
+
+def _reset_conn(conn) -> None:
+    if conn is None:
+        return
+    try:
+        if conn.closed:
+            return
+        conn.rollback()
     except Exception:
         pass
 
@@ -256,6 +268,7 @@ def get_conn():
     if DB_POOL_MAX < 1:
         conn = psycopg2.connect(DB_DSN)
         _set_application_name(conn, "risk_dashboard_web")
+        _reset_conn(conn)
         return conn
     if _db_pool is None:
         with _db_pool_lock:
@@ -264,19 +277,33 @@ def get_conn():
     try:
         conn = _db_pool.getconn()
         _set_application_name(conn, "risk_dashboard_web")
+        _reset_conn(conn)
         return conn
     except PoolError:
         app.logger.warning("db_pool_exhausted_fallback")
         conn = psycopg2.connect(DB_DSN)
         _set_application_name(conn, "risk_dashboard_web")
+        _reset_conn(conn)
         with _db_fallback_lock:
             _db_fallback_ids.add(id(conn))
         return conn
 
 
+def get_autocommit_conn(app_name: str) -> psycopg2.extensions.connection:
+    if not DB_DSN:
+        raise RuntimeError('DATABASE_URL is required')
+    conn = psycopg2.connect(DB_DSN)
+    conn.autocommit = True
+    _set_application_name(conn, app_name)
+    with _db_fallback_lock:
+        _db_fallback_ids.add(id(conn))
+    return conn
+
+
 def put_conn(conn) -> None:
     if conn is None:
         return
+    _reset_conn(conn)
     with _db_fallback_lock:
         if id(conn) in _db_fallback_ids:
             _db_fallback_ids.remove(id(conn))
@@ -304,8 +331,8 @@ def rows_to_csv(headers: List[str], rows: Iterable[Tuple]) -> str:
 def query_rows(sql: str, params: Tuple = ()) -> List[Tuple]:
     start = time.perf_counter()
     conn = get_conn()
-    conn.autocommit = True
     try:
+        _reset_conn(conn)
         with conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
@@ -316,6 +343,7 @@ def query_rows(sql: str, params: Tuple = ()) -> List[Tuple]:
             pass
         raise
     finally:
+        _reset_conn(conn)
         put_conn(conn)
     elapsed = (time.perf_counter() - start) * 1000
     if os.environ.get('PERF_LOG', '0') == '1' or elapsed > 500:
@@ -328,6 +356,7 @@ def query_dict(sql: str, params: Tuple = ()) -> List[Dict]:
     start = time.perf_counter()
     conn = get_conn()
     try:
+        _reset_conn(conn)
         with conn.cursor() as cur:
             cur.execute(sql, params)
             cols = [c[0] for c in cur.description]
@@ -339,6 +368,7 @@ def query_dict(sql: str, params: Tuple = ()) -> List[Dict]:
             pass
         raise
     finally:
+        _reset_conn(conn)
         put_conn(conn)
     elapsed = (time.perf_counter() - start) * 1000
     if os.environ.get('PERF_LOG', '0') == '1' or elapsed > 500:
@@ -1276,26 +1306,9 @@ def negative_summary_json():
             days = None
     try:
         if mode == 'index':
-            lookback_days = days or int(os.environ.get('NEGATIVE_SUMMARY_LOOKBACK_DAYS', '90'))
-            start_date = datetime.utcnow().date() - timedelta(days=lookback_days)
-            rows = query_dict(
-                """
-                select date,
-                       'Index' as company,
-                       '' as ceo,
-                       article_type,
-                       sum(negative_count) as negative_count,
-                       '' as top_headlines,
-                       sum(crisis_risk_count) as crisis_risk_count
-                from negative_articles_summary_mv
-                where date >= %s
-                group by date, article_type
-                order by date desc, article_type
-                """,
-                (start_date,),
-            )
+            rows = negative_summary_live(days=days, company=None, mode='index')
         else:
-            rows = negative_summary_view(days=days, company=company_filter or None)
+            rows = negative_summary_live(days=days, company=company_filter or None, mode='detail')
         if not rows:
             resp = negative_articles_summary(days=days)
             if resp.status_code != 200:
@@ -1517,11 +1530,10 @@ def refresh_negative_summary():
     user_email = require_internal_user()
     if not user_email:
         return jsonify({'error': 'unauthorized'}), 401
-    lock_conn = get_conn()
-    if lock_conn is None:
+    try:
+        lock_conn = get_autocommit_conn("refresh_negative_summary")
+    except Exception:
         return jsonify({'error': 'db_unavailable'}), 503
-    lock_conn.autocommit = True
-    _set_application_name(lock_conn, "refresh_negative_summary")
     if not _try_acquire_refresh_lock(lock_conn):
         put_conn(lock_conn)
         return jsonify({'status': 'busy'}), 202
@@ -1547,8 +1559,9 @@ def refresh_aggregates():
     def run_refresh():
         global _refresh_in_progress, _refresh_last_status
         started = datetime.utcnow()
-        lock_conn = get_conn()
-        if lock_conn is None:
+        try:
+            lock_conn = get_autocommit_conn("refresh_aggregates")
+        except Exception:
             with _refresh_lock:
                 _refresh_last_status = {
                     'status': 'failed',
@@ -1559,8 +1572,6 @@ def refresh_aggregates():
                 }
                 _refresh_in_progress = False
             return
-        lock_conn.autocommit = True
-        _set_application_name(lock_conn, "refresh_aggregates")
         if not _try_acquire_refresh_lock(lock_conn):
             with _refresh_lock:
                 _refresh_last_status = {
@@ -1761,12 +1772,11 @@ def apply_override():
 
     try:
         def _refresh_after_override():
-            lock_conn = get_conn()
-            if lock_conn is None:
+            try:
+                lock_conn = get_autocommit_conn("refresh_after_override")
+            except Exception:
                 app.logger.warning("refresh after override skipped: db unavailable")
                 return
-            lock_conn.autocommit = True
-            _set_application_name(lock_conn, "refresh_after_override")
             if not _try_acquire_refresh_lock(lock_conn):
                 app.logger.info("refresh after override skipped: refresh already running")
                 put_conn(lock_conn)
@@ -2436,30 +2446,103 @@ def negative_articles_summary(days: int | None = None):
     return Response(csv_text, content_type='text/csv')
 
 
-def negative_summary_view(days: int | None = None, company: str | None = None):
+def negative_summary_live(days: int | None = None, company: str | None = None, mode: str = 'detail'):
     lookback_days = days or int(os.environ.get('NEGATIVE_SUMMARY_LOOKBACK_DAYS', '90'))
     start_date = datetime.utcnow().date() - timedelta(days=lookback_days)
     params = [start_date]
-    scope_sql, params = scope_clause("mv.company_id", params)
+    scope_sql, params = scope_clause("c.id", params)
     company_sql = ""
-    if company:
+    if company and mode != 'index':
         params.append(company)
-        company_sql = " and mv.company = %s"
-    rows = query_dict(
-        f"""
-        select mv.date,
-               mv.company,
-               mv.ceo,
-               mv.negative_count,
-               mv.top_headlines,
-               mv.article_type,
-               mv.crisis_risk_count
-        from negative_articles_summary_mv mv
-        where mv.date >= %s {scope_sql}{company_sql}
-        order by mv.date desc, mv.company
-        """,
-        tuple(params),
-    )
+        company_sql = " and c.name = %s"
+
+    if mode == 'index':
+        sql = f"""
+            select cad.date as date,
+                   'Index' as company,
+                   '' as ceo,
+                   'brand'::text as article_type,
+                   count(*) filter (where coalesce(ov.override_sentiment_label, cad.sentiment_label) = 'negative') as negative_count,
+                   '' as top_headlines,
+                   0 as crisis_risk_count
+            from company_article_mentions_daily cad
+            join companies c on c.id = cad.company_id
+            left join company_article_overrides ov
+              on ov.company_id = cad.company_id and ov.article_id = cad.article_id
+            where cad.date >= %s {scope_sql}
+            group by cad.date
+            union all
+            select cad.date as date,
+                   'Index' as company,
+                   '' as ceo,
+                   'ceo'::text as article_type,
+                   count(*) filter (where coalesce(ov.override_sentiment_label, cad.sentiment_label) = 'negative') as negative_count,
+                   '' as top_headlines,
+                   0 as crisis_risk_count
+            from ceo_article_mentions_daily cad
+            join ceos ceo on ceo.id = cad.ceo_id
+            join companies c on c.id = ceo.company_id
+            left join ceo_article_overrides ov
+              on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+            where cad.date >= %s {scope_sql}
+            group by cad.date
+            order by date desc, article_type
+        """
+        rows = query_dict(sql, tuple(params + params))
+        return rows
+
+    base = f"""
+        with base as (
+            select cad.date as date,
+                   c.id as company_id,
+                   c.name as company,
+                   coalesce(ceo.name, '') as ceo,
+                   coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
+                   a.title as title,
+                   null::text as llm_risk_label,
+                   'brand'::text as article_type
+            from company_article_mentions_daily cad
+            join companies c on c.id = cad.company_id
+            join articles a on a.id = cad.article_id
+            left join company_article_overrides ov
+              on ov.company_id = cad.company_id and ov.article_id = cad.article_id
+            left join ceos ceo on ceo.company_id = c.id
+            where cad.date >= %s {scope_sql}{company_sql}
+            union all
+            select cad.date as date,
+                   c.id as company_id,
+                   c.name as company,
+                   coalesce(ceo.name, '') as ceo,
+                   coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
+                   a.title as title,
+                   null::text as llm_risk_label,
+                   'ceo'::text as article_type
+            from ceo_article_mentions_daily cad
+            join ceos ceo on ceo.id = cad.ceo_id
+            join companies c on c.id = ceo.company_id
+            join articles a on a.id = cad.article_id
+            left join ceo_article_overrides ov
+              on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+            where cad.date >= %s {scope_sql}{company_sql}
+        )
+    """
+    sql = f"""
+        {base}
+        select date,
+               company,
+               ceo,
+               article_type,
+               count(*) filter (where sentiment = 'negative') as negative_count,
+               array_to_string(
+                   (array_agg(title order by title) filter (where sentiment = 'negative'))[1:3],
+                   ' | '
+               ) as top_headlines,
+               count(*) filter (where llm_risk_label = 'crisis_risk') as crisis_risk_count
+        from base
+        group by date, company, ceo, article_type
+        order by date desc, company
+    """
+    rows = query_dict(sql, tuple(params + params))
     return rows
 
 
@@ -2479,6 +2562,7 @@ def refresh_negative_summary_view(conn=None) -> None:
         raise RuntimeError("DATABASE_URL is not configured")
     _set_application_name(conn, "refresh_negative_summary_view")
     try:
+        _reset_conn(conn)
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("refresh materialized view concurrently negative_articles_summary_mv")
@@ -2499,6 +2583,7 @@ def refresh_serp_feature_daily_view(conn=None) -> None:
         raise RuntimeError("DATABASE_URL is not configured")
     _set_application_name(conn, "refresh_serp_feature_daily_view")
     try:
+        _reset_conn(conn)
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("refresh materialized view concurrently serp_feature_daily_mv")
@@ -2519,6 +2604,7 @@ def refresh_serp_feature_control_daily_view(conn=None) -> None:
         raise RuntimeError("DATABASE_URL is not configured")
     _set_application_name(conn, "refresh_serp_feature_control_daily_view")
     try:
+        _reset_conn(conn)
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("refresh materialized view concurrently serp_feature_control_daily_mv")
@@ -2539,6 +2625,7 @@ def refresh_serp_feature_daily_index_view(conn=None) -> None:
         raise RuntimeError("DATABASE_URL is not configured")
     _set_application_name(conn, "refresh_serp_feature_daily_index_view")
     try:
+        _reset_conn(conn)
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("refresh materialized view concurrently serp_feature_daily_index_mv")
@@ -2559,6 +2646,7 @@ def refresh_serp_feature_control_daily_index_view(conn=None) -> None:
         raise RuntimeError("DATABASE_URL is not configured")
     _set_application_name(conn, "refresh_serp_feature_control_daily_index_view")
     try:
+        _reset_conn(conn)
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("refresh materialized view concurrently serp_feature_control_daily_index_mv")
@@ -2579,6 +2667,7 @@ def refresh_article_daily_counts_view(conn=None) -> None:
         raise RuntimeError("DATABASE_URL is not configured")
     _set_application_name(conn, "refresh_article_daily_counts_view")
     try:
+        _reset_conn(conn)
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("refresh materialized view concurrently article_daily_counts_mv")
@@ -2599,6 +2688,7 @@ def refresh_serp_daily_counts_view(conn=None) -> None:
         raise RuntimeError("DATABASE_URL is not configured")
     _set_application_name(conn, "refresh_serp_daily_counts_view")
     try:
+        _reset_conn(conn)
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("refresh materialized view concurrently serp_daily_counts_mv")
