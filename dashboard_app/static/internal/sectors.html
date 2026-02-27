@@ -63,6 +63,8 @@ select,input[type="text"]{background:#1f2121;border:1px solid #23314d;border-rad
 button{background:#1f2121;border:1px solid #2a3b5e;color:var(--text);border-radius:10px;padding:8px 12px;cursor:pointer}
 button:hover{filter:brightness(1.08)}
 .filter-toggle.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
+.crisis-toggle{border-color:#7b1d1d;color:#ffb3b3}
+.crisis-toggle.active{border-color:#ff4545;box-shadow:0 0 0 1px rgba(255,69,69,.4);color:#ff5c5c}
 .controls .spacer{flex:0 0 12px}
 .filter-block{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px;flex:1 1 420px}
 .filter-block .muted{flex:1 1 100%}
@@ -210,8 +212,16 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
       <input id="filterInput" type="text" placeholder="Type to filter…" />
       <button id="clearBtn">Clear Selection</button>
     </div>
-    <button id="fortune500Btn" class="filter-toggle" title="Filter to Fortune 500">Fortune 500</button>
-    <button id="fortune1000Btn" class="filter-toggle" title="Filter to Fortune 1000">Fortune 1000</button>
+    <div>
+      <div class="muted" style="font-size:12px;margin:0 0 4px">Company Size</div>
+      <select id="companySizeSelect">
+        <option value="all">All companies</option>
+        <option value="fortune500">Fortune 500</option>
+        <option value="fortune1000">Fortune 1000</option>
+        <option value="forbes">Forbes</option>
+      </select>
+    </div>
+    <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Only sectors with at least one company with a negative Top stories URL">Crisis</button>
     <div class="spacer"></div>
     <button id="refreshBtn">Refresh Data</button>
     <span id="refreshStatus" class="muted" style="font-size:12px;align-self:center"></span>
@@ -349,8 +359,10 @@ let serpFeatureRows = [];
 let serpFeatureControlRows = [];
 let featureNegByDateBrand = new Map();
 let featureCtrlByDateBrand = new Map();
+let crisisBrandKeys = new Set();
 let fortuneFlags = new Map();
-let fortuneFilter = null;
+let companySizeFilter = 'all';
+let crisisOnly = false;
 
 let filteredRows = [];
 let selectedSector = null;
@@ -451,6 +463,7 @@ function featureIndexKey(date, brandKey){
 function rebuildFeatureIndexes(){
   featureNegByDateBrand = new Map();
   featureCtrlByDateBrand = new Map();
+  crisisBrandKeys = new Set();
 
   serpFeatureRows.forEach(r => {
     if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
@@ -461,6 +474,9 @@ function rebuildFeatureIndexes(){
     cur.total += r.total || 0;
     cur.neg += r.neg || 0;
     featureNegByDateBrand.set(key, cur);
+    if (r.feature === 'top_stories_items' && (r.total || 0) > 0 && (r.neg || 0) > 0) {
+      crisisBrandKeys.add(brandKey);
+    }
   });
 
   serpFeatureControlRows.forEach(r => {
@@ -473,6 +489,14 @@ function rebuildFeatureIndexes(){
     cur.ctrl += r.ctrl || 0;
     featureCtrlByDateBrand.set(key, cur);
   });
+}
+
+function matchesCompanySize(brandKey){
+  const flags = fortuneFlags.get(brandKey) || {};
+  if (companySizeFilter === 'fortune500') return !!flags.f500;
+  if (companySizeFilter === 'fortune1000') return !!flags.f1000;
+  if (companySizeFilter === 'forbes') return !!flags.forbes;
+  return true;
 }
 
 /********************** Stock Data **********************/
@@ -682,6 +706,7 @@ async function loadRosterSectors() {
       const sector    = r.sector  || r.Sector  || '';
       const f500 = String(r['Fortune 500'] || r.fortune_500 || r.fortune500 || '').trim();
       const f1000 = String(r['Fortune 1000'] || r.fortune_1000 || r.fortune1000 || '').trim();
+      const forbes = String(r['Forbes'] || r['Forbes 100'] || r['Forbes 2000'] || r.forbes || r.forbes_100 || r.forbes_2000 || '').trim();
       const brandKey  = canonBrand(brandRaw);
       if (!brandKey || !sector) return;
 
@@ -690,7 +715,8 @@ async function loadRosterSectors() {
       brandsBySector.get(sector).add(brandKey);
       fortuneFlags.set(brandKey, {
         f500: ['true','1','yes','y','x'].includes(f500.toLowerCase()),
-        f1000: ['true','1','yes','y','x'].includes(f1000.toLowerCase())
+        f1000: ['true','1','yes','y','x'].includes(f1000.toLowerCase()),
+        forbes: ['true','1','yes','y','x'].includes(forbes.toLowerCase())
       });
     });
     setLoadStatus('roster', 'done');
@@ -772,8 +798,22 @@ async function init(){
     await init();
   };
   document.getElementById('clearBtn').onclick = ()=>{ selectedSector=null; document.getElementById('filterInput').value=''; renderAll(); };
-  document.getElementById('fortune500Btn').onclick = ()=>{ setFortuneFilter('500'); };
-  document.getElementById('fortune1000Btn').onclick = ()=>{ setFortuneFilter('1000'); };
+  const companySizeSelect = document.getElementById('companySizeSelect');
+  if (companySizeSelect){
+    companySizeSelect.value = companySizeFilter;
+    companySizeSelect.onchange = ()=>{
+      companySizeFilter = companySizeSelect.value || 'all';
+      renderAll();
+    };
+  }
+  const crisisBtn = document.getElementById('crisisBtn');
+  if (crisisBtn){
+    crisisBtn.onclick = ()=>{
+      crisisOnly = !crisisOnly;
+      crisisBtn.classList.toggle('active', crisisOnly);
+      renderAll();
+    };
+  }
   document.getElementById('prevBtn').onclick = ()=>{ if (currentPage>1){ currentPage--; renderTable(); } };
   document.getElementById('nextBtn').onclick = ()=>{ const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE)); if (currentPage<totalPages){ currentPage++; renderTable(); } };
 
@@ -795,13 +835,6 @@ async function init(){
   document.querySelectorAll('.chart-card').forEach(el => ro.observe(el));
 
   dataReady = true;
-  renderAll();
-}
-
-function setFortuneFilter(next){
-  fortuneFilter = (fortuneFilter === next) ? null : next;
-  document.getElementById('fortune500Btn').classList.toggle('active', fortuneFilter === '500');
-  document.getElementById('fortune1000Btn').classList.toggle('active', fortuneFilter === '1000');
   renderAll();
 }
 
@@ -839,8 +872,8 @@ async function buildSectorRowsForDate(d) {
     let sevenDayChanges = [];
 
     brandSet.forEach(bKey => {
-      if (fortuneFilter === '500' && !fortuneFlags.get(bKey)?.f500) return;
-      if (fortuneFilter === '1000' && !fortuneFlags.get(bKey)?.f1000) return;
+      if (!matchesCompanySize(bKey)) return;
+      if (crisisOnly && !crisisBrandKeys.has(bKey)) return;
       const n = newsByBrand.get(bKey);
       if (n) { nPos += n.pos; nNeu += n.neu; nNeg += n.neg; }
       const s = serpByBrand.get(bKey);

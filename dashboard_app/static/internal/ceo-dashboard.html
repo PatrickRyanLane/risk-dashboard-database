@@ -118,6 +118,8 @@ h1{font-size:28px;margin:6px 0 18px}
 .controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls input{min-width:220px}
 .filter-toggle.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
+.crisis-toggle{border-color:#7b1d1d;color:#ffb3b3}
+.crisis-toggle.active{border-color:#ff4545;box-shadow:0 0 0 1px rgba(255,69,69,.4);color:#ff5c5c}
 .controls .spacer{flex:0 0 12px}
 .filter-block{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px;flex:1 1 420px}
 .filter-block .muted{flex:1 1 100%}
@@ -731,11 +733,22 @@ body:has(#stockChartModal.open) {
     <div class="filter-block">
       <div class="muted" style="font-size:12px;margin:0 0 4px">Filter (CEO or Company)</div>
       <input id="filterInput" type="text" placeholder="Type to filter…" />
+      <select id="sectorFilterSelect" title="Filter by sector or industry">
+        <option value="">All sectors</option>
+      </select>
       <button id="clearBtn">Clear Selection</button>
     </div>
-    <button id="favoritesBtn" class="fav-toggle" title="Show favorites only">★ Favorites</button>
-    <button id="fortune500Btn" class="filter-toggle" title="Filter to Fortune 500">Fortune 500</button>
-    <button id="fortune1000Btn" class="filter-toggle" title="Filter to Fortune 1000">Fortune 1000</button>
+    <div>
+      <div class="muted" style="font-size:12px;margin:0 0 4px">Company Size</div>
+      <select id="companySizeSelect">
+        <option value="all">All companies</option>
+        <option value="favorites">Favorites</option>
+        <option value="fortune500">Fortune 500</option>
+        <option value="fortune1000">Fortune 1000</option>
+        <option value="forbes">Forbes</option>
+      </select>
+    </div>
+    <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Only CEOs with at least one negative Top stories URL">Crisis</button>
     <!-- <button id="fullHistoryBtn">Load 180 days</button> -->
     <div class="spacer"></div>
     <button id="refreshBtn">Refresh Data</button>
@@ -941,13 +954,13 @@ let serpFeatureEntityRows = [];
 let serpFeatureControlIndexRows = [];
 let serpFeatureControlEntityRows = [];
 let topStoriesNegByDate = new Map();
+let crisisEntityKeys = new Set();
 let boardsByCeo = new Map();
 let filteredRows = [];
 let selectedCeo = null;
 let currentSort = { key:null, dir:1 };
 let currentPage = 1;
 let dataReady = false;
-let favoritesOnly = false;
 let favoriteCeos = new Set();
 const PAGE_SIZE = 25;
 
@@ -1055,7 +1068,9 @@ let globalTrendsData = {}; // Trends data by company
 let companyTickers = new Map();
 let favoriteCompanies = new Set();
 let fortuneFlags = new Map();
-let fortuneFilter = null;
+let companySector = new Map();
+let companySizeFilter = 'all';
+let crisisOnly = false;
 
 const _articlesCache = new Map();
 const _serpAggCache  = new Map();
@@ -1093,6 +1108,24 @@ const isItemFeature = (feature) => {
   const mapped = mapFeatureType(feature);
   return mapped === feature && FEATURE_ORDER_SENTIMENT.includes(mapped);
 };
+function refreshCrisisEntityKeys(){
+  const next = new Set();
+  serpFeatureIndexRows.forEach(r=>{
+    if (mapFeatureType(r.feature) !== 'top_stories_items') return;
+    if ((r.total || 0) <= 0 || (r.neg || 0) <= 0) return;
+    const entityKey = normEntityKey(r.entity);
+    if (entityKey) next.add(entityKey);
+  });
+  crisisEntityKeys = next;
+}
+function matchesCompanySize(company, ceo){
+  const flags = fortuneFlags.get(company) || {};
+  if (companySizeFilter === 'favorites') return favoriteCeos.has(ceo);
+  if (companySizeFilter === 'fortune500') return !!flags.f500;
+  if (companySizeFilter === 'fortune1000') return !!flags.f1000;
+  if (companySizeFilter === 'forbes') return !!flags.forbes;
+  return true;
+}
 const _loadSections = ['roster','news','serps','features','boards','stock','trends','negative'];
 const _loadLabels = {
   roster: 'Roster',
@@ -1941,15 +1974,18 @@ async function loadRoster(){
     favoriteCeos = new Set();
     favoriteCompanies = new Set();
     fortuneFlags = new Map();
+    companySector = new Map();
     companyTickers = new Map();
     rows.forEach(r => {
       const ceo = (r.ceo || r.CEO || '').trim();
       const company = (r.company || r.Company || '').trim();
+      const sector = String(r.sector || r.Sector || r.industry || r.Industry || '').trim();
       const fav = isTrue(r.ceo_favorite || r['CEO Favorite'] || r['Favorite CEO'] || r.favorite || r.Favorite);
       const favCompany = isTrue(r.company_favorite || r['Company Favorite'] || r['Favorite Company'] || r.favorite || r.Favorite);
       const ticker = String(r.ticker || r.Ticker || r.stock_ticker || r['Stock Ticker'] || '').trim();
       const f500 = String(r['Fortune 500'] || r.fortune_500 || r.fortune500 || '').trim();
       const f1000 = String(r['Fortune 1000'] || r.fortune_1000 || r.fortune1000 || '').trim();
+      const forbes = String(r['Forbes'] || r['Forbes 100'] || r['Forbes 2000'] || r.forbes || r.forbes_100 || r.forbes_2000 || '').trim();
       if (ceo && company){
         rosterMap.set(ceo, company);
         companyToCeo.set(company, ceo);
@@ -1957,13 +1993,16 @@ async function loadRoster(){
       }
       if (company && favCompany) favoriteCompanies.add(company);
       if (company && ticker) companyTickers.set(company, ticker);
+      if (company && sector) companySector.set(company, sector);
       if (company) {
         fortuneFlags.set(company, {
           f500: isTrue(f500) || f500.toLowerCase() === 'x',
-          f1000: isTrue(f1000) || f1000.toLowerCase() === 'x'
+          f1000: isTrue(f1000) || f1000.toLowerCase() === 'x',
+          forbes: isTrue(forbes) || forbes.toLowerCase() === 'x'
         });
       }
     });
+    populateSectorFilterOptions();
     setLoadStatus('roster', 'done');
   } catch (e){
     rosterMap = new Map();
@@ -1971,9 +2010,20 @@ async function loadRoster(){
     favoriteCeos = new Set();
     favoriteCompanies = new Set();
     fortuneFlags = new Map();
+    companySector = new Map();
     companyTickers = new Map();
+    populateSectorFilterOptions();
     setLoadStatus('roster', 'error');
   }
+}
+
+function populateSectorFilterOptions(){
+  const sel = document.getElementById('sectorFilterSelect');
+  if (!sel) return;
+  const prev = sel.value || '';
+  const sectors = [...new Set([...companySector.values()].filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  sel.innerHTML = `<option value="">All sectors</option>` + sectors.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  if (prev && sectors.includes(prev)) sel.value = prev;
 }
 
 async function loadBoards(){
@@ -2064,6 +2114,7 @@ async function loadSerpFeaturesIndex(){
       total: +r.total_count||0,
       ctrl: +r.controlled_count||0
     })).filter(r=>isISODate(r.date) && r.entity && r.feature);
+    refreshCrisisEntityKeys();
     const d = document.getElementById('dateSelect').value;
     if (d) {
       await loadTopStoriesForDate(d);
@@ -2074,6 +2125,7 @@ async function loadSerpFeaturesIndex(){
     serpFeatureIndexRows = [];
     serpFeatureControlIndexRows = [];
     topStoriesNegByDate = new Map();
+    crisisEntityKeys = new Set();
     setLoadStatus('features', 'error');
     maybeRenderAll();
   }
@@ -2209,11 +2261,23 @@ async function init(){
   document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll().then(() => {
     if (filteredRows.length === 1) selectCeo(filteredRows[0].ceo);
   }); });
-  const favBtn = document.getElementById('favoritesBtn');
-  if (favBtn){
-    favBtn.onclick = ()=>{
-      favoritesOnly = !favoritesOnly;
-      favBtn.classList.toggle('active', favoritesOnly);
+  const sectorFilterSelect = document.getElementById('sectorFilterSelect');
+  if (sectorFilterSelect){
+    sectorFilterSelect.onchange = ()=>{ currentPage = 1; renderAll(); };
+  }
+  const companySizeSelect = document.getElementById('companySizeSelect');
+  if (companySizeSelect){
+    companySizeSelect.value = companySizeFilter;
+    companySizeSelect.onchange = ()=>{
+      companySizeFilter = companySizeSelect.value || 'all';
+      renderAll();
+    };
+  }
+  const crisisBtn = document.getElementById('crisisBtn');
+  if (crisisBtn){
+    crisisBtn.onclick = ()=>{
+      crisisOnly = !crisisOnly;
+      crisisBtn.classList.toggle('active', crisisOnly);
       renderAll();
     };
   }
@@ -2259,11 +2323,11 @@ async function init(){
   document.getElementById('clearBtn').onclick = ()=>{
     selectedCeo=null;
     document.getElementById('filterInput').value='';
+    const sectorFilter = document.getElementById('sectorFilterSelect');
+    if (sectorFilter) sectorFilter.value = '';
     updateEntityUrlParam('ceo', null);
     renderAll();
   };
-  document.getElementById('fortune500Btn').onclick = ()=>{ setFortuneFilter('500'); };
-  document.getElementById('fortune1000Btn').onclick = ()=>{ setFortuneFilter('1000'); };
   const fullHistoryBtn = document.getElementById('fullHistoryBtn');
   if (fullHistoryBtn) {
     fullHistoryBtn.onclick = async ()=>{
@@ -2357,13 +2421,6 @@ async function init(){
   };
 }
 
-function setFortuneFilter(next){
-  fortuneFilter = (fortuneFilter === next) ? null : next;
-  document.getElementById('fortune500Btn').classList.toggle('active', fortuneFilter === '500');
-  document.getElementById('fortune1000Btn').classList.toggle('active', fortuneFilter === '1000');
-  renderAll();
-}
-
 async function buildRowsForDate(d){
   const articles = await getArticlesForDate(d);
   const serpAgg  = await getSerpAggForDate(d);
@@ -2402,12 +2459,13 @@ async function buildRowsForDate(d){
 async function renderAll(){
   const d = document.getElementById('dateSelect').value;
   const filter = document.getElementById('filterInput').value.trim().toLowerCase();
+  const sectorFilter = (document.getElementById('sectorFilterSelect')?.value || '').trim();
 
   const rows = (await buildRowsForDate(d)).filter(r=>{
     if (filter && !(r.ceo.toLowerCase().includes(filter) || r.company.toLowerCase().includes(filter))) return false;
-    if (favoritesOnly && !favoriteCeos.has(r.ceo)) return false;
-    if (fortuneFilter === '500' && !fortuneFlags.get(r.company)?.f500) return false;
-    if (fortuneFilter === '1000' && !fortuneFlags.get(r.company)?.f1000) return false;
+    if (sectorFilter && companySector.get(r.company) !== sectorFilter) return false;
+    if (!matchesCompanySize(r.company, r.ceo)) return false;
+    if (crisisOnly && !crisisEntityKeys.has(normEntityKey(r.ceo))) return false;
     return true;
   });
 
@@ -2545,7 +2603,7 @@ function renderTable(){
         if (next) favoriteCeos.add(ceo);
         else favoriteCeos.delete(ceo);
         btn.classList.toggle('active', next);
-        if (favoritesOnly && !next) {
+        if (companySizeFilter === 'favorites' && !next) {
           renderAll();
         }
       }
