@@ -57,7 +57,24 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-
 h1{font-size:28px;margin:6px 0 18px}
 
 /* Controls */
-.controls{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin:0 0 16px}
+.controls{display:flex;flex-direction:column;gap:8px;margin:0 0 16px}
+.controls select,
+.controls input,
+.controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
+.controls .controls-grid{
+  display:grid;
+  grid-template-columns:170px minmax(220px,340px) 190px 190px auto auto auto;
+  gap:8px 12px;
+  align-items:end;
+  width:100%;
+}
+.controls .field-label{font-size:12px;margin:0;padding-left:8px;line-height:1.2}
+.controls .field-label-empty{padding-left:0}
+.controls .controls-inputs input,
+.controls .controls-inputs select{width:100%;min-width:0}
+.controls .controls-inputs button{width:auto;white-space:nowrap;justify-self:start}
+.controls .controls-aux{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.controls .controls-aux .muted{font-size:12px}
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:12px 12px}
 select,input[type="text"]{background:#1f2121;border:1px solid #23314d;border-radius:10px;color:var(--text);padding:8px 10px}
 button{background:#1f2121;border:1px solid #2a3b5e;color:var(--text);border-radius:10px;padding:8px 12px;cursor:pointer}
@@ -65,9 +82,12 @@ button:hover{filter:brightness(1.08)}
 .filter-toggle.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
 .crisis-toggle{border-color:#7b1d1d;color:#ffb3b3}
 .crisis-toggle.active{border-color:#ff4545;box-shadow:0 0 0 1px rgba(255,69,69,.4);color:#ff5c5c}
-.controls .spacer{flex:0 0 12px}
-.filter-block{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px;flex:1 1 420px}
-.filter-block .muted{flex:1 1 100%}
+.controls .spacer{display:none}
+@media (max-width: 980px){
+  .controls .controls-header{display:none}
+  .controls .controls-grid{grid-template-columns:1fr}
+  .controls .controls-inputs button{width:100%}
+}
 
 /* Charts grid */
 .grid{
@@ -203,28 +223,34 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
   <h1>Fortune 1000 — Sectors Dashboard</h1>
 
   <div class="controls card">
-    <div>
-      <div class="muted" style="font-size:12px;margin:0 0 4px">Date</div>
+    <div class="controls-grid controls-header">
+      <div class="muted field-label">Date</div>
+      <div class="muted field-label">Filter (Sector)</div>
+      <div class="muted field-label">Sector</div>
+      <div class="muted field-label">Company Size</div>
+      <div class="field-label field-label-empty" aria-hidden="true"></div>
+      <div class="field-label field-label-empty" aria-hidden="true"></div>
+      <div class="field-label field-label-empty" aria-hidden="true"></div>
+    </div>
+    <div class="controls-grid controls-inputs">
       <select id="dateSelect"></select>
-    </div>
-    <div class="filter-block">
-      <div class="muted" style="font-size:12px;margin:0 0 4px">Filter (Sector)</div>
       <input id="filterInput" type="text" placeholder="Type to filter…" />
-      <button id="clearBtn">Clear Selection</button>
-    </div>
-    <div>
-      <div class="muted" style="font-size:12px;margin:0 0 4px">Company Size</div>
+      <select id="sectorFilterSelect" title="Filter by sector">
+        <option value="">All sectors</option>
+      </select>
       <select id="companySizeSelect">
         <option value="all">All companies</option>
         <option value="fortune500">Fortune 500</option>
         <option value="fortune1000">Fortune 1000</option>
         <option value="forbes">Forbes</option>
       </select>
+      <button id="clearBtn">Clear Selection</button>
+      <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Only sectors with at least one company with a negative Top stories URL">Crisis</button>
+      <button id="refreshBtn">Refresh Data</button>
     </div>
-    <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Only sectors with at least one company with a negative Top stories URL">Crisis</button>
-    <div class="spacer"></div>
-    <button id="refreshBtn">Refresh Data</button>
-    <span id="refreshStatus" class="muted" style="font-size:12px;align-self:center"></span>
+    <div class="controls-aux">
+      <span id="refreshStatus" class="muted"></span>
+    </div>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
       <div class="load-items" id="loadItems"></div>
@@ -719,13 +745,24 @@ async function loadRosterSectors() {
         forbes: ['true','1','yes','y','x'].includes(forbes.toLowerCase())
       });
     });
+    populateSectorFilterOptions();
     setLoadStatus('roster', 'done');
   } catch (e){
     sectorFromBrand.clear();
     brandsBySector.clear();
     fortuneFlags = new Map();
+    populateSectorFilterOptions();
     setLoadStatus('roster', 'error');
   }
+}
+
+function populateSectorFilterOptions(){
+  const sel = document.getElementById('sectorFilterSelect');
+  if (!sel) return;
+  const prev = sel.value || '';
+  const sectors = [...brandsBySector.keys()].filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  sel.innerHTML = `<option value="">All sectors</option>` + sectors.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  if (prev && sectors.includes(prev)) sel.value = prev;
 }
 
 
@@ -758,6 +795,10 @@ async function init(){
   sel.addEventListener('change', ()=>{ currentPage=1; selectedSector=null; renderAll(); });
 
   document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll(); });
+  const sectorFilterSelect = document.getElementById('sectorFilterSelect');
+  if (sectorFilterSelect){
+    sectorFilterSelect.onchange = ()=>{ currentPage = 1; selectedSector = null; renderAll(); };
+  }
   document.getElementById('refreshBtn').onclick = async ()=>{
     const statusEl = document.getElementById('refreshStatus');
     const refreshTargets = 'News, Organic SERP, SERP Features, Negative Summary';
@@ -797,7 +838,13 @@ async function init(){
     }
     await init();
   };
-  document.getElementById('clearBtn').onclick = ()=>{ selectedSector=null; document.getElementById('filterInput').value=''; renderAll(); };
+  document.getElementById('clearBtn').onclick = ()=>{
+    selectedSector = null;
+    document.getElementById('filterInput').value = '';
+    const sectorFilter = document.getElementById('sectorFilterSelect');
+    if (sectorFilter) sectorFilter.value = '';
+    renderAll();
+  };
   const companySizeSelect = document.getElementById('companySizeSelect');
   if (companySizeSelect){
     companySizeSelect.value = companySizeFilter;
@@ -926,10 +973,13 @@ async function buildSectorRowsForDate(d) {
 async function renderAll(){
   const d = document.getElementById('dateSelect').value;
   const filter = document.getElementById('filterInput').value.trim().toLowerCase();
+  const sectorFilter = (document.getElementById('sectorFilterSelect')?.value || '').trim();
 
-  const rows = (await buildSectorRowsForDate(d)).filter(r =>
-    !filter || r.sector.toLowerCase().includes(filter)
-  );
+  const rows = (await buildSectorRowsForDate(d)).filter(r => {
+    if (filter && !r.sector.toLowerCase().includes(filter)) return false;
+    if (sectorFilter && r.sector !== sectorFilter) return false;
+    return true;
+  });
 
   filteredRows = rows;
   currentPage = 1;

@@ -68,6 +68,18 @@ def run_with_deadlock_retry(conn, fn, retries: int = 3, base_delay: float = 0.5)
             time.sleep(base_delay * (2 ** attempt))
 
 
+def execute_values_returning(cur, sql: str, rows: list[tuple], page_size: int = 1000):
+    out = []
+    if not rows:
+        return out
+    page = max(1, int(page_size))
+    for start in range(0, len(rows), page):
+        chunk = rows[start:start + page]
+        execute_values(cur, sql, chunk, page_size=len(chunk))
+        out.extend(cur.fetchall())
+    return out
+
+
 def upsert_companies_ceos(conn, roster_file_obj):
     reader = csv.DictReader(roster_file_obj)
     companies_map = {}
@@ -503,8 +515,8 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
                           provider = excluded.provider
                         returning id, entity_type, company_id, ceo_id
                     """
-                    execute_values(cur, sql, company_values, page_size=1000)
-                    for run_id, etype, company_id, ceo_id in cur.fetchall():
+                    returned = execute_values_returning(cur, sql, company_values, page_size=1000)
+                    for run_id, etype, company_id, ceo_id in returned:
                         run_id_map[('company', company_id)] = run_id
                 if ceo_values:
                     sql = """
@@ -517,8 +529,8 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
                           provider = excluded.provider
                         returning id, entity_type, company_id, ceo_id
                     """
-                    execute_values(cur, sql, ceo_values, page_size=1000)
-                    for run_id, etype, company_id, ceo_id in cur.fetchall():
+                    returned = execute_values_returning(cur, sql, ceo_values, page_size=1000)
+                    for run_id, etype, company_id, ceo_id in returned:
                         run_id_map[('ceo', ceo_id)] = run_id
     else:
         run_id_map = {}

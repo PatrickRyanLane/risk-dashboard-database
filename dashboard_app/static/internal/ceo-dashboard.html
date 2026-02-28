@@ -112,17 +112,33 @@ h1{font-size:28px;margin:6px 0 18px}
 }
 
 /* Controls */
-.controls{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin:0 0 16px}
+.controls{display:flex;flex-direction:column;gap:8px;margin:0 0 16px}
 .controls select,
 .controls input,
 .controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
-.controls input{min-width:220px}
+.controls .controls-grid{
+  display:grid;
+  grid-template-columns:170px minmax(220px,340px) 190px 190px auto auto auto;
+  gap:8px 12px;
+  align-items:end;
+  width:100%;
+}
+.controls .field-label{font-size:12px;margin:0;padding-left:8px;line-height:1.2}
+.controls .field-label-empty{padding-left:0}
+.controls .controls-inputs input,
+.controls .controls-inputs select{width:100%;min-width:0}
+.controls .controls-inputs button{width:auto;white-space:nowrap;justify-self:start}
+.controls .controls-aux{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.controls .controls-aux .muted{font-size:12px}
 .filter-toggle.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
 .crisis-toggle{border-color:#7b1d1d;color:#ffb3b3}
 .crisis-toggle.active{border-color:#ff4545;box-shadow:0 0 0 1px rgba(255,69,69,.4);color:#ff5c5c}
-.controls .spacer{flex:0 0 12px}
-.filter-block{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px;flex:1 1 420px}
-.filter-block .muted{flex:1 1 100%}
+.controls .spacer{display:none}
+@media (max-width: 980px){
+  .controls .controls-header{display:none}
+  .controls .controls-grid{grid-template-columns:1fr}
+  .controls .controls-inputs button{width:100%}
+}
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:12px 12px}
 select,input[type="text"]{background:#1f2121;border:1px solid #23314d;border-radius:10px;color:var(--text);padding:8px 10px}
 button{background:#1f2121;border:1px solid #2a3b5e;color:var(--text);border-radius:10px;padding:8px 12px;cursor:pointer}
@@ -726,20 +742,21 @@ body:has(#stockChartModal.open) {
   <h1>CEO Risk Dashboard</h1>
 
   <div class="controls card">
-    <div>
-      <div class="muted" style="font-size:12px;margin:0 0 4px">Date</div>
-      <select id="dateSelect"></select>
+    <div class="controls-grid controls-header">
+      <div class="muted field-label">Date</div>
+      <div class="muted field-label">Filter (CEO or Company)</div>
+      <div class="muted field-label">Sector</div>
+      <div class="muted field-label">Company Size</div>
+      <div class="field-label field-label-empty" aria-hidden="true"></div>
+      <div class="field-label field-label-empty" aria-hidden="true"></div>
+      <div class="field-label field-label-empty" aria-hidden="true"></div>
     </div>
-    <div class="filter-block">
-      <div class="muted" style="font-size:12px;margin:0 0 4px">Filter (CEO or Company)</div>
+    <div class="controls-grid controls-inputs">
+      <select id="dateSelect"></select>
       <input id="filterInput" type="text" placeholder="Type to filter…" />
       <select id="sectorFilterSelect" title="Filter by sector or industry">
         <option value="">All sectors</option>
       </select>
-      <button id="clearBtn">Clear Selection</button>
-    </div>
-    <div>
-      <div class="muted" style="font-size:12px;margin:0 0 4px">Company Size</div>
       <select id="companySizeSelect">
         <option value="all">All companies</option>
         <option value="favorites">Favorites</option>
@@ -747,12 +764,13 @@ body:has(#stockChartModal.open) {
         <option value="fortune1000">Fortune 1000</option>
         <option value="forbes">Forbes</option>
       </select>
+      <button id="clearBtn">Clear Selection</button>
+      <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Only CEOs with at least one negative Top stories URL">Crisis</button>
+      <button id="refreshBtn">Refresh Data</button>
     </div>
-    <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Only CEOs with at least one negative Top stories URL">Crisis</button>
-    <!-- <button id="fullHistoryBtn">Load 180 days</button> -->
-    <div class="spacer"></div>
-    <button id="refreshBtn">Refresh Data</button>
-    <span id="refreshStatus" class="muted" style="font-size:12px;align-self:center"></span>
+    <div class="controls-aux">
+      <span id="refreshStatus" class="muted"></span>
+    </div>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
       <div class="load-items" id="loadItems"></div>
