@@ -244,7 +244,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
         <option value="forbes">Forbes</option>
       </select>
       <button id="clearBtn">Clear Selection</button>
-      <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Only sectors with at least one company with a negative Top stories URL">Crisis</button>
+      <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Sectors with at least one company that has more than 4 negative Top stories URLs on any single day in the last 30 days">Crisis</button>
       <button id="refreshBtn">Refresh Data</button>
     </div>
     <div class="load-status" id="loadStatus">
@@ -395,6 +395,7 @@ const PAGE_SIZE = 25;
 let newsChart, serpChart, featureChart, featureControlChart;
 
 const DATE_WINDOW_SIZE = 30;
+const CRISIS_MIN_NEG = 4;
 let dateWindowStart = null;
 let dateWindowPinned = false;
 const _loadSections = ['roster','news','serps','features','stock'];
@@ -486,6 +487,7 @@ function rebuildFeatureIndexes(){
   featureNegByDateBrand = new Map();
   featureCtrlByDateBrand = new Map();
   crisisBrandKeys = new Set();
+  const topStoriesNegByBrandDay = new Map();
 
   serpFeatureRows.forEach(r => {
     if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
@@ -497,9 +499,20 @@ function rebuildFeatureIndexes(){
     cur.neg += r.neg || 0;
     featureNegByDateBrand.set(key, cur);
     if (r.feature === 'top_stories_items' && (r.total || 0) > 0 && (r.neg || 0) > 0) {
-      crisisBrandKeys.add(brandKey);
+      const dailyKey = featureIndexKey(r.date, brandKey);
+      topStoriesNegByBrandDay.set(dailyKey, (topStoriesNegByBrandDay.get(dailyKey) || 0) + (r.neg || 0));
     }
   });
+
+  const crisisKeys = new Set();
+  topStoriesNegByBrandDay.forEach((neg, dailyKey) => {
+    if (neg <= CRISIS_MIN_NEG) return;
+    const sep = dailyKey.indexOf('|');
+    if (sep < 0) return;
+    const brandKey = dailyKey.slice(sep + 1);
+    if (brandKey) crisisKeys.add(brandKey);
+  });
+  crisisBrandKeys = crisisKeys;
 
   serpFeatureControlRows.forEach(r => {
     if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;

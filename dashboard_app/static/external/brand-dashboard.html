@@ -688,7 +688,7 @@ body:has(#stockChartModal.open) {
         <option value="forbes">Forbes</option>
       </select>
       <button id="clearBtn">Clear Selection</button>
-      <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Only companies with at least one negative Top stories URL">Crisis</button>
+      <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Companies with more than 4 negative Top stories URLs on any single day in the last 30 days">Crisis</button>
       <button id="refreshBtn">Refresh Data</button>
     </div>
     <div class="controls-aux">
@@ -861,7 +861,8 @@ body:has(#stockChartModal.open) {
 /********************** Config (brand) **********************/
 const DEFAULT_DAYS = 30;
 const FULL_DAYS = 180;
-const CRISIS_DAYS = 90;
+const CRISIS_DAYS = 30;
+const CRISIS_MIN_NEG = 4;
 let currentDays = DEFAULT_DAYS;
 const COUNTS_PATH = () => `/api/v1/daily_counts?kind=brand_articles&days=${currentDays}`;
 const SERPS_DAILY_CSV = () => `/api/v1/daily_counts?kind=brand_serps&days=${currentDays}`;
@@ -1072,17 +1073,24 @@ const isItemFeature = (feature) => {
 };
 function refreshCrisisEntityKeys(rows = []){
   const sourceRows = Array.isArray(rows) ? rows : [];
-  const next = new Set();
+  const negByEntityDay = new Map();
+  const crisisKeys = new Set();
   sourceRows.forEach(r=>{
     const feature = mapFeatureType(r.feature || r.feature_type);
     if (feature !== 'top_stories_items') return;
+    const date = String(r.date || '').trim();
+    if (!isISODate(date)) return;
     const total = +r.total || +r.total_count || 0;
     const neg = +r.neg || +r.negative_count || 0;
     if (total <= 0 || neg <= 0) return;
     const entityKey = normEntityKey(r.entity || r.entity_name);
-    if (entityKey) next.add(entityKey);
+    if (!entityKey) return;
+    const key = `${entityKey}|${date}`;
+    const dailyNeg = (negByEntityDay.get(key) || 0) + neg;
+    negByEntityDay.set(key, dailyNeg);
+    if (dailyNeg > CRISIS_MIN_NEG) crisisKeys.add(entityKey);
   });
-  crisisEntityKeys = next;
+  crisisEntityKeys = crisisKeys;
 }
 
 async function loadCrisisEntityKeys(){
@@ -2866,13 +2874,70 @@ function renderCharts(){
 const modal=document.getElementById('modal');
 const modalTitle=document.getElementById('modalTitle');
 const modalContent=document.getElementById('modalContent');
-document.getElementById('modalClose').onclick=()=>modal.classList.remove('open');
-modal.addEventListener('click',e=>{ if (e.target===modal) modal.classList.remove('open'); });
-function openModal(title,html){ modalTitle.textContent=title; modalContent.innerHTML=html; modal.classList.add('open'); }
+let modalDateOverride = null;
+const getDashboardDate = () => String(document.getElementById('dateSelect')?.value || '').trim();
+function getModalDate(contextDate = null){
+  if (isISODate(modalDateOverride)) return modalDateOverride;
+  const fallback = String(contextDate || getDashboardDate() || '').trim();
+  return isISODate(fallback) ? fallback : '';
+}
+function getModalDateOptionsHtml(selectedDate){
+  const sel = document.getElementById('dateSelect');
+  if (!sel) return '';
+  return Array.from(sel.options || []).map(opt => {
+    const value = String(opt.value || '').trim();
+    if (!isISODate(value)) return '';
+    const selected = value === selectedDate ? ' selected' : '';
+    return `<option value="${esc(value)}"${selected}>${esc(value)}</option>`;
+  }).join('');
+}
+function closeModal(){
+  modal.classList.remove('open');
+  modalDateOverride = null;
+}
+document.getElementById('modalClose').onclick = closeModal;
+modal.addEventListener('click',e=>{ if (e.target===modal) closeModal(); });
+function openModal(title,html,opts=null){
+  const options = (opts && typeof opts === 'object' && !Array.isArray(opts)) ? opts : { contextDate: opts };
+  const dateText = getModalDate(options.contextDate || null);
+  const onDateChange = typeof options.onDateChange === 'function' ? options.onDateChange : null;
+  const dateOptions = getModalDateOptionsHtml(dateText);
+  const dashboardDate = getDashboardDate();
+  const isSynced = !modalDateOverride || modalDateOverride === dashboardDate;
+  const dateBanner = onDateChange && dateOptions && isISODate(dateText)
+    ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+        <label for="modalDateSelect" class="muted">Data date</label>
+        <select id="modalDateSelect" style="min-width:140px">${dateOptions}</select>
+        <button id="modalDateReset" class="ghost-btn"${isSynced ? ' disabled' : ''}>Use dashboard date</button>
+        <span class="muted">${isSynced ? 'Synced to dashboard date' : 'Local modal date'}</span>
+      </div>`
+    : (isISODate(dateText) ? `<div class="muted" style="margin-bottom:8px">Date: ${dateText}</div>` : '');
+  modalTitle.textContent = title;
+  modalContent.innerHTML = `${dateBanner}${html}`;
+  modal.classList.add('open');
+  if (onDateChange && dateOptions && isISODate(dateText)){
+    const modalDateSel = modalContent.querySelector('#modalDateSelect');
+    const resetBtn = modalContent.querySelector('#modalDateReset');
+    if (modalDateSel){
+      modalDateSel.onchange = ()=>{
+        const selected = String(modalDateSel.value || '').trim();
+        modalDateOverride = (isISODate(selected) && selected !== dashboardDate) ? selected : null;
+        Promise.resolve(onDateChange(getModalDate(selected))).catch(()=>{});
+      };
+    }
+    if (resetBtn){
+      resetBtn.onclick = ()=>{
+        modalDateOverride = null;
+        Promise.resolve(onDateChange(getModalDate())).catch(()=>{});
+      };
+    }
+  }
+}
 
-async function showHeadlines({company}){
-  const d=document.getElementById('dateSelect').value;
-  openModal(`Headlines — ${esc(company)}`, `<div class="muted">Loading…</div>`);
+async function showHeadlines({company}, modalDate=null){
+  const d = String(modalDate || getModalDate()).trim();
+  const modalOpts = { contextDate: d, onDateChange: (nextDate) => showHeadlines({ company }, nextDate) };
+  openModal(`Headlines — ${esc(company)}`, `<div class="muted">Loading…</div>`, modalOpts);
   const cacheKey = `${d}|${company}`;
   let rows=[];
   let total = null;
@@ -2889,10 +2954,10 @@ async function showHeadlines({company}){
       _modalHeadlinesCache.set(cacheKey, { rows, total });
     }
   }catch(e){
-    openModal(`Headlines — ${esc(company)}`, `<div class="muted">Could not load headlines for ${d}.</div>`); return;
+    openModal(`Headlines — ${esc(company)}`, `<div class="muted">Could not load headlines for ${d}.</div>`, modalOpts); return;
   }
   let list=rows.filter(r=>String(r.company||'').trim()===company);
-  if (!list.length){ openModal(`Headlines — ${esc(company)}`, `<div class="muted">No headlines for ${esc(company)} on ${d}.</div>`); return; }
+  if (!list.length){ openModal(`Headlines — ${esc(company)}`, `<div class="muted">No headlines for ${esc(company)} on ${d}.</div>`, modalOpts); return; }
 
   const renderCards = (items) => items.map(r=>{
     const url=String(r.url||'').trim();
@@ -2922,7 +2987,7 @@ async function showHeadlines({company}){
     const showMore = total ? list.length < total : list.length % MODAL_LIMIT === 0;
     const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
     const totalLabel = total ? `<div class="muted" style="margin-bottom:8px">Showing ${list.length} of ${total}</div>` : '';
-    openModal(`Headlines — ${esc(company)}`, `${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`);
+    openModal(`Headlines — ${esc(company)}`, `${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
     const btn = modalContent.querySelector('#modalLoadMore');
     if (btn) {
       btn.onclick = async () => {
@@ -2944,9 +3009,10 @@ async function showHeadlines({company}){
   renderModal();
 }
 
-async function showSerp({company}){
-  const d=document.getElementById('dateSelect').value;
-  openModal(`SERP — ${esc(company)}`, `<div class="muted">Loading…</div>`);
+async function showSerp({company}, modalDate=null){
+  const d = String(modalDate || getModalDate()).trim();
+  const modalOpts = { contextDate: d, onDateChange: (nextDate) => showSerp({ company }, nextDate) };
+  openModal(`SERP — ${esc(company)}`, `<div class="muted">Loading…</div>`, modalOpts);
   const cacheKey = `${d}|${company}`;
   let rows=[];
   let total=null;
@@ -2962,13 +3028,13 @@ async function showSerp({company}){
       _modalSerpCache.set(cacheKey, { rows, total });
     }
   }
-  catch{ openModal(`SERP — ${esc(company)}`, `<div class="muted">Could not load SERP file for ${d}.</div>`); return; }
-  if (!rows.length){ openModal(`SERP — ${esc(company)}`, `<div class="muted">No SERP data found for ${d}.</div>`); return; }
+  catch{ openModal(`SERP — ${esc(company)}`, `<div class="muted">Could not load SERP file for ${d}.</div>`, modalOpts); return; }
+  if (!rows.length){ openModal(`SERP — ${esc(company)}`, `<div class="muted">No SERP data found for ${d}.</div>`, modalOpts); return; }
 
   const canon=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
   const wantCo=canon(company);
   let matches=rows.filter(r=>canon(r.company)===wantCo);
-  if (!matches.length){ openModal(`SERP — ${esc(company)}`, `<div class="muted">No SERPs for ${esc(company)} on ${d}.</div>`); return; }
+  if (!matches.length){ openModal(`SERP — ${esc(company)}`, `<div class="muted">No SERPs for ${esc(company)} on ${d}.</div>`, modalOpts); return; }
 
   const totalMatches=matches.length;
   const negCount=matches.filter(r=>String(r.sentiment||'').toLowerCase()==='negative').length;
@@ -3010,7 +3076,7 @@ async function showSerp({company}){
     const showMore = total ? matches.length < total : matches.length % MODAL_LIMIT === 0;
     const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
     const totalLabel = total ? `<div class="muted" style="margin:6px 0 8px">Showing ${matches.length} of ${total}</div>` : '';
-    openModal(`SERP — ${esc(company)}`, `${metrics}${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`);
+    openModal(`SERP — ${esc(company)}`, `${metrics}${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
     const btn = modalContent.querySelector('#modalLoadMore');
     if (btn) {
       btn.onclick = async () => {
