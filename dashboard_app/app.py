@@ -98,6 +98,11 @@ def _release_refresh_lock(conn) -> None:
 DATE_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-(brand|ceo)-(articles|serps)-(modal|table)\.csv$')
 STOCK_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-stock-data\.csv$')
 TRENDS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-trends-data\.csv$')
+NON_CRISIS_NARRATIVE_TAGS = {
+    'Rebranding',
+    'Mergers and acquisitions',
+    'Planned Executive Turnover',
+}
 
 
 # --------------------------- Auth helpers ---------------------------
@@ -161,6 +166,16 @@ def build_serp_feature_summary_prompt(entity_type: str, entity_name: str,
         "Return summary only."
     )
     return {"system": system, "user": user}
+
+
+def narrative_display_tag(tag: str, group: str | None = None) -> str:
+    txt = (tag or '').strip()
+    if not txt:
+        return ''
+    g = (group or '').strip().lower()
+    if g == 'non_crisis' or txt in NON_CRISIS_NARRATIVE_TAGS:
+        return f"{txt} (non-crisis)"
+    return txt
 
 
 def call_llm_text(prompt: Dict[str, str]) -> Tuple[str, str, str]:
@@ -1206,6 +1221,141 @@ def serp_feature_items_json():
     return jsonify(serialize_rows(rows))
 
 
+@app.route('/api/v1/narrative_tags')
+def narrative_tags_json():
+    if PUBLIC_MODE:
+        return jsonify([])
+    date_str = (request.args.get('date') or '').strip()
+    if not date_str:
+        return jsonify({'error': 'date is required (YYYY-MM-DD)'}), 400
+    entity = request.args.get('entity', 'brand')
+    debug = (request.args.get('debug') or '').strip().lower() in {'1', 'true', 'yes'}
+    cache_key = f"narrative_tags:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    entity_type = 'company' if entity == 'brand' else 'ceo'
+    if entity_type == 'company':
+        entity_types = ['brand', 'company']
+        params = [date_str, entity_types]
+        scope_sql, params = scope_clause("c.id", params)
+        sql = f"""
+            select sfi.entity_name,
+                   sfi.narrative_primary_tag,
+                   sfi.narrative_primary_group,
+                   sfi.narrative_tags,
+                   sfi.narrative_is_crisis
+            from serp_feature_items sfi
+            join companies c on c.id = sfi.entity_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.date = %s
+              and sfi.entity_type = any(%s)
+              and sfi.feature_type = 'top_stories_items'
+              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(sfi.finance_routine, false) = false
+              and sfi.narrative_primary_tag is not null
+              {scope_sql}
+        """
+    else:
+        params = [date_str, entity_type]
+        scope_sql, params = scope_clause("c.id", params)
+        sql = f"""
+            select sfi.entity_name,
+                   sfi.narrative_primary_tag,
+                   sfi.narrative_primary_group,
+                   sfi.narrative_tags,
+                   sfi.narrative_is_crisis
+            from serp_feature_items sfi
+            join ceos ceo on ceo.id = sfi.entity_id
+            join companies c on c.id = ceo.company_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.date = %s
+              and sfi.entity_type = %s
+              and sfi.feature_type = 'top_stories_items'
+              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(sfi.finance_routine, false) = false
+              and sfi.narrative_primary_tag is not null
+              {scope_sql}
+        """
+
+    try:
+        rows = query_dict(sql, tuple(params))
+    except Exception as exc:
+        app.logger.exception("narrative_tags failed")
+        if debug:
+            return jsonify({'error': 'narrative_tags_failed', 'detail': str(exc)}), 500
+        # Graceful fallback while schema/ingest rollout catches up.
+        return jsonify([])
+
+    by_entity: Dict[str, Dict] = {}
+    for r in rows:
+        entity_name = (r.get('entity_name') or '').strip()
+        if not entity_name:
+            continue
+        bucket = by_entity.setdefault(entity_name, {
+            'entity_name': entity_name,
+            'primary_counts': {},
+            'tag_counts': {},
+            'has_crisis': False,
+            'has_non_crisis': False,
+        })
+        primary_tag = (r.get('narrative_primary_tag') or '').strip()
+        primary_group = (r.get('narrative_primary_group') or '').strip().lower() or None
+        if primary_tag:
+            key = (primary_tag, primary_group)
+            bucket['primary_counts'][key] = bucket['primary_counts'].get(key, 0) + 1
+            if primary_group == 'non_crisis':
+                bucket['has_non_crisis'] = True
+            elif primary_group == 'crisis':
+                bucket['has_crisis'] = True
+        is_crisis = r.get('narrative_is_crisis')
+        if is_crisis is True:
+            bucket['has_crisis'] = True
+        elif is_crisis is False:
+            bucket['has_non_crisis'] = True
+        raw_tags = r.get('narrative_tags') or []
+        if isinstance(raw_tags, str):
+            raw_tags = [raw_tags]
+        for tag in raw_tags:
+            tag_txt = (str(tag) or '').strip()
+            if not tag_txt:
+                continue
+            bucket['tag_counts'][tag_txt] = bucket['tag_counts'].get(tag_txt, 0) + 1
+            if tag_txt in NON_CRISIS_NARRATIVE_TAGS:
+                bucket['has_non_crisis'] = True
+
+    out = []
+    for entity_name, bucket in by_entity.items():
+        primary_tag = None
+        primary_group = None
+        if bucket['primary_counts']:
+            (primary_tag, primary_group), _ = max(
+                bucket['primary_counts'].items(),
+                key=lambda kv: (kv[1], kv[0][0]),
+            )
+        sorted_tags = sorted(
+            bucket['tag_counts'].items(),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        tags = [t for t, _ in sorted_tags]
+        display_tags = [narrative_display_tag(t) for t in tags]
+        out.append({
+            'entity_name': entity_name,
+            'primary_tag': primary_tag,
+            'primary_group': primary_group,
+            'primary_display_tag': narrative_display_tag(primary_tag or '', primary_group),
+            'tags': tags,
+            'display_tags': display_tags,
+            'has_crisis': bool(bucket['has_crisis']),
+            'has_non_crisis': bool(bucket['has_non_crisis']),
+        })
+
+    out.sort(key=lambda r: r.get('entity_name') or '')
+    set_cached_json(cache_key, out)
+    return jsonify(out)
+
+
 @app.route('/api/v1/serp_feature_series')
 def serp_feature_series_json():
     if PUBLIC_MODE:
@@ -1605,6 +1755,7 @@ def refresh_aggregates():
             clear_api_cache_prefix("daily_counts:")
             clear_api_cache_prefix("serp_features:")
             clear_api_cache_prefix("serp_feature_controls:")
+            clear_api_cache_prefix("narrative_tags:")
             finished = datetime.utcnow()
             duration_ms = int((finished - started).total_seconds() * 1000)
             with _refresh_lock:
@@ -1794,6 +1945,7 @@ def apply_override():
                     refresh_serp_feature_control_daily_index_view(conn=lock_conn)
                     clear_api_cache_prefix("serp_features:")
                     clear_api_cache_prefix("serp_feature_controls:")
+                    clear_api_cache_prefix("narrative_tags:")
                 if mention_type == 'serp_result':
                     refresh_serp_daily_counts_view(conn=lock_conn)
                     clear_api_cache_prefix("daily_counts:")

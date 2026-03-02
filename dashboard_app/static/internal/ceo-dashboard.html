@@ -118,7 +118,7 @@ h1{font-size:28px;margin:6px 0 18px}
 .controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls .controls-grid{
   display:grid;
-  grid-template-columns:170px 220px 190px 190px auto auto auto;
+  grid-template-columns:170px 220px 180px 170px auto auto auto auto;
   gap:8px 12px;
   align-items:end;
   width:100%;
@@ -750,6 +750,7 @@ body:has(#stockChartModal.open) {
       <div class="field-label field-label-empty" aria-hidden="true"></div>
       <div class="field-label field-label-empty" aria-hidden="true"></div>
       <div class="field-label field-label-empty" aria-hidden="true"></div>
+      <div class="field-label field-label-empty" aria-hidden="true"></div>
     </div>
     <div class="controls-grid controls-inputs">
       <select id="dateSelect"></select>
@@ -766,6 +767,7 @@ body:has(#stockChartModal.open) {
       </select>
       <button id="clearBtn">Clear Selection</button>
       <button id="crisisBtn" class="filter-toggle crisis-toggle" title="CEOs with more than 4 negative Top stories URLs on any single day in the last 30 days">Crisis</button>
+      <button id="nonCrisisBtn" class="filter-toggle" title="Show CEOs with at least one non-crisis narrative tag on the selected date">Non-crisis Narrative</button>
       <button id="refreshBtn">Refresh Data</button>
     </div>
     <div class="controls-aux">
@@ -874,10 +876,10 @@ body:has(#stockChartModal.open) {
                 <span class="tooltip-text">Percentage of first-page results the CEO or their company can control (LinkedIn, official bio, company press). Higher = better narrative control</span>
               </div>
             </th>
-            <th data-key="risk">
+            <th data-key="narrative_tag">
               <div class="tooltip-header">
-                Risk<br>▲▼
-                <span class="tooltip-text">Composite risk score based on Negative SERP % and Control %. High risk = significant negative search visibility with limited control. Low risk = minimal negative presence or strong narrative control.</span>
+                Narrative<br>Tag ▲▼
+                <span class="tooltip-text">Rule-based crisis/non-crisis narrative tag from negative, non-financial Top Stories URLs for the selected date.</span>
               </div>
             </th>
             <th>Headlines</th>
@@ -965,6 +967,7 @@ const SERP_FEATURE_ITEMS_PATH = (d, ceo, feature, offset = 0, limit = FEATURE_MO
 };
 const SERP_FEATURE_SERIES_PATH = (ceo, feature, days = 30) =>
   `/api/v1/serp_feature_series?entity=ceo&entity_name=${encodeURIComponent(ceo)}&feature_type=${encodeURIComponent(feature)}&days=${days}`;
+const NARRATIVE_TAGS_PATH = d => `/api/v1/narrative_tags?entity=ceo&date=${encodeURIComponent(d)}`;
 
 let rosterMap = new Map();
 let companyToCeo = new Map();
@@ -979,10 +982,12 @@ let crisisEntityKeys = new Set();
 let boardsByCeo = new Map();
 let filteredRows = [];
 let selectedCeo = null;
+let nonCrisisOnly = false;
 let currentSort = { key:null, dir:1 };
 let currentPage = 1;
 let dataReady = false;
 let favoriteCeos = new Set();
+const _narrativeCache = new Map();
 const PAGE_SIZE = 25;
 
 function updateChartSkeletons(){
@@ -2291,9 +2296,49 @@ async function getSerpAggForDate(d){
   return map;
 }
 
+function formatNarrativeTag(tag, group){
+  const t = String(tag || '').trim();
+  if (!t) return '';
+  const g = String(group || '').trim().toLowerCase();
+  if (g === 'non_crisis') return `${t} (non-crisis)`;
+  return t;
+}
+
+async function getNarrativesForDate(d){
+  if (_narrativeCache.has(d)) return _narrativeCache.get(d);
+  const map = new Map();
+  if (!d) return map;
+  try{
+    const rows = await fetchCsv(NARRATIVE_TAGS_PATH(d));
+    (rows || []).forEach(r=>{
+      const ceo = String(r.entity_name || r.ceo || '').trim();
+      if (!ceo) return;
+      const key = normEntityKey(ceo);
+      if (!key) return;
+      const primaryTag = String(r.primary_tag || '').trim();
+      const primaryGroup = String(r.primary_group || '').trim();
+      const displayTag = String(r.primary_display_tag || '').trim() || formatNarrativeTag(primaryTag, primaryGroup);
+      const tags = Array.isArray(r.tags) ? r.tags : [];
+      const displayTags = Array.isArray(r.display_tags) ? r.display_tags : tags.map(t => formatNarrativeTag(t, ''));
+      map.set(key, {
+        primary_tag: primaryTag || null,
+        primary_group: primaryGroup || null,
+        primary_display_tag: displayTag || null,
+        tags,
+        display_tags: displayTags,
+        has_non_crisis: !!r.has_non_crisis,
+        has_crisis: !!r.has_crisis,
+      });
+    });
+  }catch(e){ }
+  _narrativeCache.set(d, map);
+  return map;
+}
+
 async function init(){
   initLoadStatus();
   dataReady = false;
+  _narrativeCache.clear();
   updateChartSkeletons();
   const sel = document.getElementById('dateSelect');
   // 2. UI Event Listeners
@@ -2320,6 +2365,14 @@ async function init(){
       if (crisisOnly && crisisEntityKeys.size === 0) {
         await loadCrisisEntityKeys();
       }
+      renderAll();
+    };
+  }
+  const nonCrisisBtn = document.getElementById('nonCrisisBtn');
+  if (nonCrisisBtn){
+    nonCrisisBtn.onclick = ()=>{
+      nonCrisisOnly = !nonCrisisOnly;
+      nonCrisisBtn.classList.toggle('active', nonCrisisOnly);
       renderAll();
     };
   }
@@ -2467,6 +2520,7 @@ async function init(){
 async function buildRowsForDate(d){
   const articles = await getArticlesForDate(d);
   const serpAgg  = await getSerpAggForDate(d);
+  const narratives = await getNarrativesForDate(d);
 
   const out = [];
   for (const [ceo, a] of articles.entries()){
@@ -2479,6 +2533,8 @@ async function buildRowsForDate(d){
     }
     const risk = computeRisk(negSerpPct, ctrlPct);
     const negTopStoriesPct = topStoriesNegByDate.get(`${d}|${normEntityKey(ceo)}`) ?? null;
+    const narrative = narratives.get(normEntityKey(ceo)) || null;
+    const narrativeTag = narrative?.primary_display_tag || null;
 
     const stock = globalStockData[a.company];
     const dailyChange = stock?.dailyChange ?? null;
@@ -2493,7 +2549,11 @@ async function buildRowsForDate(d){
       neg_serp: negSerpPct,
       ctrl_pct: ctrlPct,
       daily_change: dailyChange,
-      risk
+      risk,
+      narrative_tag: narrativeTag,
+      has_non_crisis_narrative: !!(narrative && narrative.has_non_crisis),
+      has_crisis_narrative: !!(narrative && narrative.has_crisis),
+      narrative_tags: narrative?.display_tags || [],
     });
   }
   return out;
@@ -2509,6 +2569,7 @@ async function renderAll(){
     if (sectorFilter && companySector.get(r.company) !== sectorFilter) return false;
     if (!matchesCompanySize(r.company, r.ceo)) return false;
     if (crisisOnly && !crisisEntityKeys.has(normEntityKey(r.ceo))) return false;
+    if (nonCrisisOnly && !r.has_non_crisis_narrative) return false;
     return true;
   });
 
@@ -2532,13 +2593,6 @@ async function renderAll(){
   maybeHideLoadStatus();
 }
 
-function riskRank(risk) {
-  if (risk === 'High') return 3;
-  if (risk === 'Medium') return 2;
-  if (risk === 'Low') return 1;
-  return 0;
-}
-
 function renderTable(){
   const tbody = document.getElementById('tbody');
   if (!dataReady) {
@@ -2554,13 +2608,11 @@ function renderTable(){
   if (currentSort.key){
     rows.sort((a,b)=>{
       const ka = a[currentSort.key], kb = b[currentSort.key];
-
-      if (currentSort.key === 'risk') {
-        return currentSort.dir * (riskRank(ka) - riskRank(kb));
-      }
-
       if (typeof ka === 'string') {
-        return currentSort.dir * ka.localeCompare(kb);
+        return currentSort.dir * ka.localeCompare(String(kb ?? ''));
+      }
+      if (typeof kb === 'string') {
+        return currentSort.dir * String(ka ?? '').localeCompare(kb);
       }
       return currentSort.dir * ((ka ?? -1) - (kb ?? -1));
     });
@@ -2596,6 +2648,11 @@ function renderTable(){
     }
     const favActive = favoriteCeos.has(r.ceo);
     const favStar = `<button class="fav-inline ${favActive ? 'active' : ''}" data-ceo="${esc(r.ceo)}" data-company="${esc(r.company)}" title="Toggle favorite">★</button>`;
+    const narrativeTag = String(r.narrative_tag || '').trim();
+    const narrativeIsNonCrisis = /\(non-crisis\)$/i.test(narrativeTag);
+    const narrativeHtml = narrativeTag
+      ? `<span class="pill ${narrativeIsNonCrisis ? 'low' : 'high'}" title="${esc((r.narrative_tags || []).join(', '))}">${esc(narrativeTag)}</span>`
+      : '<span class="muted">N/A</span>';
     
     return `<tr data-company="${esc(r.company)}">
       <td>
@@ -2615,15 +2672,7 @@ function renderTable(){
       <td>${fmtPct(r.neg_top_stories)}</td>
       <td>${fmtPct(r.neg_serp)}</td>
       <td>${fmtPct(r.ctrl_pct)}</td>
-      <td>${
-        (r.risk==='High'||r.risk==='Medium'||r.risk==='Low')
-          ? (r.risk==='High'
-              ? '<span class="pill high">High</span>'
-              : r.risk==='Medium'
-                ? '<span class="pill med">Medium</span>'
-                : '<span class="pill low">Low</span>')
-          : '<span class="muted">N/A</span>'
-      }</td>
+      <td>${narrativeHtml}</td>
       <td><button class="headBtn" data-ceo="${esc(r.ceo)}" onclick="event.stopPropagation()">View</button></td>
       <td><button class="serpBtn" data-ceo="${esc(r.ceo)}" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
       <td><button class="serpFeatureBtn" data-ceo="${esc(r.ceo)}" onclick="event.stopPropagation()">View</button></td>
@@ -3760,6 +3809,12 @@ async function showSerpFeatures({ceo}, modalDate = null){
       const flags = flagIcons(r);
       const featureLabel = FEATURE_LABELS[r.feature_type] || r.feature_type || '';
       const featureFlag = featureLabel ? `<div class="serp-feature-flag">${esc(featureLabel)}</div>` : '';
+      const narrativeTag = String(r.narrative_primary_tag || '').trim();
+      const narrativeGroup = String(r.narrative_primary_group || '').trim().toLowerCase();
+      const narrativeDisplay = narrativeTag
+        ? (narrativeGroup === 'non_crisis' ? `${narrativeTag} (non-crisis)` : narrativeTag)
+        : '';
+      const narrativeFlag = narrativeDisplay ? `<div class="serp-feature-flag">${esc(narrativeDisplay)}</div>` : '';
       return `<div class="serp-card"
         data-serp-feature-item-id="${esc(itemId)}"
         data-sentiment-override="${esc(r.sentiment_override||'')}"
@@ -3768,6 +3823,7 @@ async function showSerpFeatures({ceo}, modalDate = null){
         data-current-sentiment="${esc(s)}"
         data-current-control="${esc(ctrl)}">
         ${featureFlag}
+        ${narrativeFlag}
         <div class="serp-domain">${esc(sourceLabel || '')}</div>
         <div class="serp-title">${link}</div>
         ${snippet ? `<div class="serp-snippet">${snippet}</div>` : ''}

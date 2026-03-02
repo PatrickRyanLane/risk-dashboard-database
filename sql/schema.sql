@@ -269,6 +269,12 @@ create table if not exists serp_feature_items (
   control_class text,
   finance_routine boolean,
   source text,
+  narrative_primary_tag text,
+  narrative_primary_group text,
+  narrative_tags text[],
+  narrative_is_crisis boolean,
+  narrative_rule_version text,
+  narrative_tagged_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
