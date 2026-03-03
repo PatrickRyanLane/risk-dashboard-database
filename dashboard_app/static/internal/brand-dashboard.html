@@ -47,11 +47,25 @@ h1{font-size:28px;margin:6px 0 18px}
 .controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls .controls-grid{
   display:grid;
-  grid-template-columns:170px 220px 180px 170px auto auto auto auto;
+  grid-template-columns:170px 220px 180px 170px auto auto auto;
   gap:8px 12px;
   align-items:end;
   width:100%;
 }
+.controls-row{display:flex;justify-content:flex-end;margin:0 0 8px}
+.refresh-panel{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:0;
+  padding:8px 10px;
+  border:1px solid var(--stroke);
+  border-radius:10px;
+  background:var(--card);
+}
+.refresh-panel #refreshStatus{font-size:12px;white-space:nowrap;display:none}
+.refresh-panel #refreshStatus:not(:empty){display:inline;margin-left:10px}
+.refresh-panel button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls .field-label{font-size:12px;margin:0;padding-left:8px;line-height:1.2}
 .controls .field-label-empty{padding-left:0}
 .controls .controls-inputs input,
@@ -64,6 +78,9 @@ h1{font-size:28px;margin:6px 0 18px}
 .crisis-toggle.active{border-color:#ff4545;box-shadow:0 0 0 1px rgba(255,69,69,.4);color:#ff5c5c}
 .controls .spacer{display:none}
 @media (max-width: 980px){
+  .controls-row{justify-content:stretch}
+  .refresh-panel{width:100%;justify-content:center;flex-wrap:wrap}
+  .refresh-panel #refreshStatus:not(:empty){margin:8px 0 0;flex-basis:100%;text-align:center}
   .controls .controls-header{display:none}
   .controls .controls-grid{grid-template-columns:1fr}
   .controls .controls-inputs button{width:100%}
@@ -86,11 +103,30 @@ button:hover{filter:brightness(1.08)}
 .chart-card canvas{width:100% !important;height:100% !important;display:block}
 .chart-card.loading::after{content:"";position:absolute;left:12px;right:12px;top:54px;bottom:16px;border-radius:10px;background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.18),rgba(255,255,255,.05));background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite;pointer-events:none}
 .chart-card.loading canvas{opacity:.2}
+.chart-card[draggable="true"]{cursor:grab}
+.chart-card h3{margin:0}
+.chart-card[draggable="true"] h3{
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  padding-left:2px;
+}
+.chart-card[draggable="true"] h3::before{
+  content:"☰";
+  font-size:10px;
+  line-height:1;
+  color:rgba(235,242,242,.38);
+  text-shadow:0 1px 0 rgba(0,0,0,.55), 0 -1px 0 rgba(255,255,255,.06);
+  opacity:.85;
+  transform:translateY(1px);
+}
+.chart-card.dragging{opacity:.55}
+.chart-card.drag-over{outline:1px dashed rgba(88,219,237,.7);outline-offset:2px}
 
 /* Chart pagination controls (top-right) */
 .chart-actions{
   position:absolute;
-  top:10px; right:12px;
+  top:12px; right:12px;
   display:flex; align-items:center; gap:10px;
 }
 .chart-actions .dates-range{ font-size:12px; }
@@ -121,6 +157,8 @@ thead th{font-size:11px;color:var(--muted);text-align:center;padding:6px 6px;ver
 thead th:first-child{white-space:normal;min-width:140px}
 tbody td{padding:8px 6px;background:var(--black);border-top:1px solid #0f1831;border-bottom:1px solid #0f1831;text-align:center;white-space:nowrap}
 tbody td:first-child{text-align:left;white-space:normal}
+thead th.action-col, tbody td.action-col{width:88px;min-width:88px;max-width:88px}
+tbody td.action-col button{min-width:62px}
 tbody tr{transition:background-color 0.15s}
 tbody tr:hover{background:rgba(88,219,237,.08)}
 tbody tr td:first-child{border-left:1px solid #0f1831;border-radius:10px 0 0 10px}
@@ -152,6 +190,14 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
 .pill.low{background:rgba(130,198,24,.15);color:#82c618}
 .pill.med{background:rgba(207,219,221,.25);color:#cfdbdd}
 .pill.high{background:rgba(255,130,97,.15);color:#ff8261}
+.pill.narrative-pill-btn{
+  appearance:none;
+  cursor:pointer;
+  font:inherit;
+  line-height:1.2;
+}
+.pill.narrative-pill-btn:hover{filter:brightness(1.08)}
+.pill.narrative-pill-btn:focus-visible{outline:2px solid rgba(88,219,237,.45);outline-offset:1px}
 .link{color:var(--accent);text-decoration:underline}
 
 @media (max-width:960px){
@@ -233,6 +279,54 @@ tbody td:first-child{background:var(--black)}
 .modal header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #12203d}
 .modal header h3{margin:0;font-size:16px}
 .modal .content{padding:16px}
+.modal-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+.modal-tab{
+  background:#1f2121;
+  border:1px solid #2a3b5e;
+  color:var(--muted);
+  border-radius:999px;
+  padding:6px 12px;
+  font-size:12px;
+  line-height:1.2;
+  cursor:pointer;
+}
+.modal-tab.active{
+  border-color:rgba(88,219,237,.55);
+  background:rgba(88,219,237,.12);
+  color:#58dbed;
+}
+.modal-tab-panel{min-width:0}
+.modal-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:nowrap;
+  margin:0 0 12px;
+}
+.modal-toolbar.modal-toolbar-right{justify-content:flex-end}
+.modal-toolbar .modal-tabs{
+  margin:0;
+  flex:1 1 auto;
+  min-width:0;
+  flex-wrap:nowrap;
+  overflow-x:auto;
+}
+.modal-date-panel{
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:6px;
+  min-width:190px;
+  padding:8px 10px;
+  border:1px solid #23314d;
+  border-radius:10px;
+  background:rgba(31,33,33,.5);
+}
+.modal-date-panel label{font-size:12px;color:var(--muted);width:100%;text-align:left;padding-left:3px}
+.modal-date-panel select{width:100%;min-width:150px}
+.modal-date-panel button{width:100%}
+.modal-date-panel .modal-date-status{font-size:11px;color:var(--muted);text-align:left;width:100%;padding-left:3px}
 .close{color:#aaa;float:right;font-size:28px;font-weight:bold;cursor:pointer;line-height:20px}
 .close:hover,.close:focus{color:var(--text)}
 .badges{display:flex;gap:8px;margin-top:8px}
@@ -264,9 +358,22 @@ tbody td:first-child{background:var(--black)}
 .serp-flags{margin-top:6px;font-size:12px;opacity:.8;letter-spacing:.2px}
 .edit-flags{display:inline-flex;gap:10px;align-items:center;font-size:12px;opacity:.85;white-space:nowrap}
 .muted{color:var(--muted)}
-.serp-feature-viz{display:flex;gap:16px;flex-wrap:nowrap;align-items:stretch;margin:40px 0}
+.serp-feature-viz{display:flex;gap:16px;flex-wrap:wrap;align-items:stretch;margin:12px 0}
+.serp-feature-viz > div{min-width:0}
+.serp-card.serp-feature-summary{
+  margin-top:10px;
+  max-width:100%;
+  min-width:0;
+  background:rgba(120,82,255,.18);
+  border-color:rgba(170,140,255,.55);
+}
+.serp-card.serp-feature-summary .serp-snippet{margin-top:0;overflow-wrap:anywhere;word-break:break-word;color:#eee6ff}
+.serp-card.serp-feature-summary .ghost-btn{align-self:center}
 @media (max-width: 900px){
-  .serp-feature-viz{flex-wrap:wrap}
+  .modal-toolbar{flex-direction:column}
+  .modal-toolbar .modal-tabs{width:100%;flex:1 1 auto}
+  .modal-date-panel{width:100%;align-items:stretch}
+  .modal-date-panel .modal-date-status{text-align:left}
 }
 .toggle-switch{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
 .toggle-switch input{display:none}
@@ -301,6 +408,38 @@ tbody td:first-child{background:var(--black)}
 .serp-snippet{color:var(--muted);margin-top:6px;line-height:1.35}
 .serp-metrics{margin:4px 0 0;color:var(--muted)}
 .serp-metrics b{color:var(--text)}
+.narrative-meta{display:flex;gap:14px;flex-wrap:wrap;margin:8px 0 4px;color:var(--muted)}
+.narrative-table-wrap{
+  margin-top:10px;
+  border:1px solid #16264a;
+  border-radius:12px;
+  overflow:auto;
+  max-width:100%;
+}
+.narrative-table{
+  width:100%;
+  border-collapse:collapse;
+  table-layout:auto;
+  min-width:760px;
+}
+.narrative-table th,.narrative-table td{
+  padding:8px 10px;
+  border-bottom:1px solid rgba(88,219,237,.14);
+  text-align:left;
+  vertical-align:top;
+  font-size:13px;
+}
+.narrative-table th{
+  font-size:12px;
+  text-transform:uppercase;
+  letter-spacing:.2px;
+  color:var(--muted);
+  background:rgba(7,15,30,.75);
+}
+.narrative-table th:first-child,.narrative-table td:first-child{min-width:320px;width:42%}
+.narrative-table td:first-child .pill{white-space:nowrap}
+.narrative-table tr:last-child td{border-bottom:none}
+.narrative-table tr.active td{background:rgba(88,219,237,.07)}
 
 /* ===== UPDATED: RESPONSIVE NEGATIVE ARTICLES HEATMAP STYLES ===== */
 
@@ -399,7 +538,6 @@ tbody td:first-child{background:var(--black)}
   border-color: #b975f7;
 }
 .fav-toggle{background:#1f2121;border:1px solid #2a3b5e;color:var(--text);border-radius:8px;padding:6px 10px;cursor:pointer;font-size:12px;display:inline-flex;gap:6px;align-items:center}
-.controls button#refreshBtn,
 .controls button#clearBtn,
 .controls button#fullHistoryBtn{font-size:12px;padding:6px 10px;min-height:30px}
 .fav-toggle.active{background:rgba(255,215,0,.18);border-color:rgba(255,215,0,.5);color:#ffd54f}
@@ -709,13 +847,19 @@ body:has(#stockChartModal.open) {
 <div class="wrap">
   <h1>Brand Risk Dashboard</h1>
 
+  <div class="controls-row">
+    <div class="refresh-panel">
+      <button id="refreshBtn">Refresh Data</button>
+      <span id="refreshStatus" class="muted"></span>
+    </div>
+  </div>
+
   <div class="controls card">
     <div class="controls-grid controls-header">
       <div class="muted field-label">Date</div>
       <div class="muted field-label">Filter (Company)</div>
       <div class="muted field-label">Sector</div>
       <div class="muted field-label">Company Size</div>
-      <div class="field-label field-label-empty" aria-hidden="true"></div>
       <div class="field-label field-label-empty" aria-hidden="true"></div>
       <div class="field-label field-label-empty" aria-hidden="true"></div>
       <div class="field-label field-label-empty" aria-hidden="true"></div>
@@ -736,10 +880,6 @@ body:has(#stockChartModal.open) {
       <button id="clearBtn">Clear Selection</button>
       <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Companies with more than 4 negative Top stories URLs on any single day in the last 30 days">Crisis</button>
       <button id="nonCrisisBtn" class="filter-toggle" title="Show companies with at least one non-crisis narrative tag on the selected date">Non-crisis Narrative</button>
-      <button id="refreshBtn">Refresh Data</button>
-    </div>
-    <div class="controls-aux">
-      <span id="refreshStatus" class="muted"></span>
     </div>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
@@ -852,9 +992,7 @@ body:has(#stockChartModal.open) {
                 <span class="tooltip-text">Rule-based crisis/non-crisis narrative tag from negative, non-financial Top Stories URLs for the selected date.</span>
               </div>
             </th>
-            <th>Headlines</th>
-            <th>SERP</th>
-            <th>SERP<br>Features</th>
+            <th class="action-col">Coverage</th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -908,10 +1046,12 @@ body:has(#stockChartModal.open) {
 <script>
 /********************** Config (brand) **********************/
 const DEFAULT_DAYS = 30;
-const FULL_DAYS = 180;
+const EXTENDED_DAYS = 90;
 const CRISIS_DAYS = 30;
 const CRISIS_MIN_NEG = 4;
 let currentDays = DEFAULT_DAYS;
+let extendingHistoryPromise = null;
+let extendedHistoryQueued = false;
 const COUNTS_PATH = () => `/api/v1/daily_counts?kind=brand_articles&days=${currentDays}`;
 const SERPS_DAILY_CSV = () => `/api/v1/daily_counts?kind=brand_serps&days=${currentDays}`;
 const SERP_FEATURES_INDEX_PATH  = () => `/api/v1/serp_features?entity=brand&days=${currentDays}&mode=index`;
@@ -936,6 +1076,9 @@ const SERP_FEATURE_ITEMS_PATH = (d, company, feature, offset = 0, limit = FEATUR
 const SERP_FEATURE_SERIES_PATH = (company, feature, days = 30) =>
   `/api/v1/serp_feature_series?entity=brand&entity_name=${encodeURIComponent(company)}&feature_type=${encodeURIComponent(feature)}&days=${days}`;
 const NARRATIVE_TAGS_PATH = d => `/api/v1/narrative_tags?entity=brand&date=${encodeURIComponent(d)}`;
+const NARRATIVE_TIMELINE_DAYS = 90;
+const NARRATIVE_TIMELINE_PATH = (d, company, days = NARRATIVE_TIMELINE_DAYS) =>
+  `/api/v1/narrative_timeline?entity=brand&date=${encodeURIComponent(d)}&entity_name=${encodeURIComponent(company)}&days=${days}`;
 
 /********************** Runtime **********************/
 let allCountsRows = [];
@@ -955,6 +1098,98 @@ let dataReady = false;
 let favoriteCompanies = new Set();
 const _narrativeCache = new Map();
 const PAGE_SIZE = 25;
+const CHART_ORDER_STORAGE_KEY = `riskdash.chart_order:${window.location.pathname}`;
+let draggedChartCard = null;
+
+function getChartGrid(){
+  return document.querySelector('.grid');
+}
+function getChartCards(){
+  const grid = getChartGrid();
+  return grid ? Array.from(grid.querySelectorAll('.chart-card[data-chart]')) : [];
+}
+function getChartCardKey(card){
+  if (!card) return '';
+  if (!card.dataset.chartKey){
+    const canvasId = String(card.querySelector('canvas[id]')?.id || '').trim();
+    card.dataset.chartKey = canvasId || `chart-${Math.random().toString(36).slice(2,8)}`;
+  }
+  return card.dataset.chartKey;
+}
+function saveChartOrderPreference(){
+  const keys = getChartCards().map(getChartCardKey).filter(Boolean);
+  if (!keys.length) return;
+  try { localStorage.setItem(CHART_ORDER_STORAGE_KEY, JSON.stringify(keys)); } catch {}
+}
+function applyChartOrderPreference(){
+  const grid = getChartGrid();
+  if (!grid) return;
+  let saved = [];
+  try {
+    const raw = localStorage.getItem(CHART_ORDER_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) saved = parsed.map(v => String(v || '')).filter(Boolean);
+  } catch {}
+  if (!saved.length) return;
+  const cards = getChartCards();
+  const byKey = new Map(cards.map(card => [getChartCardKey(card), card]));
+  const ordered = [];
+  saved.forEach(key => {
+    const card = byKey.get(key);
+    if (card) {
+      ordered.push(card);
+      byKey.delete(key);
+    }
+  });
+  byKey.forEach(card => ordered.push(card));
+  ordered.forEach(card => grid.appendChild(card));
+}
+function bindChartReorder(){
+  const cards = getChartCards();
+  cards.forEach(card => {
+    getChartCardKey(card);
+    if (card.dataset.reorderBound === '1') return;
+    card.dataset.reorderBound = '1';
+    card.setAttribute('draggable', 'true');
+    card.title = 'Drag to reorder charts';
+    card.setAttribute('aria-label', 'Drag to reorder chart card');
+    card.addEventListener('dragstart', () => {
+      draggedChartCard = card;
+      card.classList.add('dragging');
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      draggedChartCard = null;
+      getChartCards().forEach(el => el.classList.remove('drag-over'));
+      saveChartOrderPreference();
+    });
+    card.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      if (!draggedChartCard || draggedChartCard === card) return;
+      const rect = card.getBoundingClientRect();
+      const before = event.clientY < (rect.top + rect.height / 2);
+      const parent = card.parentNode;
+      if (!parent) return;
+      card.classList.add('drag-over');
+      parent.insertBefore(draggedChartCard, before ? card : card.nextSibling);
+    });
+    card.addEventListener('dragleave', () => {
+      card.classList.remove('drag-over');
+    });
+    card.addEventListener('drop', (event) => {
+      event.preventDefault();
+      card.classList.remove('drag-over');
+    });
+  });
+}
+function initChartOrderPreference(){
+  const grid = getChartGrid();
+  if (!grid) return;
+  if (grid.dataset.chartOrderInit === '1') return;
+  applyChartOrderPreference();
+  bindChartReorder();
+  grid.dataset.chartOrderInit = '1';
+}
 
 function updateChartSkeletons(){
   const map = {
@@ -978,7 +1213,36 @@ function updateDateOptions(){
   sel.innerHTML = dates.map(d=>`<option value="${d}">${d}</option>`).join('');
   sel.value = dates.includes(prev) ? prev : (dates[dates.length-1] || '');
   const fullHistoryBtn = document.getElementById('fullHistoryBtn');
-  if (fullHistoryBtn) fullHistoryBtn.disabled = currentDays >= FULL_DAYS;
+  if (fullHistoryBtn) fullHistoryBtn.disabled = currentDays >= EXTENDED_DAYS;
+}
+
+function queueExtendedHistoryLoad(){
+  if (extendedHistoryQueued || currentDays >= EXTENDED_DAYS) return;
+  extendedHistoryQueued = true;
+  const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 600));
+  idle(() => { ensureExtendedHistory(); });
+}
+
+async function ensureExtendedHistory(){
+  if (currentDays >= EXTENDED_DAYS) return false;
+  if (extendingHistoryPromise) return extendingHistoryPromise;
+
+  currentDays = EXTENDED_DAYS;
+  _serpFeatureCache.clear();
+  _serpFeatureControlCache.clear();
+
+  extendingHistoryPromise = (async () => {
+    const tasks = [loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()];
+    if (crisisOnly || crisisEntityKeys.size) tasks.push(loadCrisisEntityKeys());
+    await Promise.all(tasks);
+    if (selectedCompany) await loadSerpFeaturesForEntity(selectedCompany);
+    renderAll();
+    return true;
+  })().catch(() => false).finally(() => {
+    extendingHistoryPromise = null;
+  });
+
+  return extendingHistoryPromise;
 }
 
 function maybeRenderAll(){
@@ -1951,16 +2215,31 @@ function updateDateRangeUI(allDates){
   document.querySelectorAll('.dates-range').forEach(el => el.textContent = label);
 
   const atStart = start === 0;
+  const canLoadOlder = atStart && currentDays < EXTENDED_DAYS;
   const atEnd   = (start + DATE_WINDOW_SIZE) >= allDates.length;
-  document.querySelectorAll('.dates-prev').forEach(b => b.disabled = atStart);
+  document.querySelectorAll('.dates-prev').forEach(b => b.disabled = atStart && !canLoadOlder);
   document.querySelectorAll('.dates-next').forEach(b => b.disabled = atEnd);
 }
 function hookDatePager(allDates){
-  const goPrev = () => {
+  const goPrev = async () => {
     const total = allDates.length;
+    const start = clampDateStart(total);
+    if (start === 0 && currentDays < EXTENDED_DAYS){
+      const loadedMore = await ensureExtendedHistory();
+      if (loadedMore){
+        const nextTotal = getDateSeries().dates.length;
+        if (nextTotal > DATE_WINDOW_SIZE){
+          const maxStart = nextTotal - DATE_WINDOW_SIZE;
+          dateWindowPinned = true;
+          dateWindowStart = Math.max(0, maxStart - DATE_WINDOW_SIZE);
+        }
+        renderCharts();
+      }
+      return;
+    }
     if (total <= DATE_WINDOW_SIZE) return;
     dateWindowPinned = true;
-    dateWindowStart = clampDateStart(total) - DATE_WINDOW_SIZE;
+    dateWindowStart = start - DATE_WINDOW_SIZE;
     if (dateWindowStart < 0) dateWindowStart = 0;
     renderCharts();
   };
@@ -2260,6 +2539,7 @@ async function getNarrativesForDate(d){
 
 /********************** UI bootstrap ***********************/
 async function init(){
+  initChartOrderPreference();
   initLoadStatus();
   dataReady = false;
   _narrativeCache.clear();
@@ -2349,11 +2629,8 @@ async function init(){
   const fullHistoryBtn = document.getElementById('fullHistoryBtn');
   if (fullHistoryBtn) {
     fullHistoryBtn.onclick = async ()=>{
-      if (currentDays >= FULL_DAYS) return;
-      currentDays = FULL_DAYS;
       fullHistoryBtn.disabled = true;
-      await Promise.all([loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex(), loadCrisisEntityKeys()]);
-      renderAll();
+      await ensureExtendedHistory();
     };
   }
   document.getElementById('prevBtn').onclick = ()=>{ if (currentPage>1){ currentPage--; renderTable(); } };
@@ -2396,16 +2673,22 @@ async function init(){
     });
     sel.dataset.boundChange = '1';
   }
+  if (!sel.dataset.boundHistoryPrefetch){
+    const triggerHistoryPrefetch = ()=>{ queueExtendedHistoryLoad(); };
+    sel.addEventListener('focus', triggerHistoryPrefetch, { once: true });
+    sel.addEventListener('pointerdown', triggerHistoryPrefetch, { once: true });
+    sel.dataset.boundHistoryPrefetch = '1';
+  }
 
   renderTable();
 
   const idleLoad = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
   idleLoad(async () => {
-    loadCounts();
-    loadSerpDaily();
-    loadSerpFeaturesIndex();
-    loadCrisisEntityKeys();
-    loadRosterFavorites().then(()=>{ renderAll(); });
+    const tasks = [loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()];
+    if (crisisOnly || crisisEntityKeys.size) tasks.push(loadCrisisEntityKeys());
+    await Promise.all(tasks);
+    await loadRosterFavorites();
+    renderAll();
   });
 
   const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
@@ -2566,7 +2849,7 @@ function renderTable(){
     const narrativeTag = String(r.narrative_tag || '').trim();
     const narrativeIsNonCrisis = /\(non-crisis\)$/i.test(narrativeTag);
     const narrativeHtml = narrativeTag
-      ? `<span class="pill ${narrativeIsNonCrisis ? 'low' : 'high'}" title="${esc((r.narrative_tags || []).join(', '))}">${esc(narrativeTag)}</span>`
+      ? `<button type="button" class="pill narrative-pill-btn ${narrativeIsNonCrisis ? 'low' : 'high'}" data-action="narrative-timeline" data-company="${esc(r.company)}" title="${esc((r.narrative_tags || []).join(', ') || 'View narrative timeline')}">${esc(narrativeTag)}</button>`
       : '<span class="muted">N/A</span>';
 
     return `<tr data-company="${esc(r.company)}">
@@ -2585,9 +2868,7 @@ function renderTable(){
       <td>${fmtPct(r.neg_serp)}</td>
       <td>${fmtPct(r.ctrl_pct)}</td>
       <td>${narrativeHtml}</td>
-      <td><button class="headBtn" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
-      <td><button class="serpBtn" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
-      <td><button class="serpFeatureBtn" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
+      <td class="action-col"><button class="coverageBtn" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
     </tr>`;
   }).join('');
 
@@ -2610,6 +2891,15 @@ function renderTable(){
         }
       }
       btn.disabled = false;
+    };
+  });
+
+  tbody.querySelectorAll('button[data-action="narrative-timeline"]').forEach(btn=>{
+    btn.onclick = (e)=>{
+      e.stopPropagation();
+      const company = String(btn.getAttribute('data-company') || '').trim();
+      if (!company) return;
+      showNarrativeTimeline({ company });
     };
   });
 
@@ -2651,21 +2941,7 @@ function renderTable(){
       if (chartsDataReady()) renderCharts();
     });
   });
-  tbody.querySelectorAll('.serpBtn').forEach(btn=>{
-    btn.onclick = async ()=> {
-      const company = btn.getAttribute('data-company');
-      await selectCompany(company);
-      showSerp({ company });
-    };
-  });
-  tbody.querySelectorAll('.serpFeatureBtn').forEach(btn=>{
-    btn.onclick = async ()=> {
-      const company = btn.getAttribute('data-company');
-      await selectCompany(company);
-      showSerpFeatures({ company });
-    };
-  });
-  tbody.querySelectorAll('.headBtn').forEach(btn=>{
+  tbody.querySelectorAll('.coverageBtn').forEach(btn=>{
     btn.onclick = async ()=> {
       const company = btn.getAttribute('data-company');
       await selectCompany(company);
@@ -2862,6 +3138,24 @@ function renderCharts(){
 
   const who = selectedCompany ? selectedCompany : 'Index Average';
   const pct = v => `${Math.round(v)}%`;
+  const getClickedDate = (event, chart) => {
+    if (!chart) return '';
+    const points = chart.getElementsAtEventForMode(event, 'index', { intersect: false }, false);
+    const idx = points && points.length ? points[0].index : null;
+    if (idx == null) return '';
+    return String(chart.data?.labels?.[idx] || '').trim();
+  };
+  const openChartDetailAt = (kind, date) => {
+    if (!isISODate(date)) return;
+    const company = String(selectedCompany || '').trim();
+    if (!company) {
+      openModal('Coverage Detail', '<div class="muted">Select a company row first, then click a chart data point.</div>');
+      return;
+    }
+    if (kind === 'news') return void showHeadlines({ company }, date);
+    if (kind === 'serp') return void showSerp({ company }, date);
+    if (kind === 'features') return void showSerpFeatures({ company }, date);
+  };
 
   const commonOpts = {
     responsive:true, maintainAspectRatio:false,
@@ -2888,7 +3182,12 @@ function renderCharts(){
       {label:'Neutral %', data:nN, backgroundColor:'#cfdbdd', stack:'s'},
       {label:'Negative %',data:nG, backgroundColor:'#ff8261', stack:'s'}
     ]},
-    options:{...commonOpts}
+    options:{
+      ...commonOpts,
+      onClick: (event, _elements, chart) => {
+        openChartDetailAt('news', getClickedDate(event, chart));
+      }
+    }
   });
 
   const avg = (arr) => {
@@ -2950,7 +3249,12 @@ function renderCharts(){
         }] : [])
       ]
     },
-    options: { ...commonOpts }
+    options: {
+      ...commonOpts,
+      onClick: (event, _elements, chart) => {
+        openChartDetailAt('serp', getClickedDate(event, chart));
+      }
+    }
   });
 
   const fh = document.getElementById('featureChart').getContext('2d');
@@ -2979,6 +3283,9 @@ function renderCharts(){
         x: { ...commonOpts.scales.x, stacked: true }
       },
       interaction: { mode: 'index', intersect: false },
+      onClick: (event, _elements, chart) => {
+        openChartDetailAt('features', getClickedDate(event, chart));
+      },
       plugins: {
         ...commonOpts.plugins,
         tooltip: {
@@ -3035,6 +3342,9 @@ function renderCharts(){
         x: { ...commonOpts.scales.x, stacked: true }
       },
       interaction: { mode: 'index', intersect: false },
+      onClick: (event, _elements, chart) => {
+        openChartDetailAt('features', getClickedDate(event, chart));
+      },
       plugins: {
         ...commonOpts.plugins,
         tooltip: {
@@ -3071,6 +3381,41 @@ const modal=document.getElementById('modal');
 const modalTitle=document.getElementById('modalTitle');
 const modalContent=document.getElementById('modalContent');
 let modalDateOverride = null;
+let modalEntityState = null;
+function setCompanyModalState(company, activeTab){
+  modalEntityState = {
+    type: 'company',
+    company: String(company || '').trim(),
+    activeTab: String(activeTab || 'headlines')
+  };
+}
+function renderModalTabs(){
+  if (!modalEntityState || modalEntityState.type !== 'company' || !modalEntityState.company) return '';
+  const tabs = [
+    ['headlines', 'Google News Headlines'],
+    ['serp', 'Organic SERP'],
+    ['features', 'SERP Features']
+  ];
+  return `<div class="modal-tabs">${
+    tabs.map(([key, label]) =>
+      `<button type="button" class="modal-tab${modalEntityState.activeTab===key ? ' active' : ''}" data-modal-tab="${key}">${label}</button>`
+    ).join('')
+  }</div>`;
+}
+function bindModalTabs(){
+  if (!modalEntityState || modalEntityState.type !== 'company' || !modalEntityState.company) return;
+  const company = modalEntityState.company;
+  modalContent.querySelectorAll('[data-modal-tab]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const tab = String(btn.getAttribute('data-modal-tab') || '').trim();
+      if (!tab || tab === modalEntityState.activeTab) return;
+      const d = getModalDate();
+      if (tab === 'headlines') return void showHeadlines({ company }, d);
+      if (tab === 'serp') return void showSerp({ company }, d);
+      if (tab === 'features') return void showSerpFeatures({ company }, d);
+    };
+  });
+}
 const getDashboardDate = () => String(document.getElementById('dateSelect')?.value || '').trim();
 function getModalDate(contextDate = null){
   if (isISODate(modalDateOverride)) return modalDateOverride;
@@ -3090,6 +3435,7 @@ function getModalDateOptionsHtml(selectedDate){
 function closeModal(){
   modal.classList.remove('open');
   modalDateOverride = null;
+  modalEntityState = null;
 }
 document.getElementById('modalClose').onclick = closeModal;
 modal.addEventListener('click',e=>{ if (e.target===modal) closeModal(); });
@@ -3100,17 +3446,22 @@ function openModal(title,html,opts=null){
   const dateOptions = getModalDateOptionsHtml(dateText);
   const dashboardDate = getDashboardDate();
   const isSynced = !modalDateOverride || modalDateOverride === dashboardDate;
-  const dateBanner = onDateChange && dateOptions && isISODate(dateText)
-    ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-        <label for="modalDateSelect" class="muted">Data date</label>
-        <select id="modalDateSelect" style="min-width:140px">${dateOptions}</select>
+  const datePanel = onDateChange && dateOptions && isISODate(dateText)
+    ? `<div class="modal-date-panel">
+        <label for="modalDateSelect">Date</label>
+        <select id="modalDateSelect">${dateOptions}</select>
         <button id="modalDateReset" class="ghost-btn"${isSynced ? ' disabled' : ''}>Use dashboard date</button>
-        <span class="muted">${isSynced ? 'Synced to dashboard date' : 'Local modal date'}</span>
+        <span class="modal-date-status">${isSynced ? 'Synced to dashboard date' : 'Local modal date'}</span>
       </div>`
-    : (isISODate(dateText) ? `<div class="muted" style="margin-bottom:8px">Date: ${dateText}</div>` : '');
+    : (isISODate(dateText) ? `<div class="modal-date-panel"><span class="modal-date-status">Date: ${dateText}</span></div>` : '');
+  const tabsHtml = renderModalTabs();
+  const toolbarClass = (!tabsHtml && datePanel) ? 'modal-toolbar modal-toolbar-right' : 'modal-toolbar';
+  const toolbarHtml = (tabsHtml || datePanel) ? `<div class="${toolbarClass}">${tabsHtml || ''}${datePanel || ''}</div>` : '';
+  const panelHtml = tabsHtml ? `<div class="modal-tab-panel">${html}</div>` : html;
   modalTitle.textContent = title;
-  modalContent.innerHTML = `${dateBanner}${html}`;
+  modalContent.innerHTML = `${toolbarHtml}${panelHtml}`;
   modal.classList.add('open');
+  bindModalTabs();
   if (onDateChange && dateOptions && isISODate(dateText)){
     const modalDateSel = modalContent.querySelector('#modalDateSelect');
     const resetBtn = modalContent.querySelector('#modalDateReset');
@@ -3323,7 +3674,116 @@ function flagIcons(r){
 
 const _nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
 
+function computeModalStats(rows, controlValueFn){
+  let pos = 0;
+  let neu = 0;
+  let neg = 0;
+  let ctrl = 0;
+  rows.forEach(r=>{
+    const s = String(r.sentiment || '').toLowerCase();
+    if (s === 'positive') pos += 1;
+    else if (s === 'negative') neg += 1;
+    else neu += 1;
+    if (controlValueFn(r)) ctrl += 1;
+  });
+  return { pos, neu, neg, ctrl, total: rows.length };
+}
+
+function renderModalInsightDonuts(sentCanvasId, ctrlCanvasId, stats){
+  if (!stats || !stats.total) return;
+  const sentCanvas = modalContent.querySelector(`#${sentCanvasId}`);
+  const ctrlCanvas = modalContent.querySelector(`#${ctrlCanvasId}`);
+  if (!sentCanvas || !ctrlCanvas) return;
+  const sentCtx = sentCanvas.getContext('2d');
+  const ctrlCtx = ctrlCanvas.getContext('2d');
+  if (!sentCtx || !ctrlCtx) return;
+
+  const pct = (n, d) => d ? Math.round((n / d) * 100) : 0;
+  const sentimentPct = pct(stats.neg, stats.total);
+  const controlPct = pct(stats.ctrl, stats.total);
+  const centerTextPlugin = (idSuffix, text) => ({
+    id: `centerText-${idSuffix}-${text}`,
+    afterDraw(chart) {
+      const {ctx} = chart;
+      if (!ctx) return;
+      const {left, right, top, bottom} = chart.chartArea;
+      const x = (left + right) / 2;
+      const y = (top + bottom) / 2;
+      ctx.save();
+      ctx.fillStyle = '#ebf2f2';
+      ctx.font = '600 20px "Manrope", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, x, y);
+      ctx.restore();
+    }
+  });
+
+  new Chart(sentCtx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Negative', 'Other'],
+      datasets: [{
+        data: [stats.neg, Math.max(0, stats.total - stats.neg)],
+        backgroundColor: ['#ff826166', 'rgba(207,219,221,0.08)'],
+        borderColor: ['#ff8261', '#cfdbdd'],
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#ebf2f2' } } }
+    },
+    plugins: [centerTextPlugin(sentCanvasId, `${sentimentPct}%`)]
+  });
+
+  new Chart(ctrlCtx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Controlled', 'Uncontrolled/Unknown'],
+      datasets: [{
+        data: [stats.ctrl, Math.max(0, stats.total - stats.ctrl)],
+        backgroundColor: ['#58dbed66', 'rgba(88,219,237,0.03)'],
+        borderColor: ['#58dbed', '#58dbed'],
+        borderWidth: [1, 2]
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#ebf2f2' } } }
+    },
+    plugins: [centerTextPlugin(ctrlCanvasId, `${controlPct}%`)]
+  });
+}
+
+function bindInternalSummaryButton(buttonId, outputId, entityType, entityName, dateValue, featureType){
+  const btn = modalContent.querySelector(`#${buttonId}`);
+  const output = modalContent.querySelector(`#${outputId}`);
+  if (!btn || !output) return;
+  btn.disabled = false;
+  btn.textContent = 'Generate Summary';
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+    output.textContent = 'Generating summary…';
+    try{
+      const data = await fetchCsv(`/api/internal/serp_feature_summary?date=${dateValue}&entity=${entityType}&entity_name=${encodeURIComponent(entityName)}&feature_type=${encodeURIComponent(featureType)}`);
+      const text = (data && data.summary) ? data.summary : '';
+      output.textContent = text || 'No summary available.';
+      btn.textContent = 'Regenerate Summary';
+      btn.disabled = false;
+    }catch{
+      output.textContent = 'Summary unavailable.';
+      btn.textContent = 'Generate Summary';
+      btn.disabled = false;
+    }
+  };
+}
+
 async function showHeadlines({company}, modalDate=null){
+  setCompanyModalState(company, 'headlines');
   const d = String(modalDate || getModalDate()).trim();
   const modalOpts = { contextDate: d, onDateChange: (nextDate) => showHeadlines({ company }, nextDate) };
   openModal(`Headlines — ${esc(company)}`, `<div class="muted">Loading…</div>`, modalOpts);
@@ -3383,10 +3843,36 @@ async function showHeadlines({company}, modalDate=null){
 
   const renderModal = () => {
     const cards = renderCards(list);
+    const stats = computeModalStats(
+      list,
+      (r) => (/^controlled|true|1$/i).test(String(r.control_override || r.control_class || r.controlled || ''))
+    );
+    const negPct = stats.total ? (stats.neg / stats.total) : 0;
+    const ctrlPct = stats.total ? (stats.ctrl / stats.total) : 0;
     const showMore = total ? list.length < total : list.length % MODAL_LIMIT === 0;
     const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
     const totalLabel = total ? `<div class="muted" style="margin-bottom:8px">Showing ${list.length} of ${total}</div>` : '';
-    openModal(`Headlines — ${esc(company)}`, `${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
+    const metrics = `<div class="serp-metrics">
+      <b>Negative Headlines:</b> ${(negPct*100).toFixed(1)}% &nbsp;|&nbsp;
+      <b>Control:</b> ${(ctrlPct*100).toFixed(1)}%
+    </div>`;
+    const insights = `
+      ${metrics}
+      <div class="serp-feature-viz" style="margin-top:10px">
+        <div style="flex:1 1 220px;height:220px"><canvas id="headlineSentChart"></canvas></div>
+        <div style="flex:1 1 220px;height:220px"><canvas id="headlineControlChart"></canvas></div>
+      </div>
+      <div class="serp-card serp-feature-summary">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <h3 style="margin:0">AI Summary</h3>
+          <button id="headlineSummaryBtn" class="ghost-btn">Generate Summary</button>
+        </div>
+        <div id="headlineSummaryText" class="serp-snippet muted">Summary not generated.</div>
+      </div>
+    `;
+    openModal(`Headlines — ${esc(company)}`, `${totalLabel}${insights}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
+    renderModalInsightDonuts('headlineSentChart', 'headlineControlChart', stats);
+    bindInternalSummaryButton('headlineSummaryBtn', 'headlineSummaryText', 'brand', company, d, 'top_stories_items');
     const btn = modalContent.querySelector('#modalLoadMore');
     if (btn) {
       btn.onclick = async () => {
@@ -3410,6 +3896,7 @@ async function showHeadlines({company}, modalDate=null){
 }
 
 async function showSerp({company}, modalDate=null){
+  setCompanyModalState(company, 'serp');
   const d = String(modalDate || getModalDate()).trim();
   const modalOpts = { contextDate: d, onDateChange: (nextDate) => showSerp({ company }, nextDate) };
   openModal(`SERP — ${esc(company)}`, `<div class="muted">Loading…</div>`, modalOpts);
@@ -3483,10 +3970,29 @@ async function showSerp({company}, modalDate=null){
 
   const renderModal = () => {
     const cards = renderCards(matches);
+    const stats = computeModalStats(
+      matches,
+      (r) => (/^controlled|true|1$/i).test(String(r.controlled || r.control_override || r.control_class || ''))
+    );
     const showMore = total ? matches.length < total : matches.length % MODAL_LIMIT === 0;
     const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
     const totalLabel = total ? `<div class="muted" style="margin:6px 0 8px">Showing ${matches.length} of ${total}</div>` : '';
-    openModal(`SERP — ${esc(company)}`, `${metrics}${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
+    const insights = `
+      <div class="serp-feature-viz" style="margin-top:10px">
+        <div style="flex:1 1 220px;height:220px"><canvas id="serpSentChart"></canvas></div>
+        <div style="flex:1 1 220px;height:220px"><canvas id="serpControlChart"></canvas></div>
+      </div>
+      <div class="serp-card serp-feature-summary">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <h3 style="margin:0">AI Summary</h3>
+          <button id="serpSummaryBtn" class="ghost-btn">Generate Summary</button>
+        </div>
+        <div id="serpSummaryText" class="serp-snippet muted">Summary not generated.</div>
+      </div>
+    `;
+    openModal(`SERP — ${esc(company)}`, `${metrics}${totalLabel}${insights}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
+    renderModalInsightDonuts('serpSentChart', 'serpControlChart', stats);
+    bindInternalSummaryButton('serpSummaryBtn', 'serpSummaryText', 'brand', company, d, 'organic');
     const btn = modalContent.querySelector('#modalLoadMore');
     if (btn) {
       btn.onclick = async () => {
@@ -3519,6 +4025,7 @@ async function fetchSerpFeatureItems(date, company, feature, offset, limit){
 }
 
 async function showSerpFeatures({company}, modalDate=null){
+  setCompanyModalState(company, 'features');
   const d = String(modalDate || getModalDate()).trim();
   const modalOpts = { contextDate: d, onDateChange: (nextDate) => showSerpFeatures({ company }, nextDate) };
   openModal(`SERP Features — ${esc(company)}`, `<div class="muted">Loading…</div>`, modalOpts);
@@ -3553,13 +4060,13 @@ async function showSerpFeatures({company}, modalDate=null){
       <div style="flex:1 1 220px;height:220px">
         <canvas id="serpFeatureControlChart"></canvas>
       </div>
-    <div id="serpFeatureSummary" class="serp-card" style="flex:2 1 320px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+    </div>
+    <div id="serpFeatureSummary" class="serp-card serp-feature-summary">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
         <h3 style="margin:0">AI Summary</h3>
         <button id="serpFeatureSummaryBtn" class="ghost-btn">Generate Summary</button>
       </div>
-      <div class="serp-snippet muted" style="margin-top:8px">Summary not generated.</div>
-    </div>
+      <div class="serp-snippet muted">Summary not generated.</div>
     </div>
     <div id="serpFeatureList" class="serp-cards"><div class="muted">Loading…</div></div>
     <div class="pagination" id="serpFeaturePager" style="display:none">
@@ -3928,6 +4435,116 @@ async function showSerpFeatures({company}, modalDate=null){
   await renderFeatureSeries();
   await renderFeatureSummary();
   await renderFeature(true);
+}
+
+function formatDayDuration(days){
+  const n = Number(days || 0);
+  if (!Number.isFinite(n) || n <= 0) return '0 days';
+  return `${n} day${n === 1 ? '' : 's'}`;
+}
+
+async function showNarrativeTimeline({company}, modalDate = null){
+  const entityName = String(company || '').trim();
+  if (!entityName) return;
+  modalEntityState = null;
+  const d = String(modalDate || getModalDate()).trim();
+  const modalOpts = { contextDate: d, onDateChange: (nextDate) => showNarrativeTimeline({ company: entityName }, nextDate) };
+  openModal(`Narrative Tags — ${esc(entityName)}`, `<div class="muted">Loading…</div>`, modalOpts);
+
+  let payload = null;
+  try{
+    payload = await fetchCsv(NARRATIVE_TIMELINE_PATH(d, entityName));
+  }catch{
+    openModal(`Narrative Tags — ${esc(entityName)}`, `<div class="muted">Could not load narrative tags for ${d}.</div>`, modalOpts);
+    return;
+  }
+
+  const tags = Array.isArray(payload?.tags) ? payload.tags : [];
+  const lookbackDays = Number(payload?.lookback_days || NARRATIVE_TIMELINE_DAYS) || NARRATIVE_TIMELINE_DAYS;
+  const activeCount = tags.filter(t => !!t.active_on_date).length;
+  if (!tags.length){
+    openModal(`Narrative Tags — ${esc(entityName)}`, `
+      <div class="narrative-meta">
+        <span>Lookback: ${lookbackDays} days</span>
+        <span>Active tags on ${esc(d)}: 0</span>
+      </div>
+      <div class="muted">No narrative tags found for negative, non-financial Top Stories URLs on ${esc(d)}.</div>
+    `, modalOpts);
+    return;
+  }
+
+  const rowsHtml = tags.map(tag => {
+    const active = !!tag.active_on_date;
+    const isNonCrisis = !!tag.is_non_crisis;
+    const isCrisis = !!tag.is_crisis && !isNonCrisis;
+    const pillClass = isNonCrisis ? 'low' : (isCrisis ? 'high' : 'med');
+    const label = String(tag.display_tag || tag.tag || '').trim();
+    const start = active && tag.current_start_date ? esc(tag.current_start_date) : '<span class="muted">—</span>';
+    const end = active && tag.current_end_date ? esc(tag.current_end_date) : '<span class="muted">—</span>';
+    const currentDuration = active ? formatDayDuration(tag.current_duration_days) : '<span class="muted">—</span>';
+    const lastSeen = tag.last_seen_date ? esc(tag.last_seen_date) : '<span class="muted">—</span>';
+    const mentionsToday = Number(tag.mentions_on_date || 0);
+    return `<tr class="${active ? 'active' : ''}">
+      <td><span class="pill ${pillClass}">${esc(label || 'Unknown')}</span></td>
+      <td>${currentDuration}</td>
+      <td>${start}</td>
+      <td>${end}</td>
+      <td>${lastSeen}</td>
+      <td>${mentionsToday}</td>
+    </tr>`;
+  }).join('');
+
+  openModal(`Narrative Tags — ${esc(entityName)}`, `
+    <div class="narrative-meta">
+      <span>Lookback: ${lookbackDays} days</span>
+      <span>Active tags on ${esc(d)}: ${activeCount}</span>
+    </div>
+    <div id="narrativeSummary" class="serp-card serp-feature-summary">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <h3 style="margin:0">AI Summary</h3>
+        <button id="narrativeSummaryBtn" class="ghost-btn">Generate Summary</button>
+      </div>
+      <div id="narrativeSummaryText" class="serp-snippet muted">Summary not generated.</div>
+    </div>
+    <div class="narrative-table-wrap">
+      <table class="narrative-table">
+        <thead>
+          <tr>
+            <th>Narrative Tag</th>
+            <th>Current Duration</th>
+            <th>Current Start</th>
+            <th>Current End</th>
+            <th>Last Seen</th>
+            <th>URLs on Date</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+  `, modalOpts);
+
+  const summaryBtn = modalContent.querySelector('#narrativeSummaryBtn');
+  const summaryText = modalContent.querySelector('#narrativeSummaryText');
+  if (summaryBtn && summaryText){
+    summaryBtn.disabled = false;
+    summaryBtn.textContent = 'Generate Summary';
+    summaryBtn.onclick = async () => {
+      summaryBtn.disabled = true;
+      summaryBtn.textContent = 'Generating…';
+      summaryText.textContent = 'Generating summary…';
+      try{
+        const data = await fetchCsv(`/api/internal/serp_feature_summary?date=${d}&entity=brand&entity_name=${encodeURIComponent(entityName)}&feature_type=${encodeURIComponent('top_stories_items')}`);
+        const text = String(data?.summary || '').trim();
+        summaryText.textContent = text || 'No summary available.';
+        summaryBtn.textContent = 'Regenerate Summary';
+        summaryBtn.disabled = false;
+      }catch{
+        summaryText.textContent = 'Summary unavailable.';
+        summaryBtn.textContent = 'Generate Summary';
+        summaryBtn.disabled = false;
+      }
+    };
+  }
 }
 
 /********************** Init **********************/

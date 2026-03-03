@@ -1240,6 +1240,7 @@ def narrative_tags_json():
         entity_types = ['brand', 'company']
         params = [date_str, entity_types]
         scope_sql, params = scope_clause("c.id", params)
+        join_sql = "join companies c on c.id = sfi.entity_id" if scope_sql else ""
         sql = f"""
             select sfi.entity_name,
                    sfi.narrative_primary_tag,
@@ -1247,7 +1248,7 @@ def narrative_tags_json():
                    sfi.narrative_tags,
                    sfi.narrative_is_crisis
             from serp_feature_items sfi
-            join companies c on c.id = sfi.entity_id
+            {join_sql}
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
             where sfi.date = %s
               and sfi.entity_type = any(%s)
@@ -1260,6 +1261,7 @@ def narrative_tags_json():
     else:
         params = [date_str, entity_type]
         scope_sql, params = scope_clause("c.id", params)
+        join_sql = "join ceos ceo on ceo.id = sfi.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
         sql = f"""
             select sfi.entity_name,
                    sfi.narrative_primary_tag,
@@ -1267,8 +1269,7 @@ def narrative_tags_json():
                    sfi.narrative_tags,
                    sfi.narrative_is_crisis
             from serp_feature_items sfi
-            join ceos ceo on ceo.id = sfi.entity_id
-            join companies c on c.id = ceo.company_id
+            {join_sql}
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
             where sfi.date = %s
               and sfi.entity_type = %s
@@ -1354,6 +1355,229 @@ def narrative_tags_json():
     out.sort(key=lambda r: r.get('entity_name') or '')
     set_cached_json(cache_key, out)
     return jsonify(out)
+
+
+@app.route('/api/v1/narrative_timeline')
+def narrative_timeline_json():
+    if PUBLIC_MODE:
+        return jsonify([])
+    date_str = (request.args.get('date') or '').strip()
+    entity = (request.args.get('entity') or 'brand').strip().lower()
+    entity_name = (request.args.get('entity_name') or '').strip()
+    if not date_str:
+        return jsonify({'error': 'date is required (YYYY-MM-DD)'}), 400
+    if not entity_name:
+        return jsonify({'error': 'entity_name is required'}), 400
+    if entity not in {'brand', 'ceo'}:
+        return jsonify({'error': 'entity must be brand or ceo'}), 400
+
+    try:
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'invalid date format (YYYY-MM-DD)'}), 400
+
+    try:
+        days = int(request.args.get('days', '90') or 90)
+    except ValueError:
+        days = 90
+    if days < 1:
+        days = 1
+    if days > 365:
+        days = 365
+
+    start_date = target_date - timedelta(days=days - 1)
+    cache_key = f"narrative_timeline:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    entity_type = 'company' if entity == 'brand' else 'ceo'
+    if entity_type == 'company':
+        entity_types = ['brand', 'company']
+        params = [start_date, target_date, entity_types, entity_name]
+        scope_sql, params = scope_clause("c.id", params)
+        join_sql = "join companies c on c.id = sfi.entity_id" if scope_sql else ""
+        sql = f"""
+            select sfi.date,
+                   sfi.narrative_primary_tag,
+                   sfi.narrative_primary_group,
+                   sfi.narrative_tags,
+                   sfi.narrative_is_crisis
+            from serp_feature_items sfi
+            {join_sql}
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.date between %s and %s
+              and sfi.entity_type = any(%s)
+              and sfi.entity_name = %s
+              and sfi.feature_type = 'top_stories_items'
+              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(sfi.finance_routine, false) = false
+              and sfi.narrative_primary_tag is not null
+              {scope_sql}
+        """
+    else:
+        params = [start_date, target_date, entity_type, entity_name]
+        scope_sql, params = scope_clause("c.id", params)
+        join_sql = "join ceos ceo on ceo.id = sfi.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
+        sql = f"""
+            select sfi.date,
+                   sfi.narrative_primary_tag,
+                   sfi.narrative_primary_group,
+                   sfi.narrative_tags,
+                   sfi.narrative_is_crisis
+            from serp_feature_items sfi
+            {join_sql}
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.date between %s and %s
+              and sfi.entity_type = %s
+              and sfi.entity_name = %s
+              and sfi.feature_type = 'top_stories_items'
+              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(sfi.finance_routine, false) = false
+              and sfi.narrative_primary_tag is not null
+              {scope_sql}
+        """
+
+    rows = query_dict(sql, tuple(params))
+
+    target_iso = target_date.isoformat()
+    by_tag: Dict[str, Dict] = {}
+    for r in rows:
+        row_date = r.get('date')
+        if isinstance(row_date, datetime):
+            day = row_date.date()
+        elif hasattr(row_date, 'isoformat'):
+            iso = str(row_date.isoformat()).strip()[:10]
+            if not iso:
+                continue
+            try:
+                day = datetime.strptime(iso, '%Y-%m-%d').date()
+            except ValueError:
+                continue
+        else:
+            raw = str(row_date or '').strip()
+            if not raw:
+                continue
+            try:
+                day = datetime.strptime(raw[:10], '%Y-%m-%d').date()
+            except ValueError:
+                continue
+        day_iso = day.isoformat()
+
+        primary_tag = (r.get('narrative_primary_tag') or '').strip()
+        primary_group = (r.get('narrative_primary_group') or '').strip().lower()
+        is_crisis = r.get('narrative_is_crisis')
+        raw_tags = r.get('narrative_tags') or []
+        if isinstance(raw_tags, str):
+            raw_tags = [raw_tags]
+        row_tags = []
+        seen = set()
+        for tag in raw_tags:
+            txt = (str(tag) or '').strip()
+            if not txt:
+                continue
+            norm = txt.casefold()
+            if norm in seen:
+                continue
+            row_tags.append(txt)
+            seen.add(norm)
+        if primary_tag:
+            norm = primary_tag.casefold()
+            if norm not in seen:
+                row_tags.insert(0, primary_tag)
+        if not row_tags:
+            continue
+
+        primary_norm = primary_tag.casefold() if primary_tag else ''
+        for tag in row_tags:
+            norm = tag.casefold()
+            bucket = by_tag.setdefault(norm, {
+                'tag': tag,
+                'days': set(),
+                'mentions_total': 0,
+                'mentions_by_date': {},
+                'group_counts': {'crisis': 0, 'non_crisis': 0},
+            })
+            bucket['mentions_total'] += 1
+            bucket['days'].add(day)
+            bucket['mentions_by_date'][day_iso] = bucket['mentions_by_date'].get(day_iso, 0) + 1
+
+            vote = None
+            if primary_norm and norm == primary_norm and primary_group in {'crisis', 'non_crisis'}:
+                vote = primary_group
+            elif tag in NON_CRISIS_NARRATIVE_TAGS:
+                vote = 'non_crisis'
+            elif isinstance(is_crisis, bool):
+                vote = 'crisis' if is_crisis else 'non_crisis'
+            if vote:
+                bucket['group_counts'][vote] = bucket['group_counts'].get(vote, 0) + 1
+
+    tags_out = []
+    for bucket in by_tag.values():
+        days_set = bucket['days']
+        if not days_set:
+            continue
+        days_sorted = sorted(days_set)
+        first_seen = days_sorted[0].isoformat()
+        last_seen = days_sorted[-1].isoformat()
+        active_on_date = target_date in days_set
+
+        duration_days = 0
+        start_iso = None
+        end_iso = None
+        if active_on_date:
+            cursor = target_date
+            while cursor in days_set:
+                duration_days += 1
+                cursor = cursor - timedelta(days=1)
+            start_iso = (target_date - timedelta(days=duration_days - 1)).isoformat()
+            end_iso = target_iso
+
+        group_counts = bucket.get('group_counts') or {}
+        crisis_votes = int(group_counts.get('crisis') or 0)
+        non_crisis_votes = int(group_counts.get('non_crisis') or 0)
+        group = None
+        if crisis_votes > non_crisis_votes:
+            group = 'crisis'
+        elif non_crisis_votes > 0:
+            group = 'non_crisis'
+
+        tag = bucket.get('tag') or ''
+        tags_out.append({
+            'tag': tag,
+            'display_tag': narrative_display_tag(tag, group),
+            'group': group,
+            'is_crisis': group == 'crisis',
+            'is_non_crisis': group == 'non_crisis',
+            'active_on_date': active_on_date,
+            'mentions_on_date': int((bucket.get('mentions_by_date') or {}).get(target_iso, 0) or 0),
+            'mentions_total': int(bucket.get('mentions_total') or 0),
+            'days_present': len(days_set),
+            'first_seen_date': first_seen,
+            'last_seen_date': last_seen,
+            'current_duration_days': duration_days,
+            'current_start_date': start_iso,
+            'current_end_date': end_iso,
+        })
+
+    tags_out.sort(
+        key=lambda r: (
+            0 if r.get('active_on_date') else 1,
+            -(r.get('current_duration_days') or 0),
+            -(r.get('mentions_on_date') or 0),
+            -(r.get('mentions_total') or 0),
+            str(r.get('tag') or '').casefold(),
+        )
+    )
+    payload = {
+        'entity': entity,
+        'entity_name': entity_name,
+        'date': target_iso,
+        'lookback_days': days,
+        'tags': tags_out,
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
 
 
 @app.route('/api/v1/serp_feature_series')
@@ -1756,6 +1980,7 @@ def refresh_aggregates():
             clear_api_cache_prefix("serp_features:")
             clear_api_cache_prefix("serp_feature_controls:")
             clear_api_cache_prefix("narrative_tags:")
+            clear_api_cache_prefix("narrative_timeline:")
             finished = datetime.utcnow()
             duration_ms = int((finished - started).total_seconds() * 1000)
             with _refresh_lock:
@@ -1946,6 +2171,7 @@ def apply_override():
                     clear_api_cache_prefix("serp_features:")
                     clear_api_cache_prefix("serp_feature_controls:")
                     clear_api_cache_prefix("narrative_tags:")
+                    clear_api_cache_prefix("narrative_timeline:")
                 if mention_type == 'serp_result':
                     refresh_serp_daily_counts_view(conn=lock_conn)
                     clear_api_cache_prefix("daily_counts:")

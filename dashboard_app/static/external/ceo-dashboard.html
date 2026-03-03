@@ -118,11 +118,23 @@ h1{font-size:28px;margin:6px 0 18px}
 .controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls .controls-grid{
   display:grid;
-  grid-template-columns:170px 220px 190px 190px auto auto auto;
+  grid-template-columns:170px 220px 190px 190px auto auto;
   gap:8px 12px;
   align-items:end;
   width:100%;
 }
+.controls-row{display:flex;justify-content:flex-end;margin:0 0 8px}
+.refresh-panel{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:0;
+  padding:8px 10px;
+  border:1px solid var(--stroke);
+  border-radius:10px;
+  background:var(--card);
+}
+.refresh-panel button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls .field-label{font-size:12px;margin:0;padding-left:8px;line-height:1.2}
 .controls .field-label-empty{padding-left:0}
 .controls .controls-inputs input,
@@ -134,6 +146,8 @@ h1{font-size:28px;margin:6px 0 18px}
 .crisis-toggle.active{border-color:#ff4545;box-shadow:0 0 0 1px rgba(255,69,69,.4);color:#ff5c5c}
 .controls .spacer{display:none}
 @media (max-width: 980px){
+  .controls-row{justify-content:stretch}
+  .refresh-panel{width:100%;justify-content:center}
   .controls .controls-header{display:none}
   .controls .controls-grid{grid-template-columns:1fr}
   .controls .controls-inputs button{width:100%}
@@ -167,10 +181,29 @@ button:hover{filter:brightness(1.08)}
 }
 .chart-card.loading::after{content:"";position:absolute;left:12px;right:12px;top:54px;bottom:16px;border-radius:10px;background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.18),rgba(255,255,255,.05));background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite;pointer-events:none}
 .chart-card.loading canvas{opacity:.2}
+.chart-card[draggable="true"]{cursor:grab}
+.chart-card h3{margin:0}
+.chart-card[draggable="true"] h3{
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  padding-left:2px;
+}
+.chart-card[draggable="true"] h3::before{
+  content:"☰";
+  font-size:10px;
+  line-height:1;
+  color:rgba(235,242,242,.38);
+  text-shadow:0 1px 0 rgba(0,0,0,.55), 0 -1px 0 rgba(255,255,255,.06);
+  opacity:.85;
+  transform:translateY(1px);
+}
+.chart-card.dragging{opacity:.55}
+.chart-card.drag-over{outline:1px dashed rgba(88,219,237,.7);outline-offset:2px}
 
 .chart-actions{
   position:absolute;
-  top:10px; right:12px;
+  top:12px; right:12px;
   display:flex; align-items:center; gap:10px;
 }
 .chart-actions .dates-range{ font-size:12px; }
@@ -196,6 +229,8 @@ thead th{font-size:11px;color:var(--muted);text-align:center;padding:6px 6px;ver
 thead th:first-child{white-space:normal;min-width:140px}
 tbody td{padding:8px 6px;background:#1f2121;border-top:1px solid #0f1831;border-bottom:1px solid #0f1831;text-align:center;white-space:nowrap}
 tbody td:first-child{text-align:left;white-space:normal}
+thead th.action-col, tbody td.action-col{width:88px;min-width:88px;max-width:88px}
+tbody td.action-col button{min-width:62px}
 tbody tr{transition:background-color 0.15s}
 tbody tr:hover{background:rgba(88,219,237,.08)}
 tbody tr td:first-child{border-left:1px solid #0f1831;border-radius:10px 0 0 10px}
@@ -284,6 +319,53 @@ tbody td:first-child{
 .modal header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #12203d}
 .modal header h3{margin:0;font-size:16px}
 .modal .content{padding:16px}
+.modal-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+.modal-tab{
+  background:#1f2121;
+  border:1px solid #2a3b5e;
+  color:var(--muted);
+  border-radius:999px;
+  padding:6px 12px;
+  font-size:12px;
+  line-height:1.2;
+  cursor:pointer;
+}
+.modal-tab.active{
+  border-color:rgba(88,219,237,.55);
+  background:rgba(88,219,237,.12);
+  color:#58dbed;
+}
+.modal-tab-panel{min-width:0}
+.modal-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:nowrap;
+  margin:0 0 12px;
+}
+.modal-toolbar .modal-tabs{
+  margin:0;
+  flex:1 1 auto;
+  min-width:0;
+  flex-wrap:nowrap;
+  overflow-x:auto;
+}
+.modal-date-panel{
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:6px;
+  min-width:190px;
+  padding:8px 10px;
+  border:1px solid #23314d;
+  border-radius:10px;
+  background:rgba(31,33,33,.5);
+}
+.modal-date-panel label{font-size:12px;color:var(--muted);width:100%;text-align:left;padding-left:3px}
+.modal-date-panel select{width:100%;min-width:150px}
+.modal-date-panel button{width:100%}
+.modal-date-panel .modal-date-status{font-size:11px;color:var(--muted);text-align:left;width:100%;padding-left:3px}
 .close{color:#aaa;float:right;font-size:28px;font-weight:bold;cursor:pointer;line-height:20px}
 .close:hover,.close:focus{color:var(--text)}
 .badges{display:flex;gap:8px;margin-top:8px}
@@ -328,12 +410,44 @@ tbody td:first-child{
 #stockChart{width:100% !important; height:450px !important; min-height:400px;}
 
 .serp-cards{display:grid;gap:12px;margin-top:12px}
-.serp-card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:14px 16px}
+.serp-card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:14px 16px;position:relative}
+.serp-feature-flag{
+  position:absolute;
+  top:10px;
+  right:12px;
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.3px;
+  padding:3px 8px;
+  border-radius:999px;
+  background:rgba(88,219,237,.12);
+  border:1px solid rgba(88,219,237,.35);
+  color:#58dbed;
+}
 .serp-domain{font-size:12px;color:var(--muted);margin-bottom:4px}
 .serp-title a{color:var(--text);text-decoration:underline}
 .serp-snippet{color:var(--muted);margin-top:6px;line-height:1.35}
 .serp-metrics{margin:4px 0 0;color:var(--muted)}
 .serp-metrics b{color:var(--text)}
+.serp-feature-viz{display:flex;gap:16px;flex-wrap:wrap;align-items:stretch;margin:12px 0}
+.serp-feature-viz > div{min-width:0}
+.serp-card.serp-feature-summary{
+  margin-top:10px;
+  max-width:100%;
+  min-width:0;
+  background:rgba(120,82,255,.18);
+  border-color:rgba(170,140,255,.55);
+}
+.serp-card.serp-feature-summary .serp-snippet{margin-top:0;overflow-wrap:anywhere;word-break:break-word;color:#eee6ff}
+.serp-card.serp-feature-summary .ghost-btn{align-self:center}
+@media (max-width: 900px){
+  .modal-toolbar{flex-direction:column}
+  .modal-toolbar .modal-tabs{width:100%;flex:1 1 auto}
+  .modal-date-panel{width:100%;align-items:stretch}
+  .modal-date-panel .modal-date-status{text-align:left}
+  .serp-feature-viz{flex-direction:column}
+  .serp-feature-viz > div{height:200px}
+}
 
 #stockChartModal header {
   display: flex;
@@ -698,13 +812,18 @@ body:has(#stockChartModal.open) {
 <div class="wrap">
   <h1>CEO Risk Dashboard</h1>
 
+  <div class="controls-row">
+    <div class="refresh-panel">
+      <button id="refreshBtn">Refresh Data</button>
+    </div>
+  </div>
+
   <div class="controls card">
     <div class="controls-grid controls-header">
       <div class="muted field-label">Date</div>
       <div class="muted field-label">Filter (CEO or Company)</div>
       <div class="muted field-label">Sector</div>
       <div class="muted field-label">Company Size</div>
-      <div class="field-label field-label-empty" aria-hidden="true"></div>
       <div class="field-label field-label-empty" aria-hidden="true"></div>
       <div class="field-label field-label-empty" aria-hidden="true"></div>
     </div>
@@ -723,7 +842,6 @@ body:has(#stockChartModal.open) {
       </select>
       <button id="clearBtn">Clear Selection</button>
       <button id="crisisBtn" class="filter-toggle crisis-toggle" title="CEOs with more than 4 negative Top stories URLs on any single day in the last 30 days">Crisis</button>
-      <button id="refreshBtn">Refresh Data</button>
     </div>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
@@ -834,9 +952,8 @@ body:has(#stockChartModal.open) {
                 <span class="tooltip-text">Composite risk score based on Negative SERP % and Control %. High risk = significant negative search visibility with limited control. Low risk = minimal negative presence or strong narrative control.</span>
               </div>
             </th>
-            <th>Headlines</th>
-            <th>SERP</th>
-            <th>Boards</th>
+            <th class="action-col">Coverage</th>
+            <th class="action-col">Boards</th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -889,10 +1006,12 @@ body:has(#stockChartModal.open) {
 <script>
 
 const DEFAULT_DAYS = 30;
-const FULL_DAYS = 180;
+const EXTENDED_DAYS = 90;
 const CRISIS_DAYS = 30;
 const CRISIS_MIN_NEG = 4;
 let currentDays = DEFAULT_DAYS;
+let extendingHistoryPromise = null;
+let extendedHistoryQueued = false;
 const COUNTS_PATH = () => `/api/v1/daily_counts?kind=ceo_articles&days=${currentDays}`;
 const ROSTER_CANDIDATES   = ['/api/v1/roster'];
 const BOARDS_CSV          = ['/api/v1/boards'];
@@ -912,6 +1031,13 @@ const HEADLINES_PATH_CEO  = (d, ceo, offset = 0) =>
 const SERP_PROCESSED_PATH = d => `/api/v1/processed_serps?date=${d}&entity=ceo&kind=table`;
 const SERP_ROWS_PATH      = (d, ceo, offset = 0) =>
   `/api/v1/processed_serps?date=${d}&entity=ceo&kind=modal&entity_name=${encodeURIComponent(ceo)}&limit=${MODAL_LIMIT}&offset=${offset}`;
+const FEATURE_ALL_KEY = 'all';
+const FEATURE_MODAL_ORDER = ['organic','aio_citations','paa_items','videos_items','perspectives_items','top_stories_items'];
+const FEATURE_MODAL_LIMIT = 100;
+const SERP_FEATURE_ITEMS_PATH = (d, ceo, feature, offset = 0, limit = FEATURE_MODAL_LIMIT) => {
+  const featParam = feature ? `&feature_type=${encodeURIComponent(feature)}` : '';
+  return `/api/v1/serp_feature_items?date=${d}&entity=ceo&entity_name=${encodeURIComponent(ceo)}${featParam}&limit=${limit}&offset=${offset}`;
+};
 
 let rosterMap = new Map();
 let companyToCeo = new Map();
@@ -930,6 +1056,98 @@ let currentSort = { key:null, dir:1 };
 let currentPage = 1;
 let dataReady = false;
 const PAGE_SIZE = 25;
+const CHART_ORDER_STORAGE_KEY = `riskdash.chart_order:${window.location.pathname}`;
+let draggedChartCard = null;
+
+function getChartGrid(){
+  return document.querySelector('.grid');
+}
+function getChartCards(){
+  const grid = getChartGrid();
+  return grid ? Array.from(grid.querySelectorAll('.chart-card[data-chart]')) : [];
+}
+function getChartCardKey(card){
+  if (!card) return '';
+  if (!card.dataset.chartKey){
+    const canvasId = String(card.querySelector('canvas[id]')?.id || '').trim();
+    card.dataset.chartKey = canvasId || `chart-${Math.random().toString(36).slice(2,8)}`;
+  }
+  return card.dataset.chartKey;
+}
+function saveChartOrderPreference(){
+  const keys = getChartCards().map(getChartCardKey).filter(Boolean);
+  if (!keys.length) return;
+  try { localStorage.setItem(CHART_ORDER_STORAGE_KEY, JSON.stringify(keys)); } catch {}
+}
+function applyChartOrderPreference(){
+  const grid = getChartGrid();
+  if (!grid) return;
+  let saved = [];
+  try {
+    const raw = localStorage.getItem(CHART_ORDER_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) saved = parsed.map(v => String(v || '')).filter(Boolean);
+  } catch {}
+  if (!saved.length) return;
+  const cards = getChartCards();
+  const byKey = new Map(cards.map(card => [getChartCardKey(card), card]));
+  const ordered = [];
+  saved.forEach(key => {
+    const card = byKey.get(key);
+    if (card) {
+      ordered.push(card);
+      byKey.delete(key);
+    }
+  });
+  byKey.forEach(card => ordered.push(card));
+  ordered.forEach(card => grid.appendChild(card));
+}
+function bindChartReorder(){
+  const cards = getChartCards();
+  cards.forEach(card => {
+    getChartCardKey(card);
+    if (card.dataset.reorderBound === '1') return;
+    card.dataset.reorderBound = '1';
+    card.setAttribute('draggable', 'true');
+    card.title = 'Drag to reorder charts';
+    card.setAttribute('aria-label', 'Drag to reorder chart card');
+    card.addEventListener('dragstart', () => {
+      draggedChartCard = card;
+      card.classList.add('dragging');
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      draggedChartCard = null;
+      getChartCards().forEach(el => el.classList.remove('drag-over'));
+      saveChartOrderPreference();
+    });
+    card.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      if (!draggedChartCard || draggedChartCard === card) return;
+      const rect = card.getBoundingClientRect();
+      const before = event.clientY < (rect.top + rect.height / 2);
+      const parent = card.parentNode;
+      if (!parent) return;
+      card.classList.add('drag-over');
+      parent.insertBefore(draggedChartCard, before ? card : card.nextSibling);
+    });
+    card.addEventListener('dragleave', () => {
+      card.classList.remove('drag-over');
+    });
+    card.addEventListener('drop', (event) => {
+      event.preventDefault();
+      card.classList.remove('drag-over');
+    });
+  });
+}
+function initChartOrderPreference(){
+  const grid = getChartGrid();
+  if (!grid) return;
+  if (grid.dataset.chartOrderInit === '1') return;
+  applyChartOrderPreference();
+  bindChartReorder();
+  grid.dataset.chartOrderInit = '1';
+}
 
 function updateChartSkeletons(){
   const map = {
@@ -953,7 +1171,36 @@ function updateDateOptions(){
   sel.innerHTML = dates.map(d => `<option value="${d}">${d}</option>`).join('');
   sel.value = dates.includes(prev) ? prev : (dates[dates.length-1] || '');
   const fullHistoryBtn = document.getElementById('fullHistoryBtn');
-  if (fullHistoryBtn) fullHistoryBtn.disabled = currentDays >= FULL_DAYS;
+  if (fullHistoryBtn) fullHistoryBtn.disabled = currentDays >= EXTENDED_DAYS;
+}
+
+function queueExtendedHistoryLoad(){
+  if (extendedHistoryQueued || currentDays >= EXTENDED_DAYS) return;
+  extendedHistoryQueued = true;
+  const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 600));
+  idle(() => { ensureExtendedHistory(); });
+}
+
+async function ensureExtendedHistory(){
+  if (currentDays >= EXTENDED_DAYS) return false;
+  if (extendingHistoryPromise) return extendingHistoryPromise;
+
+  currentDays = EXTENDED_DAYS;
+  _serpFeatureCache.clear();
+  _serpFeatureControlCache.clear();
+
+  extendingHistoryPromise = (async () => {
+    const tasks = [loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()];
+    if (crisisOnly || crisisEntityKeys.size) tasks.push(loadCrisisEntityKeys());
+    await Promise.all(tasks);
+    if (selectedCeo) await loadSerpFeaturesForEntity(selectedCeo);
+    renderAll();
+    return true;
+  })().catch(() => false).finally(() => {
+    extendingHistoryPromise = null;
+  });
+
+  return extendingHistoryPromise;
 }
 
 function maybeRenderAll(){
@@ -1037,6 +1284,7 @@ const FEATURE_ITEM_MAP = {
   top_stories: 'top_stories_items'
 };
 const FEATURE_LABELS = {
+  all: 'All Features',
   organic: 'Organic',
   aio_citations: 'AIO citations',
   paa_items: 'PAA',
@@ -1842,17 +2090,32 @@ function updateDateRangeUI(allDates){
   document.querySelectorAll('.dates-range').forEach(el => el.textContent = label);
 
   const atStart = start === 0;
+  const canLoadOlder = atStart && currentDays < EXTENDED_DAYS;
   const atEnd   = (start + DATE_WINDOW_SIZE) >= allDates.length;
-  document.querySelectorAll('.dates-prev').forEach(b => b.disabled = atStart);
+  document.querySelectorAll('.dates-prev').forEach(b => b.disabled = atStart && !canLoadOlder);
   document.querySelectorAll('.dates-next').forEach(b => b.disabled = atEnd);
 }
 
 function hookDatePager(allDates){
-  const goPrev = () => {
+  const goPrev = async () => {
     const total = allDates.length;
+    const start = clampDateStart(total);
+    if (start === 0 && currentDays < EXTENDED_DAYS){
+      const loadedMore = await ensureExtendedHistory();
+      if (loadedMore){
+        const nextTotal = getDateSeries().dates.length;
+        if (nextTotal > DATE_WINDOW_SIZE){
+          const maxStart = nextTotal - DATE_WINDOW_SIZE;
+          dateWindowPinned = true;
+          dateWindowStart = Math.max(0, maxStart - DATE_WINDOW_SIZE);
+        }
+        renderCharts();
+      }
+      return;
+    }
     if (total <= DATE_WINDOW_SIZE) return;
     dateWindowPinned = true;
-    dateWindowStart = clampDateStart(total) - DATE_WINDOW_SIZE;
+    dateWindowStart = start - DATE_WINDOW_SIZE;
     if (dateWindowStart < 0) dateWindowStart = 0;
     renderCharts();
   };
@@ -1872,6 +2135,7 @@ function hookDatePager(allDates){
 const _preloadCache = new Map();
 const _modalHeadlinesCache = new Map();
 const _modalSerpCache = new Map();
+const _serpFeatureItemsCache = new Map();
 const PERF_LOG = new URLSearchParams(window.location.search).get('perf') === '1';
 
 async function fetchCsv(url){
@@ -2228,6 +2492,7 @@ async function getSerpAggForDate(d){
 }
 
 async function init(){
+  initChartOrderPreference();
   initLoadStatus();
   dataReady = false;
   updateChartSkeletons();
@@ -2271,11 +2536,8 @@ async function init(){
   const fullHistoryBtn = document.getElementById('fullHistoryBtn');
   if (fullHistoryBtn) {
     fullHistoryBtn.onclick = async ()=>{
-      if (currentDays >= FULL_DAYS) return;
-      currentDays = FULL_DAYS;
       fullHistoryBtn.disabled = true;
-      await Promise.all([loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex(), loadCrisisEntityKeys()]);
-      renderAll();
+      await ensureExtendedHistory();
     };
   }
   document.getElementById('prevBtn').onclick = ()=>{ if (currentPage>1){ currentPage--; renderTable(); } };
@@ -2318,17 +2580,23 @@ async function init(){
     });
     sel.dataset.boundChange = '1';
   }
+  if (!sel.dataset.boundHistoryPrefetch){
+    const triggerHistoryPrefetch = ()=>{ queueExtendedHistoryLoad(); };
+    sel.addEventListener('focus', triggerHistoryPrefetch, { once: true });
+    sel.addEventListener('pointerdown', triggerHistoryPrefetch, { once: true });
+    sel.dataset.boundHistoryPrefetch = '1';
+  }
 
   renderTable();
 
   const idleLoad = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
   idleLoad(async () => {
-    loadRoster().then(()=>{ renderAll(); });
-    loadCounts();
-    loadSerpDaily();
-    loadSerpFeaturesIndex();
-    loadCrisisEntityKeys();
+    await loadRoster();
+    const tasks = [loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()];
+    if (crisisOnly || crisisEntityKeys.size) tasks.push(loadCrisisEntityKeys());
+    await Promise.all(tasks);
     loadBoards();
+    renderAll();
   });
 
   const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
@@ -2521,9 +2789,8 @@ function renderTable(){
                 : '<span class="pill low">Low</span>')
           : '<span class="muted">N/A</span>'
       }</td>
-      <td><button class="headBtn" data-ceo="${esc(r.ceo)}" onclick="event.stopPropagation()">View</button></td>
-      <td><button class="serpBtn" data-ceo="${esc(r.ceo)}" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
-      <td><button class="boardsBtn" data-ceo="${esc(r.ceo)}" onclick="event.stopPropagation()">View</button></td>
+      <td class="action-col"><button class="coverageBtn" data-ceo="${esc(r.ceo)}" data-company="${esc(r.company)}" onclick="event.stopPropagation()">View</button></td>
+      <td class="action-col"><button class="boardsBtn" data-ceo="${esc(r.ceo)}" onclick="event.stopPropagation()">View</button></td>
     </tr>`;
   }).join('');
   
@@ -2566,20 +2833,12 @@ function renderTable(){
     });
   });
   
-  tbody.querySelectorAll('.serpBtn').forEach(btn=>{
+  tbody.querySelectorAll('.coverageBtn').forEach(btn=>{
     btn.onclick = async ()=>{
       const ceo = btn.getAttribute('data-ceo');
       const company = btn.getAttribute('data-company');
       await selectCeo(ceo);
-      showSerp({ceo, company});
-    };
-  });
-  
-  tbody.querySelectorAll('.headBtn').forEach(btn=>{
-    btn.onclick = async ()=>{
-      const ceo = btn.getAttribute('data-ceo');
-      await selectCeo(ceo);
-      showHeadlines({ceo});
+      showHeadlines({ceo, company});
     };
   });
   
@@ -2779,6 +3038,24 @@ function renderCharts(){
   const who = selectedCeo ? selectedCeo : "Index Average";
   const fmtPctInt = v => `${Math.round(v)}%`;
   const pct = fmtPctInt;
+  const getClickedDate = (event, chart) => {
+    if (!chart) return '';
+    const points = chart.getElementsAtEventForMode(event, 'index', { intersect: false }, false);
+    const idx = points && points.length ? points[0].index : null;
+    if (idx == null) return '';
+    return String(chart.data?.labels?.[idx] || '').trim();
+  };
+  const openChartDetailAt = (kind, date) => {
+    if (!isISODate(date)) return;
+    const ctx = normalizeCeoModalContext({ ceo: selectedCeo });
+    if (!ctx.ceo) {
+      openModal('Coverage Detail', '<div class="muted">Select a CEO row first, then click a chart data point.</div>');
+      return;
+    }
+    if (kind === 'news') return void showHeadlines({ ceo: ctx.ceo, company: ctx.company }, date);
+    if (kind === 'serp') return void showSerp({ ceo: ctx.ceo, company: ctx.company }, date);
+    if (kind === 'features') return void showSerpFeatures({ ceo: ctx.ceo, company: ctx.company }, date);
+  };
 
   const commonOpts = {
     responsive: true,
@@ -2815,7 +3092,12 @@ function renderCharts(){
         { label: 'Negative %', data: nG, backgroundColor: '#ff8261', stack: 's' }
       ]
     },
-    options: { ...commonOpts }
+    options: {
+      ...commonOpts,
+      onClick: (event, _elements, chart) => {
+        openChartDetailAt('news', getClickedDate(event, chart));
+      }
+    }
   });
 
   const avg = (arr) => {
@@ -2879,7 +3161,12 @@ function renderCharts(){
         }
       ]
     },
-    options: { ...commonOpts }
+    options: {
+      ...commonOpts,
+      onClick: (event, _elements, chart) => {
+        openChartDetailAt('serp', getClickedDate(event, chart));
+      }
+    }
   });
 
   const fh = document.getElementById('featureChart').getContext('2d');
@@ -2908,6 +3195,9 @@ function renderCharts(){
         x: { ...commonOpts.scales.x, stacked: true }
       },
       interaction: { mode: 'index', intersect: false },
+      onClick: (event, _elements, chart) => {
+        openChartDetailAt('features', getClickedDate(event, chart));
+      },
       plugins: {
         ...commonOpts.plugins,
         tooltip: {
@@ -2964,6 +3254,9 @@ function renderCharts(){
         x: { ...commonOpts.scales.x, stacked: true }
       },
       interaction: { mode: 'index', intersect: false },
+      onClick: (event, _elements, chart) => {
+        openChartDetailAt('features', getClickedDate(event, chart));
+      },
       plugins: {
         ...commonOpts.plugins,
         tooltip: {
@@ -2999,6 +3292,54 @@ const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modalTitle');
 const modalContent = document.getElementById('modalContent');
 let modalDateOverride = null;
+let modalEntityState = null;
+function normalizeCeoModalContext(input){
+  const ctx = (input && typeof input === 'object') ? input : { ceo: String(input || '').trim() };
+  const ceo = String(ctx.ceo || '').trim();
+  let company = String(ctx.company || '').trim();
+  if (!company && ceo) {
+    const match = filteredRows.find(r => String(r.ceo || '').trim() === ceo);
+    if (match) company = String(match.company || '').trim();
+  }
+  if (!company && ceo) {
+    company = String(rosterMap.get(ceo) || '').trim();
+  }
+  return { ...ctx, ceo, company };
+}
+function setCeoModalState(input, activeTab){
+  modalEntityState = {
+    type: 'ceo',
+    context: normalizeCeoModalContext(input),
+    activeTab: String(activeTab || 'headlines')
+  };
+}
+function renderModalTabs(){
+  if (!modalEntityState || modalEntityState.type !== 'ceo' || !modalEntityState.context?.ceo) return '';
+  const tabs = [
+    ['headlines', 'Google News Headlines'],
+    ['serp', 'Organic SERP'],
+    ['features', 'SERP Features']
+  ];
+  return `<div class="modal-tabs">${
+    tabs.map(([key, label]) =>
+      `<button type="button" class="modal-tab${modalEntityState.activeTab===key ? ' active' : ''}" data-modal-tab="${key}">${label}</button>`
+    ).join('')
+  }</div>`;
+}
+function bindModalTabs(){
+  if (!modalEntityState || modalEntityState.type !== 'ceo' || !modalEntityState.context?.ceo) return;
+  const ctx = modalEntityState.context;
+  modalContent.querySelectorAll('[data-modal-tab]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const tab = String(btn.getAttribute('data-modal-tab') || '').trim();
+      if (!tab || tab === modalEntityState.activeTab) return;
+      const d = getModalDate();
+      if (tab === 'headlines') return void showHeadlines({ ceo: ctx.ceo, company: ctx.company }, d);
+      if (tab === 'serp') return void showSerp({ ceo: ctx.ceo, company: ctx.company }, d);
+      if (tab === 'features') return void showSerpFeatures({ ceo: ctx.ceo, company: ctx.company }, d);
+    };
+  });
+}
 const getDashboardDate = () => String(document.getElementById('dateSelect')?.value || '').trim();
 function getModalDate(contextDate = null){
   if (isISODate(modalDateOverride)) return modalDateOverride;
@@ -3018,6 +3359,7 @@ function getModalDateOptionsHtml(selectedDate){
 function closeModal(){
   modal.classList.remove('open');
   modalDateOverride = null;
+  modalEntityState = null;
 }
 document.getElementById('modalClose').onclick = closeModal;
 modal.addEventListener('click', e=>{ if (e.target===modal) closeModal(); });
@@ -3029,17 +3371,21 @@ function openModal(title, html, opts = null){
   const dateOptions = getModalDateOptionsHtml(dateText);
   const dashboardDate = getDashboardDate();
   const isSynced = !modalDateOverride || modalDateOverride === dashboardDate;
-  const dateBanner = onDateChange && dateOptions && isISODate(dateText)
-    ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-        <label for="modalDateSelect" class="muted">Data date</label>
-        <select id="modalDateSelect" style="min-width:140px">${dateOptions}</select>
+  const datePanel = onDateChange && dateOptions && isISODate(dateText)
+    ? `<div class="modal-date-panel">
+        <label for="modalDateSelect">Date</label>
+        <select id="modalDateSelect">${dateOptions}</select>
         <button id="modalDateReset" class="ghost-btn"${isSynced ? ' disabled' : ''}>Use dashboard date</button>
-        <span class="muted">${isSynced ? 'Synced to dashboard date' : 'Local modal date'}</span>
+        <span class="modal-date-status">${isSynced ? 'Synced to dashboard date' : 'Local modal date'}</span>
       </div>`
-    : (isISODate(dateText) ? `<div class="muted" style="margin-bottom:8px">Date: ${dateText}</div>` : '');
+    : (isISODate(dateText) ? `<div class="modal-date-panel"><span class="modal-date-status">Date: ${dateText}</span></div>` : '');
+  const tabsHtml = renderModalTabs();
+  const toolbarHtml = (tabsHtml || datePanel) ? `<div class="modal-toolbar">${tabsHtml || ''}${datePanel || ''}</div>` : '';
+  const panelHtml = tabsHtml ? `<div class="modal-tab-panel">${html}</div>` : html;
   modalTitle.textContent = title;
-  modalContent.innerHTML = `${dateBanner}${html}`;
+  modalContent.innerHTML = `${toolbarHtml}${panelHtml}`;
   modal.classList.add('open');
+  bindModalTabs();
   if (onDateChange && dateOptions && isISODate(dateText)){
     const modalDateSel = modalContent.querySelector('#modalDateSelect');
     const resetBtn = modalContent.querySelector('#modalDateReset');
@@ -3059,7 +3405,98 @@ function openModal(title, html, opts = null){
   }
 }
 
+function computeModalStats(rows, controlValueFn){
+  let pos = 0;
+  let neu = 0;
+  let neg = 0;
+  let ctrl = 0;
+  rows.forEach(r=>{
+    const s = String(r.sentiment || '').toLowerCase();
+    if (s === 'positive') pos += 1;
+    else if (s === 'negative') neg += 1;
+    else neu += 1;
+    if (controlValueFn(r)) ctrl += 1;
+  });
+  return { pos, neu, neg, ctrl, total: rows.length };
+}
+
+function renderModalInsightDonuts(sentCanvasId, ctrlCanvasId, stats){
+  if (!stats || !stats.total) return;
+  const sentCanvas = modalContent.querySelector(`#${sentCanvasId}`);
+  const ctrlCanvas = modalContent.querySelector(`#${ctrlCanvasId}`);
+  if (!sentCanvas || !ctrlCanvas) return;
+  const sentCtx = sentCanvas.getContext('2d');
+  const ctrlCtx = ctrlCanvas.getContext('2d');
+  if (!sentCtx || !ctrlCtx) return;
+
+  const pct = (n, d) => d ? Math.round((n / d) * 100) : 0;
+  const sentimentPct = pct(stats.neg, stats.total);
+  const controlPct = pct(stats.ctrl, stats.total);
+  const centerTextPlugin = (idSuffix, text) => ({
+    id: `centerText-${idSuffix}-${text}`,
+    afterDraw(chart) {
+      const {ctx} = chart;
+      if (!ctx) return;
+      const {left, right, top, bottom} = chart.chartArea;
+      const x = (left + right) / 2;
+      const y = (top + bottom) / 2;
+      ctx.save();
+      ctx.fillStyle = '#ebf2f2';
+      ctx.font = '600 20px "Manrope", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, x, y);
+      ctx.restore();
+    }
+  });
+
+  new Chart(sentCtx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Negative', 'Other'],
+      datasets: [{
+        data: [stats.neg, Math.max(0, stats.total - stats.neg)],
+        backgroundColor: ['#ff826166', 'rgba(207,219,221,0.08)'],
+        borderColor: ['#ff8261', '#cfdbdd'],
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#ebf2f2' } } }
+    },
+    plugins: [centerTextPlugin(sentCanvasId, `${sentimentPct}%`)]
+  });
+
+  new Chart(ctrlCtx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Controlled', 'Uncontrolled/Unknown'],
+      datasets: [{
+        data: [stats.ctrl, Math.max(0, stats.total - stats.ctrl)],
+        backgroundColor: ['#58dbed66', 'rgba(88,219,237,0.03)'],
+        borderColor: ['#58dbed', '#58dbed'],
+        borderWidth: [1, 2]
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#ebf2f2' } } }
+    },
+    plugins: [centerTextPlugin(ctrlCanvasId, `${controlPct}%`)]
+  });
+}
+
+function renderExternalSummaryMessage(outputId){
+  const output = modalContent.querySelector(`#${outputId}`);
+  if (!output) return;
+  output.textContent = 'AI summary is available in the internal dashboard.';
+}
+
 function showBoards(ceo){
+  modalEntityState = null;
   const key = canonName(ceo);
   let boards = boardsByCeo.get(ceo) || boardsByCeo.get(key);
 
@@ -3083,9 +3520,12 @@ function showBoards(ceo){
   openModal(`Boards — ${ceo}`, html);
 }
 
-async function showHeadlines({ ceo }, modalDate = null) {
+async function showHeadlines({ ceo, company }, modalDate = null) {
+  const ctx = normalizeCeoModalContext({ ceo, company });
+  setCeoModalState(ctx, 'headlines');
+  ceo = ctx.ceo;
   const d = String(modalDate || getModalDate()).trim();
-  const modalOpts = { contextDate: d, onDateChange: (nextDate) => showHeadlines({ ceo }, nextDate) };
+  const modalOpts = { contextDate: d, onDateChange: (nextDate) => showHeadlines({ ceo, company: ctx.company }, nextDate) };
   openModal(`Headlines — ${esc(ceo)}`, `<div class="muted">Loading…</div>`, modalOpts);
   const cacheKey = `${d}|${ceo}`;
   let rows = [];
@@ -3148,10 +3588,36 @@ async function showHeadlines({ ceo }, modalDate = null) {
 
   const renderModal = () => {
     const cards = renderCards(list);
+    const stats = computeModalStats(
+      list,
+      (r) => (/^controlled|true|1$/i).test(String(r.control_override || r.control_class || r.controlled || ''))
+    );
+    const negPct = stats.total ? (stats.neg / stats.total) : 0;
+    const ctrlPct = stats.total ? (stats.ctrl / stats.total) : 0;
     const showMore = total ? list.length < total : list.length % MODAL_LIMIT === 0;
     const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
     const totalLabel = total ? `<div class="muted" style="margin-bottom:8px">Showing ${list.length} of ${total}</div>` : '';
-    openModal(`Headlines — ${esc(ceo)}`, `${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
+    const metrics = `<div class="serp-metrics">
+      <b>Negative Headlines:</b> ${(negPct*100).toFixed(1)}% &nbsp;|&nbsp;
+      <b>Control:</b> ${(ctrlPct*100).toFixed(1)}%
+    </div>`;
+    const insights = `
+      ${metrics}
+      <div class="serp-feature-viz" style="margin-top:10px">
+        <div style="flex:1 1 220px;height:220px"><canvas id="headlineSentChart"></canvas></div>
+        <div style="flex:1 1 220px;height:220px"><canvas id="headlineControlChart"></canvas></div>
+      </div>
+      <div class="serp-card serp-feature-summary">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <h3 style="margin:0">AI Summary</h3>
+          <button class="ghost-btn" disabled>Internal only</button>
+        </div>
+        <div id="headlineSummaryText" class="serp-snippet muted"></div>
+      </div>
+    `;
+    openModal(`Headlines — ${esc(ceo)}`, `${totalLabel}${insights}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
+    renderModalInsightDonuts('headlineSentChart', 'headlineControlChart', stats);
+    renderExternalSummaryMessage('headlineSummaryText');
     const btn = modalContent.querySelector('#modalLoadMore');
     if (btn) {
       btn.onclick = async () => {
@@ -3174,6 +3640,8 @@ async function showHeadlines({ ceo }, modalDate = null) {
 }
 
 async function showSerp(row, modalDate = null){
+  row = normalizeCeoModalContext(row);
+  setCeoModalState(row, 'serp');
   const d = String(modalDate || getModalDate()).trim();
   const modalOpts = { contextDate: d, onDateChange: (nextDate) => showSerp(row, nextDate) };
   openModal(`SERP — ${esc(row.ceo)}`, `<div class="muted">Loading…</div>`, modalOpts);
@@ -3200,7 +3668,8 @@ async function showSerp(row, modalDate = null){
   const wantCEO = canon(row.ceo), wantCo = canon(row.company);
   let matches = rows.filter(r => {
     const rCEO = canon(r.ceo), rCo = canon(r.company);
-    return (r.ceo===row.ceo && r.company===row.company) || (rCEO===wantCEO && rCo===wantCo);
+    if (wantCo) return (r.ceo===row.ceo && r.company===row.company) || (rCEO===wantCEO && rCo===wantCo);
+    return (r.ceo===row.ceo) || (rCEO===wantCEO);
   });
 
   if (!matches.length){
@@ -3246,10 +3715,29 @@ async function showSerp(row, modalDate = null){
 
   const renderModal = () => {
     const cards = renderCards(matches);
+    const stats = computeModalStats(
+      matches,
+      (r) => (/^controlled|true|1$/i).test(String(r.controlled || r.control_override || r.control_class || ''))
+    );
     const showMore = total ? matches.length < total : matches.length % MODAL_LIMIT === 0;
     const moreBtn = showMore ? `<button id="modalLoadMore" class="ghost-btn">Load more</button>` : '';
     const totalLabel = total ? `<div class="muted" style="margin:6px 0 8px">Showing ${matches.length} of ${total}</div>` : '';
-    openModal(`SERP — ${esc(row.ceo)}`, `${metrics}${totalLabel}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
+    const insights = `
+      <div class="serp-feature-viz" style="margin-top:10px">
+        <div style="flex:1 1 220px;height:220px"><canvas id="serpSentChart"></canvas></div>
+        <div style="flex:1 1 220px;height:220px"><canvas id="serpControlChart"></canvas></div>
+      </div>
+      <div class="serp-card serp-feature-summary">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <h3 style="margin:0">AI Summary</h3>
+          <button class="ghost-btn" disabled>Internal only</button>
+        </div>
+        <div id="serpSummaryText" class="serp-snippet muted"></div>
+      </div>
+    `;
+    openModal(`SERP — ${esc(row.ceo)}`, `${metrics}${totalLabel}${insights}<div class="serp-cards">${cards}</div>${moreBtn}`, modalOpts);
+    renderModalInsightDonuts('serpSentChart', 'serpControlChart', stats);
+    renderExternalSummaryMessage('serpSummaryText');
     const btn = modalContent.querySelector('#modalLoadMore');
     if (btn) {
       btn.onclick = async () => {
@@ -3263,7 +3751,8 @@ async function showSerp(row, modalDate = null){
           _modalSerpCache.set(cacheKey, { rows, total });
           matches = rows.filter(r => {
             const rCEO = canon(r.ceo), rCo = canon(r.company);
-            return (r.ceo===row.ceo && r.company===row.company) || (rCEO===wantCEO && rCo===wantCo);
+            if (wantCo) return (r.ceo===row.ceo && r.company===row.company) || (rCEO===wantCEO && rCo===wantCo);
+            return (r.ceo===row.ceo) || (rCEO===wantCEO);
           });
         }
         renderModal();
@@ -3272,6 +3761,148 @@ async function showSerp(row, modalDate = null){
   };
 
   renderModal();
+}
+
+async function fetchSerpFeatureItems(date, ceo, feature, offset, limit){
+  const featureKey = feature || FEATURE_ALL_KEY;
+  const key = `${date}|${ceo}|${featureKey}|${offset}|${limit}`;
+  if (_serpFeatureItemsCache.has(key)) return _serpFeatureItemsCache.get(key);
+  const featureParam = feature === FEATURE_ALL_KEY ? '' : feature;
+  const rows = await fetchCsv(SERP_FEATURE_ITEMS_PATH(date, ceo, featureParam, offset, limit));
+  _serpFeatureItemsCache.set(key, rows);
+  return rows;
+}
+
+async function showSerpFeatures({ceo, company}, modalDate = null){
+  const ctx = normalizeCeoModalContext({ ceo, company });
+  setCeoModalState(ctx, 'features');
+  ceo = ctx.ceo;
+  const d = String(modalDate || getModalDate()).trim();
+  const modalOpts = { contextDate: d, onDateChange: (nextDate) => showSerpFeatures({ ceo, company: ctx.company }, nextDate) };
+  openModal(`SERP Features — ${esc(ceo)}`, `<div class="muted">Loading…</div>`, modalOpts);
+  await loadSerpFeaturesForEntity(ceo);
+
+  const totalsByFeature = new Map();
+  serpFeatureEntityRows.forEach(r=>{
+    if (r.date !== d || r.entity !== ceo) return;
+    if (!isItemFeature(r.feature)) return;
+    totalsByFeature.set(r.feature, (totalsByFeature.get(r.feature) || 0) + (r.total || 0));
+  });
+  const totalAll = FEATURE_MODAL_ORDER.reduce((sum, f) => sum + (totalsByFeature.get(f) || 0), 0);
+  const options = [
+    `<option value="${FEATURE_ALL_KEY}">${FEATURE_LABELS[FEATURE_ALL_KEY]} (${totalAll})</option>`,
+    ...FEATURE_MODAL_ORDER.map(f=>{
+      const count = totalsByFeature.get(f) ?? 0;
+      const label = FEATURE_LABELS[f] || f;
+      return `<option value="${f}">${label} (${count})</option>`;
+    })
+  ].join('');
+
+  openModal(`SERP Features — ${esc(ceo)}`, `
+    <div class="serp-metrics">
+      <label for="serpFeatureSelect"><b>Feature</b></label>
+      <select id="serpFeatureSelect">${options}</select>
+      <span id="serpFeatureTotal" class="muted" style="margin-left:12px"></span>
+    </div>
+    <div id="serpFeatureCounts" class="muted" style="margin-top:6px"></div>
+    <div id="serpFeatureList" class="serp-cards"><div class="muted">Loading…</div></div>
+    <div class="pagination" id="serpFeaturePager" style="display:none">
+      <button id="serpFeatureMore">Load more</button>
+    </div>
+  `, modalOpts);
+
+  const select = modalContent.querySelector('#serpFeatureSelect');
+  const listEl = modalContent.querySelector('#serpFeatureList');
+  const totalEl = modalContent.querySelector('#serpFeatureTotal');
+  const countsEl = modalContent.querySelector('#serpFeatureCounts');
+  const pager = modalContent.querySelector('#serpFeaturePager');
+  const moreBtn = modalContent.querySelector('#serpFeatureMore');
+  let currentOffset = 0;
+
+  const featuresFor = (feature) => (
+    feature === FEATURE_ALL_KEY ? FEATURE_MODAL_ORDER : [feature]
+  );
+
+  const computeCountsForDate = (feature) => {
+    const features = featuresFor(feature);
+    let total = 0;
+    let neg = 0;
+    serpFeatureEntityRows.forEach(r=>{
+      if (r.date !== d || r.entity !== ceo) return;
+      if (!features.includes(r.feature)) return;
+      total += r.total || 0;
+      neg += r.neg || 0;
+    });
+    if (!total) return null;
+    return { neg, total };
+  };
+
+  async function renderFeature(reset = false){
+    const feature = select.value;
+    const label = FEATURE_LABELS[feature] || feature;
+    if (reset){
+      currentOffset = 0;
+      listEl.innerHTML = '<div class="muted">Loading…</div>';
+    }
+    const counts = computeCountsForDate(feature);
+    totalEl.textContent = counts ? `Total URLs: ${counts.total}` : '';
+    countsEl.textContent = counts
+      ? `Counts for ${d}: ${counts.neg} negative (total ${counts.total})`
+      : `No items for ${d}.`;
+
+    let rows = [];
+    try{
+      rows = await fetchSerpFeatureItems(d, ceo, feature, currentOffset, FEATURE_MODAL_LIMIT);
+    }catch{
+      listEl.innerHTML = `<div class="muted">Could not load ${label} items.</div>`;
+      pager.style.display = 'none';
+      return;
+    }
+    if (!rows.length && currentOffset === 0){
+      listEl.innerHTML = `<div class="muted">No ${label} items for ${esc(ceo)} on ${d}.</div>`;
+      pager.style.display = 'none';
+      return;
+    }
+
+    const cards = rows.map(r=>{
+      const url = String(r.url||'').trim();
+      let domain = String(r.domain||'').trim();
+      if (!domain && url){ try{ domain = new URL(url).hostname.replace(/^www\./,''); }catch{} }
+      const title = esc(r.title || domain || '(no title)');
+      const snippet = esc(r.snippet || '');
+      const source = esc(r.source || domain || '');
+      const s = String(r.sentiment||'neutral').toLowerCase();
+      const sentiment = s === 'positive' ? 'positive' : (s === 'negative' ? 'negative' : 'neutral');
+      const controlClass = String(r.control_class || r.controlled || '').toLowerCase();
+      const ctrl = (/^controlled|true|1$/i).test(controlClass) ? 'controlled' : 'uncontrolled';
+      const link = url ? `<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>` : `<span class="muted">${title}</span>`;
+      const featureLabel = FEATURE_LABELS[r.feature_type] || r.feature_type || '';
+      const featureFlag = featureLabel ? `<div class="serp-feature-flag">${esc(featureLabel)}</div>` : '';
+      const flags = flagIcons(r);
+      return `<div class="serp-card">
+        ${featureFlag}
+        <div class="serp-domain">${source}</div>
+        <div class="serp-title">${link}</div>
+        ${snippet ? `<div class="serp-snippet">${snippet}</div>` : ''}
+        <div class="badges">
+          <span class="badge ${sentiment}">${sentiment}</span>
+          <span class="badge ${ctrl}">${ctrl}</span>
+          ${flags ? `<span class="edit-flags">${flags}</span>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    if (currentOffset === 0) listEl.innerHTML = cards;
+    else listEl.insertAdjacentHTML('beforeend', cards);
+    pager.style.display = rows.length === FEATURE_MODAL_LIMIT ? 'flex' : 'none';
+  }
+
+  select.onchange = () => { renderFeature(true); };
+  moreBtn.onclick = () => {
+    currentOffset += FEATURE_MODAL_LIMIT;
+    renderFeature(false);
+  };
+  await renderFeature(true);
 }
 
 init();

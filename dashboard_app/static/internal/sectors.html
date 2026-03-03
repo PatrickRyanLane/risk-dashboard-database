@@ -63,11 +63,25 @@ h1{font-size:28px;margin:6px 0 18px}
 .controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls .controls-grid{
   display:grid;
-  grid-template-columns:170px 220px 190px 190px auto auto auto;
+  grid-template-columns:170px 220px 190px 190px auto auto;
   gap:8px 12px;
   align-items:end;
   width:100%;
 }
+.controls-row{display:flex;justify-content:flex-end;margin:0 0 8px}
+.refresh-panel{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:0;
+  padding:8px 10px;
+  border:1px solid var(--stroke);
+  border-radius:10px;
+  background:var(--card);
+}
+.refresh-panel #refreshStatus{font-size:12px;white-space:nowrap;display:none}
+.refresh-panel #refreshStatus:not(:empty){display:inline;margin-left:10px}
+.refresh-panel button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls .field-label{font-size:12px;margin:0;padding-left:8px;line-height:1.2}
 .controls .field-label-empty{padding-left:0}
 .controls .controls-inputs input,
@@ -84,6 +98,9 @@ button:hover{filter:brightness(1.08)}
 .crisis-toggle.active{border-color:#ff4545;box-shadow:0 0 0 1px rgba(255,69,69,.4);color:#ff5c5c}
 .controls .spacer{display:none}
 @media (max-width: 980px){
+  .controls-row{justify-content:stretch}
+  .refresh-panel{width:100%;justify-content:center;flex-wrap:wrap}
+  .refresh-panel #refreshStatus:not(:empty){margin:8px 0 0;flex-basis:100%;text-align:center}
   .controls .controls-header{display:none}
   .controls .controls-grid{grid-template-columns:1fr}
   .controls .controls-inputs button{width:100%}
@@ -105,9 +122,28 @@ button:hover{filter:brightness(1.08)}
   background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite;pointer-events:none
 }
 .chart-card.loading canvas{opacity:.2}
+.chart-card[draggable="true"]{cursor:grab}
+.chart-card h3{margin:0}
+.chart-card[draggable="true"] h3{
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  padding-left:2px;
+}
+.chart-card[draggable="true"] h3::before{
+  content:"☰";
+  font-size:10px;
+  line-height:1;
+  color:rgba(235,242,242,.38);
+  text-shadow:0 1px 0 rgba(0,0,0,.55), 0 -1px 0 rgba(255,255,255,.06);
+  opacity:.85;
+  transform:translateY(1px);
+}
+.chart-card.dragging{opacity:.55}
+.chart-card.drag-over{outline:1px dashed rgba(88,219,237,.7);outline-offset:2px}
 
 /* Range + pager (top right of each chart card) */
-.chart-actions{ position:absolute; top:10px; right:12px; display:flex; align-items:center; gap:10px; }
+.chart-actions{ position:absolute; top:12px; right:12px; display:flex; align-items:center; gap:10px; }
 .chart-actions .dates-range{ font-size:12px; }
 .chart-actions .dates-pager{ display:flex; gap:6px; }
 .chart-actions .dates-pager button{
@@ -222,13 +258,19 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
 <div class="wrap">
   <h1>Fortune 1000 — Sectors Dashboard</h1>
 
+  <div class="controls-row">
+    <div class="refresh-panel">
+      <button id="refreshBtn">Refresh Data</button>
+      <span id="refreshStatus" class="muted"></span>
+    </div>
+  </div>
+
   <div class="controls card">
     <div class="controls-grid controls-header">
       <div class="muted field-label">Date</div>
       <div class="muted field-label">Filter (Sector)</div>
       <div class="muted field-label">Sector</div>
       <div class="muted field-label">Company Size</div>
-      <div class="field-label field-label-empty" aria-hidden="true"></div>
       <div class="field-label field-label-empty" aria-hidden="true"></div>
       <div class="field-label field-label-empty" aria-hidden="true"></div>
     </div>
@@ -246,10 +288,6 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
       </select>
       <button id="clearBtn">Clear Selection</button>
       <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Sectors with at least one company that has more than 4 negative Top stories URLs on any single day in the last 30 days">Crisis</button>
-      <button id="refreshBtn">Refresh Data</button>
-    </div>
-    <div class="controls-aux">
-      <span id="refreshStatus" class="muted"></span>
     </div>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
@@ -370,11 +408,16 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
 
 <script>
 /* ================= Config & Runtime ================= */
-const COUNTS_CANDIDATES   = ['/api/v1/daily_counts?kind=brand_articles'];
-const SERPS_DAILY_CSV     = '/api/v1/daily_counts?kind=brand_serps';
+const DEFAULT_DAYS = 30;
+const EXTENDED_DAYS = 90;
+let currentDays = DEFAULT_DAYS;
+let extendingHistoryPromise = null;
+let extendedHistoryQueued = false;
+const COUNTS_CANDIDATES   = () => [`/api/v1/daily_counts?kind=brand_articles&days=${currentDays}`];
+const SERPS_DAILY_CSV     = () => `/api/v1/daily_counts?kind=brand_serps&days=${currentDays}`;
 const ROSTER_CANDIDATES   = ['/api/v1/roster'];
-const SERP_FEATURES_PATH  = () => `/api/v1/serp_features?entity=brand&days=${DATE_WINDOW_SIZE}`;
-const SERP_FEATURES_CONTROL_PATH = () => `/api/v1/serp_feature_controls?entity=brand&days=${DATE_WINDOW_SIZE}`;
+const SERP_FEATURES_PATH  = () => `/api/v1/serp_features?entity=brand&days=${currentDays}`;
+const SERP_FEATURES_CONTROL_PATH = () => `/api/v1/serp_feature_controls?entity=brand&days=${currentDays}`;
 
 let allCountsRows = [];
 let serpsDaily = [];
@@ -395,6 +438,8 @@ let selectedSector = null;
 let currentSort = { key:null, dir:1 };
 let currentPage = 1;
 const PAGE_SIZE = 25;
+const CHART_ORDER_STORAGE_KEY = `riskdash.chart_order:${window.location.pathname}`;
+let draggedChartCard = null;
 
 let newsChart, serpChart, featureChart, featureControlChart;
 
@@ -414,6 +459,96 @@ let _loadState = {};
 let _dataRendered = false;
 let dataReady = false;
 
+function getChartGrid(){
+  return document.querySelector('.grid');
+}
+function getChartCards(){
+  const grid = getChartGrid();
+  return grid ? Array.from(grid.querySelectorAll('.chart-card[data-chart]')) : [];
+}
+function getChartCardKey(card){
+  if (!card) return '';
+  if (!card.dataset.chartKey){
+    const canvasId = String(card.querySelector('canvas[id]')?.id || '').trim();
+    card.dataset.chartKey = canvasId || `chart-${Math.random().toString(36).slice(2,8)}`;
+  }
+  return card.dataset.chartKey;
+}
+function saveChartOrderPreference(){
+  const keys = getChartCards().map(getChartCardKey).filter(Boolean);
+  if (!keys.length) return;
+  try { localStorage.setItem(CHART_ORDER_STORAGE_KEY, JSON.stringify(keys)); } catch {}
+}
+function applyChartOrderPreference(){
+  const grid = getChartGrid();
+  if (!grid) return;
+  let saved = [];
+  try {
+    const raw = localStorage.getItem(CHART_ORDER_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) saved = parsed.map(v => String(v || '')).filter(Boolean);
+  } catch {}
+  if (!saved.length) return;
+  const cards = getChartCards();
+  const byKey = new Map(cards.map(card => [getChartCardKey(card), card]));
+  const ordered = [];
+  saved.forEach(key => {
+    const card = byKey.get(key);
+    if (card) {
+      ordered.push(card);
+      byKey.delete(key);
+    }
+  });
+  byKey.forEach(card => ordered.push(card));
+  ordered.forEach(card => grid.appendChild(card));
+}
+function bindChartReorder(){
+  const cards = getChartCards();
+  cards.forEach(card => {
+    getChartCardKey(card);
+    if (card.dataset.reorderBound === '1') return;
+    card.dataset.reorderBound = '1';
+    card.setAttribute('draggable', 'true');
+    card.title = 'Drag to reorder charts';
+    card.setAttribute('aria-label', 'Drag to reorder chart card');
+    card.addEventListener('dragstart', () => {
+      draggedChartCard = card;
+      card.classList.add('dragging');
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      draggedChartCard = null;
+      getChartCards().forEach(el => el.classList.remove('drag-over'));
+      saveChartOrderPreference();
+    });
+    card.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      if (!draggedChartCard || draggedChartCard === card) return;
+      const rect = card.getBoundingClientRect();
+      const before = event.clientY < (rect.top + rect.height / 2);
+      const parent = card.parentNode;
+      if (!parent) return;
+      card.classList.add('drag-over');
+      parent.insertBefore(draggedChartCard, before ? card : card.nextSibling);
+    });
+    card.addEventListener('dragleave', () => {
+      card.classList.remove('drag-over');
+    });
+    card.addEventListener('drop', (event) => {
+      event.preventDefault();
+      card.classList.remove('drag-over');
+    });
+  });
+}
+function initChartOrderPreference(){
+  const grid = getChartGrid();
+  if (!grid) return;
+  if (grid.dataset.chartOrderInit === '1') return;
+  applyChartOrderPreference();
+  bindChartReorder();
+  grid.dataset.chartOrderInit = '1';
+}
+
 const FEATURE_ORDER_SENTIMENT = ['organic','aio_citations','paa_items','videos_items','perspectives_items','top_stories_items'];
 const FEATURE_LABELS = {
   organic: 'Organic',
@@ -432,6 +567,43 @@ function updateChartSkeletons(){
     const done = _loadState[loadKey] === 'done';
     card.classList.toggle('loading', !done);
   });
+}
+
+function updateDateOptions(){
+  const dateSet = new Set([
+    ...allCountsRows.map(r => r.date),
+    ...serpsDaily.map(r => r.date)
+  ].filter(isISODate));
+  const dates = [...dateSet].sort();
+  const sel = document.getElementById('dateSelect');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = dates.map(d => `<option value="${d}">${d}</option>`).join('');
+  sel.value = dates.includes(prev) ? prev : (dates[dates.length - 1] || '');
+}
+
+function queueExtendedHistoryLoad(){
+  if (extendedHistoryQueued || currentDays >= EXTENDED_DAYS) return;
+  extendedHistoryQueued = true;
+  const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 600));
+  idle(() => { ensureExtendedHistory(); });
+}
+
+async function ensureExtendedHistory(){
+  if (currentDays >= EXTENDED_DAYS) return false;
+  if (extendingHistoryPromise) return extendingHistoryPromise;
+
+  currentDays = EXTENDED_DAYS;
+  extendingHistoryPromise = (async () => {
+    await Promise.all([loadCounts(), loadSerpDaily(), loadSerpFeatures()]);
+    updateDateOptions();
+    renderAll();
+    return true;
+  })().catch(() => false).finally(() => {
+    extendingHistoryPromise = null;
+  });
+
+  return extendingHistoryPromise;
 }
 
 function initLoadStatus(){
@@ -618,16 +790,31 @@ function updateDateRangeUI(allDates){
   document.querySelectorAll('.dates-range').forEach(el => el.textContent = label);
 
   const atStart = start === 0;
+  const canLoadOlder = atStart && currentDays < EXTENDED_DAYS;
   const atEnd   = (start + DATE_WINDOW_SIZE) >= allDates.length;
-  document.querySelectorAll('.dates-prev').forEach(b => b.disabled = atStart);
+  document.querySelectorAll('.dates-prev').forEach(b => b.disabled = atStart && !canLoadOlder);
   document.querySelectorAll('.dates-next').forEach(b => b.disabled = atEnd);
 }
 function hookDatePager(allDates){
-  const goPrev = () => {
+  const goPrev = async () => {
     const total = allDates.length;
+    const start = clampDateStart(total);
+    if (start === 0 && currentDays < EXTENDED_DAYS){
+      const loadedMore = await ensureExtendedHistory();
+      if (loadedMore){
+        const nextTotal = getDateSeries().dates.length;
+        if (nextTotal > DATE_WINDOW_SIZE){
+          const maxStart = nextTotal - DATE_WINDOW_SIZE;
+          dateWindowPinned = true;
+          dateWindowStart = Math.max(0, maxStart - DATE_WINDOW_SIZE);
+        }
+        renderCharts();
+      }
+      return;
+    }
     if (total <= DATE_WINDOW_SIZE) return;
     dateWindowPinned = true;
-    dateWindowStart = clampDateStart(total) - DATE_WINDOW_SIZE;
+    dateWindowStart = start - DATE_WINDOW_SIZE;
     if (dateWindowStart < 0) dateWindowStart = 0;
     renderCharts();
   };
@@ -669,7 +856,7 @@ async function fetchCsvAny(candidates){
 /* ================= Loading ================= */
 async function loadCounts(){
   try{
-    const rows = await fetchCsvAny(COUNTS_CANDIDATES);
+    const rows = await fetchCsvAny(COUNTS_CANDIDATES());
     allCountsRows = rows
       .map(r => ({
         date: String(r.date || '').trim(),
@@ -688,7 +875,7 @@ async function loadCounts(){
 
 async function loadSerpDaily(){
   try{
-    const rows = await fetchCsv(SERPS_DAILY_CSV);
+    const rows = await fetchCsv(SERPS_DAILY_CSV());
     serpsDaily = rows.map(r => ({
       date: (r.date||'').trim(),
       company: (r.company||r.brand||'').trim(),
@@ -781,6 +968,7 @@ function populateSectorFilterOptions(){
 
 /* ================= Init ================= */
 async function init(){
+  initChartOrderPreference();
   initLoadStatus();
   dataReady = false;
   await Promise.all([
@@ -797,15 +985,18 @@ async function init(){
     })
   ]);
 
-  const dateSet = new Set([
-    ...allCountsRows.map(r => r.date),
-    ...serpsDaily.map(r => r.date)
-  ].filter(isISODate));
-  const dates = [...dateSet].sort();
   const sel = document.getElementById('dateSelect');
-  sel.innerHTML = dates.map(d => `<option value="${d}">${d}</option>`).join('');
-  sel.value = dates[dates.length-1] || '';
-  sel.addEventListener('change', ()=>{ currentPage=1; selectedSector=null; renderAll(); });
+  updateDateOptions();
+  if (!sel.dataset.boundChange){
+    sel.addEventListener('change', ()=>{ currentPage=1; selectedSector=null; renderAll(); });
+    sel.dataset.boundChange = '1';
+  }
+  if (!sel.dataset.boundHistoryPrefetch){
+    const triggerHistoryPrefetch = ()=>{ queueExtendedHistoryLoad(); };
+    sel.addEventListener('focus', triggerHistoryPrefetch, { once: true });
+    sel.addEventListener('pointerdown', triggerHistoryPrefetch, { once: true });
+    sel.dataset.boundHistoryPrefetch = '1';
+  }
 
   document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll(); });
   const sectorFilterSelect = document.getElementById('sectorFilterSelect');
