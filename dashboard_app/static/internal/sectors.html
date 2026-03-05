@@ -1005,7 +1005,7 @@ async function init(){
   }
   document.getElementById('refreshBtn').onclick = async ()=>{
     const statusEl = document.getElementById('refreshStatus');
-    const refreshTargets = 'News, Organic SERP, SERP Features, Negative Summary';
+    const refreshTargets = 'News, Organic SERP, SERP Features';
     if (statusEl) statusEl.textContent = `Refreshing charts: ${refreshTargets}…`;
     try {
       const resp = await fetch('/api/internal/refresh_aggregates', { method: 'POST' });

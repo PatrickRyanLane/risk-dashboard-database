@@ -413,14 +413,14 @@ tbody td:first-child{background:var(--black)}
   margin-top:10px;
   border:1px solid #16264a;
   border-radius:12px;
-  overflow:auto;
+  overflow:hidden;
   max-width:100%;
 }
 .narrative-table{
   width:100%;
   border-collapse:collapse;
-  table-layout:auto;
-  min-width:760px;
+  table-layout:fixed;
+  min-width:0;
 }
 .narrative-table th,.narrative-table td{
   padding:8px 10px;
@@ -436,10 +436,28 @@ tbody td:first-child{background:var(--black)}
   color:var(--muted);
   background:rgba(7,15,30,.75);
 }
-.narrative-table th:first-child,.narrative-table td:first-child{min-width:320px;width:42%}
-.narrative-table td:first-child .pill{white-space:nowrap}
+.narrative-table th:nth-child(1),.narrative-table td:nth-child(1){width:42%}
+.narrative-table th:nth-child(2),.narrative-table td:nth-child(2){width:30%}
+.narrative-table th:nth-child(3),.narrative-table td:nth-child(3){width:16%}
+.narrative-table th:nth-child(4),.narrative-table td:nth-child(4){width:12%}
+.narrative-pill{
+  display:inline-block;
+  max-width:100%;
+  white-space:normal;
+  word-break:break-word;
+  line-height:1.2;
+}
+.narrative-window{display:flex;flex-direction:column;gap:2px}
+.narrative-window .narrative-range{color:var(--muted);font-size:12px;line-height:1.2}
 .narrative-table tr:last-child td{border-bottom:none}
 .narrative-table tr.active td{background:rgba(88,219,237,.07)}
+@media (max-width: 960px){
+  .narrative-table th,.narrative-table td{font-size:12px;padding:7px 8px}
+  .narrative-table th:nth-child(1),.narrative-table td:nth-child(1){width:40%}
+  .narrative-table th:nth-child(2),.narrative-table td:nth-child(2){width:34%}
+  .narrative-table th:nth-child(3),.narrative-table td:nth-child(3){width:16%}
+  .narrative-table th:nth-child(4),.narrative-table td:nth-child(4){width:10%}
+}
 
 /* ===== UPDATED: RESPONSIVE NEGATIVE ARTICLES HEATMAP STYLES ===== */
 
@@ -2581,7 +2599,7 @@ async function init(){
   }
   document.getElementById('refreshBtn').onclick = async ()=>{
     const statusEl = document.getElementById('refreshStatus');
-    const refreshTargets = 'News, Organic SERP, SERP Features, Negative Summary';
+    const refreshTargets = 'News, Organic SERP, SERP Features';
     if (statusEl) statusEl.textContent = `Refreshing charts: ${refreshTargets}…`;
     try {
       const resp = await fetch('/api/internal/refresh_aggregates', { method: 'POST' });
@@ -4479,16 +4497,17 @@ async function showNarrativeTimeline({company}, modalDate = null){
     const isCrisis = !!tag.is_crisis && !isNonCrisis;
     const pillClass = isNonCrisis ? 'low' : (isCrisis ? 'high' : 'med');
     const label = String(tag.display_tag || tag.tag || '').trim();
-    const start = active && tag.current_start_date ? esc(tag.current_start_date) : '<span class="muted">—</span>';
-    const end = active && tag.current_end_date ? esc(tag.current_end_date) : '<span class="muted">—</span>';
-    const currentDuration = active ? formatDayDuration(tag.current_duration_days) : '<span class="muted">—</span>';
+    const startDate = String(tag.current_start_date || '').trim();
+    const endDate = String(tag.current_end_date || '').trim();
+    const currentDuration = active ? formatDayDuration(tag.current_duration_days) : '';
     const lastSeen = tag.last_seen_date ? esc(tag.last_seen_date) : '<span class="muted">—</span>';
     const mentionsToday = Number(tag.mentions_on_date || 0);
+    const currentWindow = (active && startDate && endDate)
+      ? `<div class="narrative-window"><span>${esc(currentDuration)}</span><span class="narrative-range">${esc(startDate)} → ${esc(endDate)}</span></div>`
+      : '<span class="muted">—</span>';
     return `<tr class="${active ? 'active' : ''}">
-      <td><span class="pill ${pillClass}">${esc(label || 'Unknown')}</span></td>
-      <td>${currentDuration}</td>
-      <td>${start}</td>
-      <td>${end}</td>
+      <td><span class="pill ${pillClass} narrative-pill">${esc(label || 'Unknown')}</span></td>
+      <td>${currentWindow}</td>
       <td>${lastSeen}</td>
       <td>${mentionsToday}</td>
     </tr>`;
@@ -4511,9 +4530,7 @@ async function showNarrativeTimeline({company}, modalDate = null){
         <thead>
           <tr>
             <th>Narrative Tag</th>
-            <th>Current Duration</th>
-            <th>Current Start</th>
-            <th>Current End</th>
+            <th>Current Window</th>
             <th>Last Seen</th>
             <th>URLs on Date</th>
           </tr>

@@ -3,7 +3,7 @@ with base as (
     select cad.date as date,
            c.id as company_id,
            c.name as company,
-           coalesce(ceo.name, '') as ceo,
+           ''::text as ceo,
            coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
            a.title as title,
            m.llm_risk_label as llm_risk_label,
@@ -15,7 +15,6 @@ with base as (
     join articles a on a.id = cad.article_id
     left join company_article_overrides ov
       on ov.company_id = cad.company_id and ov.article_id = cad.article_id
-    left join ceos ceo on ceo.company_id = c.id
     union all
     select cad.date as date,
            c.id as company_id,

@@ -1899,30 +1899,6 @@ def serp_feature_summary():
     })
 
 
-@app.route('/api/internal/refresh_negative_summary', methods=['POST'])
-def refresh_negative_summary():
-    user_email = require_internal_user()
-    if not user_email:
-        return jsonify({'error': 'unauthorized'}), 401
-    try:
-        lock_conn = get_autocommit_conn("refresh_negative_summary")
-    except Exception:
-        return jsonify({'error': 'db_unavailable'}), 503
-    if not _try_acquire_refresh_lock(lock_conn):
-        put_conn(lock_conn)
-        return jsonify({'status': 'busy'}), 202
-    try:
-        refresh_negative_summary_view(conn=lock_conn)
-        clear_api_cache_prefix("negative_summary:")
-        return jsonify({'status': 'ok'})
-    except Exception as exc:
-        app.logger.exception("refresh_negative_summary failed")
-        return jsonify({'error': 'refresh_failed', 'detail': str(exc)}), 500
-    finally:
-        _release_refresh_lock(lock_conn)
-        put_conn(lock_conn)
-
-
 @app.route('/api/internal/refresh_aggregates', methods=['POST'])
 def refresh_aggregates():
     user_email = require_internal_user()
@@ -1968,7 +1944,6 @@ def refresh_aggregates():
             }
         app.logger.info("refresh_aggregates: started")
         try:
-            refresh_negative_summary_view(conn=lock_conn)
             refresh_serp_feature_daily_view(conn=lock_conn)
             refresh_serp_feature_control_daily_view(conn=lock_conn)
             refresh_serp_feature_daily_index_view(conn=lock_conn)
@@ -2159,7 +2134,6 @@ def apply_override():
                 return
             try:
                 if mention_type in {'company_article', 'ceo_article'}:
-                    refresh_negative_summary_view(conn=lock_conn)
                     refresh_article_daily_counts_view(conn=lock_conn)
                     clear_api_cache_prefix("negative_summary:")
                     clear_api_cache_prefix("daily_counts:")
@@ -2777,14 +2751,13 @@ def negative_articles_summary(days: int | None = None):
     scope_sql, params = scope_clause("c.id", params)
     rows = query_dict(
         f"""
-        select cad.date as date, c.name as company, ceo.name as ceo,
+        select cad.date as date, c.name as company, ''::text as ceo,
                coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                a.title, 'brand' as article_type
         from company_article_mentions_daily cad
         join companies c on c.id = cad.company_id
         join articles a on a.id = cad.article_id
         left join company_article_overrides ov on ov.company_id = cad.company_id and ov.article_id = cad.article_id
-        left join ceos ceo on ceo.company_id = c.id
         where cad.date >= %s {scope_sql}
         union all
         select cad.date as date, c.name as company, ceo.name as ceo,
@@ -2874,7 +2847,7 @@ def negative_summary_live(days: int | None = None, company: str | None = None, m
             select cad.date as date,
                    c.id as company_id,
                    c.name as company,
-                   coalesce(ceo.name, '') as ceo,
+                   ''::text as ceo,
                    coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                    a.title as title,
                    null::text as llm_risk_label,
@@ -2884,7 +2857,6 @@ def negative_summary_live(days: int | None = None, company: str | None = None, m
             join articles a on a.id = cad.article_id
             left join company_article_overrides ov
               on ov.company_id = cad.company_id and ov.article_id = cad.article_id
-            left join ceos ceo on ceo.company_id = c.id
             where cad.date >= %s {scope_sql}{company_sql}
             union all
             select cad.date as date,
@@ -2930,27 +2902,6 @@ def clear_api_cache_prefix(prefix: str) -> None:
     keys = [k for k in _api_cache.keys() if k.startswith(prefix)]
     for key in keys:
         _api_cache.pop(key, None)
-
-
-def refresh_negative_summary_view(conn=None) -> None:
-    owned = conn is None
-    if conn is None:
-        conn = get_conn()
-    if conn is None:
-        raise RuntimeError("DATABASE_URL is not configured")
-    _set_application_name(conn, "refresh_negative_summary_view")
-    try:
-        _reset_conn(conn)
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("refresh materialized view concurrently negative_articles_summary_mv")
-    except Exception:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("refresh materialized view negative_articles_summary_mv")
-    finally:
-        if owned:
-            put_conn(conn)
 
 
 def refresh_serp_feature_daily_view(conn=None) -> None:
