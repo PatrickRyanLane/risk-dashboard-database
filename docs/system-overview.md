@@ -1,144 +1,317 @@
 # Risk Dashboard System Overview
 
-This document summarizes the current end-to-end flow: data collection in `risk-dashboard`, CSV outputs in GCS, ingestion into Crunchy Bridge Postgres, and the Flask dashboard in `risk-dashboard-database` deployed to Cloud Run.
+This document describes the current end-to-end architecture across the two repos:
 
-## 1) Data Collection (risk-dashboard repo)
+- `risk-dashboard` owns the active collection, scoring, ingest, backfill, enrichment, and alerting jobs.
+- `risk-dashboard-database` owns the Postgres schema, dashboard materialized views, Flask app, and Cloud Run deployment.
 
-The `risk-dashboard` repo fetches and processes data daily and writes CSVs to GCS (`gs://risk-dashboard`).
+The important correction to older docs is ingest ownership: the active ingest and DB-writing scripts now live in `risk-dashboard/scripts/`, while `risk-dashboard-database/src/` is a legacy copy of earlier helpers.
 
-Primary scripts:
-- `scripts/news_articles_brands.py` and `scripts/news_articles_ceos.py`
-  - Fetch Google News RSS for brands/CEOs
-  - Run sentiment rules + VADER
-  - Apply finance routine filter (neutralize stock/earnings coverage)
-  - Force-negative rules:
-    - Reddit sources
-    - Legal/crisis terms (brands)
-    - CEO-specific negative terms (CEOs)
-  - Output: `data/processed_articles/YYYY-MM-DD-*-articles-modal.csv`
-- `scripts/process_serps_brands.py` and `scripts/process_serps_ceos.py`
-  - Process SERP rows (S3 raw files)
-  - Apply sentiment rules + VADER + control classification
-  - Apply finance routine filter (neutralize routine market coverage)
-  - Force-negative rules:
-    - Reddit domains
-    - Legal/crisis terms
-    - CEO-specific negative terms (CEOs)
-  - Controlled/uncontrolled rules:
-    - Controlled domains list (social + app stores)
-    - Company domain roster match
-    - Brand token in domain
-    - YouTube channel slug match
-    - Facebook/Instagram account pages are controlled; post URLs are uncontrolled
-  - Output: `data/processed_serps/YYYY-MM-DD-*-serps-modal.csv`
-  - Output (aggregate): `data/processed_serps/YYYY-MM-DD-*-serps-table.csv`
-  - Output (daily index): `data/daily_counts/*-serps-daily-counts-chart.csv`
-- `scripts/news_sentiment_brands.py` and `scripts/news_sentiment_ceos.py`
-  - Aggregate daily counts from processed article CSVs
-  - Output: `data/processed_articles/YYYY-MM-DD-*-articles-table.csv`
-  - Output (daily index): `data/daily_counts/*-articles-daily-counts-chart.csv`
-- `scripts/fetch_stock_data.py`
-  - Fetch stock data (yfinance)
-  - Output: `data/stock_prices/YYYY-MM-DD-stock-data.csv`
-- `scripts/fetch_trends_data.py`
-  - Fetch Google Trends
-  - Output: `data/trends_data/YYYY-MM-DD-trends-data.csv`
-- `scripts/aggregate_negative_articles.py`
-  - Build negative summary
-  - Output: `data/daily_counts/negative-articles-summary.csv`
-- `scripts/send_crisis_alerts.py`
-  - Reads negative summary, sends Slack alerts
-  - Optional LLM summary in Slack alerts (gated by API key)
+## 1. Repo boundaries
 
-Finance routine filter:
-- Keywords: earnings, EPS, revenue, guidance, forecast, price target, upgrade, downgrade, dividend, buyback, shares, stock, market cap, quarterly, fiscal, profit, EBITDA, 10-Q, 10-K, SEC, IPO
-- Ticker pattern: `NYSE|NASDAQ|AMEX: TICKER`
-- Domains: yahoo.com, marketwatch.com, fool.com, benzinga.com, seekingalpha.com, thefly.com, barrons.com, wsj.com, investorplace.com, nasdaq.com, foolcdn.com
+### `risk-dashboard`
 
-Sentiment/control rule summary:
-- Force negative if:
-  - Reddit source/domain
-  - Legal/crisis terms (lawsuit, regulator actions, recall, breach, etc.)
-  - CEO-specific negative terms (for CEO pipelines)
-- Force neutral if:
-  - Finance routine filter hits
-  - Neutralize-title list hits
-- Control classification (SERPs):
-  - Controlled if domain matches roster or controlled list
-  - Controlled if YouTube channel slug matches brand token
-  - Facebook/Instagram account pages controlled; post URLs uncontrolled
+Primary owner of:
 
-## 2) CSV Storage (GCS)
+- Google News article collection
+- SERP result processing
+- SERP feature ingest from raw parquet
+- Roster and boards sync
+- CSV backfills into Postgres
+- LLM enrichment of DB rows
+- Alerting
+- GCS output generation
 
-All outputs are written to:
-- `gs://risk-dashboard/data/processed_articles/*`
-- `gs://risk-dashboard/data/processed_serps/*`
-- `gs://risk-dashboard/data/daily_counts/*`
-- `gs://risk-dashboard/data/stock_prices/*`
-- `gs://risk-dashboard/data/trends_data/*`
+### `risk-dashboard-database`
 
-## 3) Ingestion (risk-dashboard-database repo)
+Primary owner of:
 
-The `risk-dashboard-database` repo ingests CSVs from GCS into Crunchy Bridge Postgres.
+- `sql/schema.sql`
+- Dashboard materialized views in `sql/*_mv.sql`
+- Flask app in `dashboard_app/app.py`
+- Internal versus external auth and edit behavior
+- Cloud Run deployment in `scripts/deploy_cloud_run.sh`
 
-Key scripts:
-- `src/bulk_ingest.py`
-  - Reads GCS CSVs and calls:
-    - `ingest_v2.py` (articles + SERPs)
-    - `ingest_metrics.py` (stock + trends + boards)
-- `src/ingest_v2.py`
-  - Upserts companies/CEOs
-  - Dedupes articles, inserts mentions and SERP results
-- `src/ingest_metrics.py`
-  - Inserts stock/trends daily + snapshot rows
-  - Computes stock daily/7d change if missing
+## 2. Data sources and pipeline stages
 
-Schema:
-- `sql/schema.sql` creates tables for companies, CEOs, articles, SERPs, mentions, overrides, users, boards, stock, trends.
+### 2.1 Rosters
 
-## 4) Dashboard App (risk-dashboard-database repo)
+`risk-dashboard/scripts/ingest_roster_only.py` loads:
 
-The Flask app lives in:
-- `risk-dashboard-database/dashboard_app/app.py`
+- `gs://risk-dashboard/rosters/main-roster.csv`
+- `gs://risk-dashboard/rosters/boards-roster.csv`
 
-Key behaviors:
-- Internal and external dashboards served from the same app.
-- Internal and external are separate Cloud Run services with different env vars.
-- JSON endpoints under `/api/v1/*` read from Postgres.
-- CSV endpoints under `/api/data/*` are still provided for compatibility (backed by DB, not GCS).
+into:
 
-Relevant environment variables:
-- `DATABASE_URL` (secret)
-- `PUBLIC_MODE` (`0` internal, `1` external)
-- `ALLOW_EDITS` (`1` internal, `0` external)
-- `DEFAULT_VIEW` (`internal` or `external`)
-- `ALLOWED_DOMAIN` (e.g., `terakeet.com`)
-- `IAP_AUDIENCE` (internal only)
-- `LLM_API_KEY` (optional; enables LLM summary in alerts)
+- `companies`
+- `ceos`
+- `boards`
 
-## 5) Deployment (Cloud Run)
+This roster sync runs inside the daily brand and CEO workflows before article or SERP processing.
 
-Two services:
+### 2.2 Articles
+
+`risk-dashboard/scripts/news_articles_brands.py` and `news_articles_ceos.py`:
+
+- fetch Google News RSS content
+- apply `risk_rules.py` heuristics plus VADER scoring
+- classify control and finance-routine cases
+- mark uncertain rows for later review and LLM enrichment
+- write modal CSV outputs to GCS under `data/processed_articles/`
+- upsert `articles` plus article mention rows directly into Postgres when `DATABASE_URL` is present
+
+After article collection, `news_sentiment_brands.py` and `news_sentiment_ceos.py` build:
+
+- per-date article table CSVs
+- rolling daily chart CSVs under `data/daily_counts/`
+
+The daily workflows also run `backfill_article_mentions_daily.py` to populate:
+
+- `company_article_mentions_daily`
+- `ceo_article_mentions_daily`
+
+Those daily tables are the main source for article count APIs and dashboard article aggregates.
+
+### 2.3 SERP results
+
+`risk-dashboard/scripts/process_serps_brands.py` and `process_serps_ceos.py`:
+
+- read raw SERP parquet from S3
+- resolve entity matching from roster data
+- classify sentiment, control, finance-routine, and uncertain rows
+- write modal and table CSVs to `data/processed_serps/`
+- write rolling SERP daily-count CSVs to `data/daily_counts/`
+- emit mismatch files for unmapped or unresolved queries
+- upsert `serp_runs` and `serp_results` directly into Postgres when `DATABASE_URL` is present
+
+This direct DB write path is now part of the normal daily pipeline. CSV ingest remains available for backfills.
+
+### 2.4 SERP features
+
+`risk-dashboard/scripts/ingest_serp_features_parquet.py` is the current feature ingest path for raw SERP features. It reads the raw parquet inputs directly and writes:
+
+- `serp_feature_daily`
+- `serp_feature_items`
+
+It also computes feature sentiment and control rollups and writes Top Stories narrative tags for negative, non-financial items.
+
+Related jobs:
+
+- `recompute_serp_feature_daily.py` repairs aggregate rows from DB state
+- `backfill_narrative_tags.py` backfills narrative tags and gate logic
+
+### 2.5 Metrics
+
+`fetch_stock_data.py` and `fetch_trends_data.py` generate:
+
+- `data/stock_prices/YYYY-MM-DD-stock-data.csv`
+- `data/trends_data/YYYY-MM-DD-trends-data.csv`
+
+These files are the metric interchange layer. `bulk_ingest.py` can load them into:
+
+- `stock_prices_daily`
+- `stock_price_snapshots`
+- `trends_daily`
+- `trends_snapshots`
+
+### 2.6 Backfills and repair ingest
+
+`risk-dashboard/scripts/bulk_ingest.py` is the current CSV backfill and repair entrypoint. It can read local files or `gs://risk-dashboard/data` and load:
+
+- article CSVs
+- optional processed SERP CSVs via `--include-serps`
+- roster and boards files
+- stock and trends files
+
+This path is useful for backfills and recovery, but it is no longer the only way article and SERP rows reach Postgres.
+
+`risk-dashboard/scripts/backfill_articles_from_processed_csv.py` is a narrower backfill path for article mention data.
+
+### 2.7 LLM enrichment
+
+`risk-dashboard/scripts/llm_enrich.py` is a DB-only enrichment job. It updates rows that still need LLM labels in:
+
+- `company_article_mentions`
+- `ceo_article_mentions`
+- `serp_results`
+- `serp_feature_items`
+
+It writes sentiment, risk, control, severity, and reason fields directly back into Postgres and reuses prior labels as a cache when possible.
+
+### 2.8 Alerts
+
+Current alerting is DB-backed:
+
+- `send_crisis_alerts.py`
+- `send_targeted_alerts.py`
+
+These jobs read Postgres summary and Top Stories data, then send Slack alerts and Salesforce review actions. Optional LLM summaries are used when `LLM_API_KEY` is configured.
+
+`aggregate_negative_articles.py` still produces `data/daily_counts/negative-articles-summary.csv` in GCS for compatibility and reporting, but current alerting logic is not dependent on that CSV.
+
+## 3. Database model
+
+`risk-dashboard-database/sql/schema.sql` contains both earlier pilot tables and the current normalized schema. The dashboard and current ingest path primarily use:
+
+- `companies`
+- `ceos`
+- `articles`
+- `company_article_mentions`
+- `ceo_article_mentions`
+- `company_article_mentions_daily`
+- `ceo_article_mentions_daily`
+- `serp_runs`
+- `serp_results`
+- `serp_feature_daily`
+- `serp_feature_items`
+- `serp_feature_item_overrides`
+- `serp_feature_summaries`
+- `boards`
+- `stock_prices_daily`
+- `stock_price_snapshots`
+- `trends_daily`
+- `trends_snapshots`
+- `users`
+- `user_company_access`
+- article and SERP override tables
+
+Important table behavior:
+
+- Article daily tables are range-partitioned by date.
+- Overrides are stored separately and applied at query time or in materialized views.
+- LLM labels live alongside rule-based labels on mention, SERP result, and SERP feature item rows.
+- Narrative tags live on `serp_feature_items`.
+
+## 4. Materialized views and aggregate reads
+
+The dashboard relies primarily on these materialized views:
+
+- `article_daily_counts_mv`
+- `serp_daily_counts_mv`
+- `serp_feature_daily_mv`
+- `serp_feature_control_daily_mv`
+- `serp_feature_daily_index_mv`
+- `serp_feature_control_daily_index_mv`
+
+These views fold in override data and, where applicable, LLM labels.
+
+Refresh paths:
+
+- `risk-dashboard/scripts/refresh_negative_summary_view.py`
+- `/api/internal/refresh_aggregates` in `dashboard_app/app.py`
+
+The refresh helpers use an advisory lock so only one aggregate refresh runs at a time.
+
+## 5. Dashboard app
+
+The Flask app in `risk-dashboard-database/dashboard_app/app.py` serves both the internal and external dashboards from the same codebase.
+
+### 5.1 Static dashboard modes
+
+- `/` serves the current default view
+- `/internal/*` serves internal static assets
+- `/external/*` serves public static assets
+
+The selected mode depends on:
+
+- `PUBLIC_MODE`
+- `DEFAULT_VIEW`
+- `ALLOW_EDITS`
+
+### 5.2 Auth and access control
+
+Internal access is controlled with:
+
+- `X-Goog-IAP-JWT-Assertion`
+- `IAP_AUDIENCE`
+- `ALLOWED_DOMAIN`
+- `ALLOWED_EMAILS`
+
+Local development can bypass IAP by setting:
+
+- `ALLOW_UNAUTHED_INTERNAL=true`
+
+External scoping can be narrowed with:
+
+- `EXTERNAL_COMPANY_SCOPE`
+
+Per-user company scoping for internal traffic is driven from:
+
+- `users`
+- `user_company_access`
+
+### 5.3 Compatibility CSV endpoints
+
+`/api/data/<path>` still exposes legacy CSV paths, but those files are generated from Postgres queries rather than read from GCS. This includes:
+
+- article and SERP daily-count charts
+- processed article and SERP exports
+- roster export
+- stock and trends exports
+- negative summary export
+
+### 5.4 JSON API
+
+Current JSON endpoints include:
+
+- `/api/dates`
+- `/api/v1/daily_counts`
+- `/api/v1/processed_articles`
+- `/api/v1/processed_serps`
+- `/api/v1/serp_features`
+- `/api/v1/serp_feature_controls`
+- `/api/v1/serp_feature_items` (internal only)
+- `/api/v1/narrative_tags` (internal only)
+- `/api/v1/narrative_timeline` (internal only)
+- `/api/v1/serp_feature_series` (internal only)
+- `/api/v1/roster`
+- `/api/v1/negative_summary`
+- `/api/v1/boards`
+- `/api/v1/stock_data`
+- `/api/v1/trends_data`
+
+The app caches JSON responses in memory and gzip-compresses larger API responses when the client supports it.
+
+### 5.5 Internal write endpoints
+
+Internal-only write and control routes include:
+
+- `/api/internal/serp_feature_summary`
+  Generates and stores short LLM summaries for SERP feature items.
+
+- `/api/internal/refresh_aggregates`
+- `/api/internal/refresh_aggregates/status`
+  Refreshes dashboard materialized views.
+
+- `/api/internal/overrides`
+  Writes article, SERP result, and SERP feature item overrides.
+
+- `/api/internal/favorites`
+  Toggles favorite flags on companies and CEOs.
+
+Overrides trigger targeted aggregate refreshes and API cache invalidation.
+
+## 6. Deployment
+
+`risk-dashboard-database/scripts/deploy_cloud_run.sh` builds one image from `dashboard_app/` and deploys two Cloud Run services:
+
 - Internal: `risk-dashboard`
 - External: `risk-dashboard-external`
 
-Deploy script:
-- `risk-dashboard-database/scripts/deploy_cloud_run.sh`
-  - Builds image from `dashboard_app/`
-  - Pushes to GCR
-  - Deploys both services
-  - Uses Secret Manager for `DATABASE_URL` and `LLM_API_KEY`
+Current deployment model:
 
-## 6) Current LLM Usage (Optional)
+- internal service is not publicly accessible
+- internal service runs with `PUBLIC_MODE=0` and `ALLOW_EDITS=1`
+- external service is publicly accessible
+- external service runs with `PUBLIC_MODE=1` and `ALLOW_EDITS=0`
+- both services receive `DATABASE_URL` and `LLM_API_KEY` from Secret Manager
+- both services can receive `LLM_PROVIDER` and `LLM_MODEL`
 
-LLM is gated and optional:
-- `LLM_API_KEY` not set: all LLM calls are skipped.
-- Uncertain items are flagged in CSVs for later review.
-- `send_crisis_alerts.py` can generate a short daily summary for Slack alerts using the top headlines.
+## 7. End-to-end summary
 
-## 7) End-to-End Flow Summary
-
-1. `risk-dashboard` fetches raw data and writes CSVs to GCS.
-2. `risk-dashboard-database` ingests those CSVs into Crunchy Bridge Postgres.
-3. Flask app serves dashboards and JSON APIs from Postgres.
-4. Cloud Run hosts separate internal/external services with IAP for internal access.
+1. `risk-dashboard` collects articles, SERPs, rosters, and metric files.
+2. Daily article and SERP jobs write both GCS compatibility outputs and core Postgres rows.
+3. SERP feature ingest writes directly to feature tables in Postgres from raw parquet.
+4. Backfill and repair jobs can reload CSV data from GCS into Postgres as needed.
+5. `risk-dashboard-database` exposes DB-backed dashboards and APIs from Flask.
+6. Cloud Run hosts separate internal and external services from the same image.

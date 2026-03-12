@@ -1,105 +1,163 @@
-# risk-dashboard-database (pilot)
+# risk-dashboard-database
 
-Supabase/Postgres pilot for risk-dashboard ingestion + editable overrides.
+`risk-dashboard-database` owns the database-side and serving-side parts of the product:
 
-## What this includes
-- SQL schema for normalized tables (companies, ceos, articles, serp_runs/results, mentions, overrides)
-- CSV ingestion that populates normalized tables from existing GCS CSVs
-- URL normalization + hashing helper for canonical URL handling
+- Postgres schema and materialized views
+- Flask dashboard and API
+- Internal versus external service behavior
+- Cloud Run deployment
+
+The active daily ingest writers now live in the sibling `risk-dashboard` repo. The `src/` directory in this repo still contains older ingest helpers, but it is no longer the primary ingest path for day-to-day operations.
+
+## What this repo contains
+
+- `sql/schema.sql`
+  Main schema, including the current normalized tables used by the dashboard and some earlier pilot tables kept for compatibility.
+
+- `sql/article_daily_counts_mv.sql`
+- `sql/serp_daily_counts_mv.sql`
+- `sql/serp_feature_daily_mv.sql`
+- `sql/serp_feature_control_daily_mv.sql`
+- `sql/serp_feature_daily_index_mv.sql`
+- `sql/serp_feature_control_daily_index_mv.sql`
+- `sql/negative_summary_mv.sql`
+  Materialized views used for dashboard counts and feature rollups.
+
+- `dashboard_app/app.py`
+  Flask app that serves static dashboards, DB-backed JSON APIs, CSV compatibility endpoints, internal edit routes, and aggregate refresh endpoints.
+
+- `dashboard_app/static/internal/` and `dashboard_app/static/external/`
+  Separate static dashboards for internal editable mode and external read-only mode.
+
+- `scripts/deploy_cloud_run.sh`
+  Builds one Docker image from `dashboard_app/` and deploys it to the internal and external Cloud Run services.
+
+- `src/*.py`
+  Legacy ingest copies retained for reference. Current ingest and backfill work should usually target `risk-dashboard/scripts/*.py` instead.
+
+## Current ownership split
+
+- `risk-dashboard`
+  Active collection, scoring, DB ingest and backfills, LLM enrichment, metric generation, and alerting.
+
+- `risk-dashboard-database`
+  Schema, materialized views, dashboard/API, auth, overrides, favorites, and Cloud Run deployment.
 
 ## Setup
-1) Create a Supabase project.
-2) Run the SQL in `sql/schema.sql`.
-3) (Optional) Run `sql/rpcs.sql` for the override helper.
-4) (Optional) Run `sql/rls.sql` if you want RLS policies.
 
-## Environment
-Set a Postgres connection string:
-
-- `DATABASE_URL` or `SUPABASE_DB_URL`
+1. Create or point at a Postgres database.
+2. Set `DATABASE_URL`.
+3. Apply the schema and dashboard materialized views.
+4. Populate data using the active scripts in the sibling `risk-dashboard` repo.
+5. Run the Flask app locally or deploy with `scripts/deploy_cloud_run.sh`.
 
 Example:
-```
+
+```bash
 export DATABASE_URL="postgresql://postgres:<password>@<host>:5432/postgres"
+
+for f in \
+  sql/schema.sql \
+  sql/article_daily_counts_mv.sql \
+  sql/serp_daily_counts_mv.sql \
+  sql/serp_feature_daily_mv.sql \
+  sql/serp_feature_control_daily_mv.sql \
+  sql/serp_feature_daily_index_mv.sql \
+  sql/serp_feature_control_daily_index_mv.sql \
+  sql/negative_summary_mv.sql
+do
+  psql "$DATABASE_URL" -f "$f"
+done
 ```
 
-## Ingest CSVs
-Use `bulk_ingest` to load daily files into normalized tables:
-```
-python -m src.bulk_ingest \
+Optional:
+
+- `sql/rpcs.sql` for helper RPCs
+- `sql/rls.sql` if you want row-level security policies
+
+## Loading data
+
+Use the active ingest scripts from `../risk-dashboard/` if you have both repos checked out side by side.
+
+Examples:
+
+```bash
+export DATABASE_URL="postgresql://..."
+
+python ../risk-dashboard/scripts/ingest_roster_only.py \
+  --roster-path gs://risk-dashboard/rosters/main-roster.csv \
+  --boards-path gs://risk-dashboard/rosters/boards-roster.csv
+
+python ../risk-dashboard/scripts/bulk_ingest.py \
   --data-dir gs://risk-dashboard/data \
-  --date 2025-12-19
+  --date YYYY-MM-DD
+
+python ../risk-dashboard/scripts/ingest_serp_features_parquet.py \
+  --date YYYY-MM-DD \
+  --entity-type brand
+
+python ../risk-dashboard/scripts/llm_enrich.py --max-calls 200
 ```
 
-## Bulk ingest daily folders
-```
-python -m src.bulk_ingest \
-  --data-dir /path/to/news-sentiment-dashboard/data \
-  --date 2025-12-19
-```
+Current normalized tables populated for the dashboard include:
 
-Date ranges:
-```
-python -m src.bulk_ingest \
-  --data-dir /path/to/news-sentiment-dashboard/data \
-  --from 2025-12-01 \
-  --to 2025-12-19
-```
+- `companies`, `ceos`, `boards`
+- `articles`
+- `company_article_mentions`, `ceo_article_mentions`
+- `company_article_mentions_daily`, `ceo_article_mentions_daily`
+- `serp_runs`, `serp_results`
+- `serp_feature_daily`, `serp_feature_items`, `serp_feature_summaries`
+- `stock_prices_daily`, `stock_price_snapshots`
+- `trends_daily`, `trends_snapshots`
+- Override tables for article mentions, SERP results, and SERP feature items
 
-## GCS input
-Use a gs:// path as `--data-dir` to read from Cloud Storage:
-```
-python -m src.bulk_ingest \
-  --data-dir gs://risk-dashboard/data \
-  --date 2025-12-19
-```
+## Running the dashboard locally
 
-Ensure `GOOGLE_APPLICATION_CREDENTIALS` points to a service account JSON with
-`storage.objects.get` permission on the bucket.
+```bash
+export DATABASE_URL="postgresql://..."
+export DEFAULT_VIEW=internal
+export ALLOW_UNAUTHED_INTERNAL=true
 
-## Roster ingestion
-The bulk ingester also loads `rosters/main-roster.csv` from the bucket root
-(`gs://<bucket>/rosters/main-roster.csv`). Override with `--roster-path`.
-
-## Boards ingestion
-The bulk ingester also loads `rosters/boards-roster.csv` to populate the `boards` table.
-
-## Stock prices + trends ingestion
-The bulk ingester also reads per-date files:
-- `trends_data/YYYY-MM-DD-trends-data.csv`
-- `stock_prices/YYYY-MM-DD-stock-data.csv`
-
-These are expanded into daily rows in `trends_daily` and `stock_prices_daily`,
-and snapshots in `trends_snapshots` and `stock_price_snapshots`.
-
-## Overrides
-Overrides live in:
-- `company_article_overrides`
-- `ceo_article_overrides`
-- `serp_result_overrides`
-
-## Overrides
-Overrides apply to a URL hash across all sources and dates.
-
-Option A: insert into `item_overrides` directly.
-Option B: call `apply_item_override(...)` from `sql/rpcs.sql`.
-
-Example via Supabase REST (service role key recommended for internal tools):
-```
-curl -X POST "$SUPABASE_URL/rest/v1/item_overrides" \
-  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url_hash": "sha256hex...",
-    "risk_override": "risk",
-    "controlled_override": true,
-    "reason": "Reviewed by analyst",
-    "user_id": "analyst@company.com"
-  }'
+python dashboard_app/app.py
 ```
 
-## Notes
-- `url_hash` is a SHA-256 of a normalized URL (see `src/url_utils.py`).
-- Idempotency is enforced via `(entity_id, source_type, date, url_hash)`.
-- This is designed to migrate cleanly to Cloud SQL later.
+Useful environment variables:
+
+- `PUBLIC_MODE`
+- `ALLOW_EDITS`
+- `DEFAULT_VIEW`
+- `IAP_AUDIENCE`
+- `ALLOWED_DOMAIN`
+- `ALLOWED_EMAILS`
+- `EXTERNAL_COMPANY_SCOPE`
+- `ALLOW_UNAUTHED_INTERNAL`
+- `LLM_API_KEY`
+- `LLM_PROVIDER`
+- `LLM_MODEL`
+
+## API and dashboard behavior
+
+The Flask app serves:
+
+- Static dashboards from `/`, `/internal/*`, and `/external/*`
+- Legacy-style CSV endpoints under `/api/data/*`
+- DB-backed JSON endpoints under `/api/v1/*`
+- Internal-only endpoints for overrides, favorites, LLM SERP feature summaries, and aggregate refreshes under `/api/internal/*`
+
+Internal mode is authenticated and editable. External mode is public and read-only.
+
+## Deployment
+
+`scripts/deploy_cloud_run.sh` deploys two Cloud Run services from one image:
+
+- Internal: `risk-dashboard`
+- External: `risk-dashboard-external`
+
+The deploy script sets:
+
+- Internal mode: `PUBLIC_MODE=0`, `ALLOW_EDITS=1`, `DEFAULT_VIEW=internal`
+- External mode: `PUBLIC_MODE=1`, `ALLOW_EDITS=0`, `DEFAULT_VIEW=external`
+
+Both services read `DATABASE_URL` and `LLM_API_KEY` from Secret Manager.
+
+For the full end-to-end architecture, see `docs/system-overview.md`.

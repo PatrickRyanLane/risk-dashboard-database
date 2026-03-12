@@ -139,9 +139,14 @@ h1{font-size:28px;margin:6px 0 18px}
 .refresh-panel button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
 .controls .field-label{font-size:12px;margin:0;padding-left:8px;line-height:1.2}
 .controls .field-label-empty{padding-left:0}
+.controls .controls-inputs{align-items:flex-start}
 .controls .controls-inputs input,
 .controls .controls-inputs select{width:100%;min-width:0}
 .controls .controls-inputs button{width:auto;white-space:nowrap;justify-self:start}
+.controls .date-input-stack{display:flex;flex-direction:column;gap:8px;min-width:0}
+.controls .lookback-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;width:100%}
+.controls .lookback-btn{min-width:0;padding:0 6px;font-weight:600}
+.controls .lookback-btn.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
 .controls .controls-aux{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .controls .controls-aux .muted{font-size:12px}
 .filter-toggle.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
@@ -163,27 +168,28 @@ button:hover{filter:brightness(1.08)}
 
 .grid{
   display:grid;
-  grid-auto-rows: minmax(340px, 40vh);
+  grid-auto-rows:auto;
   gap:16px;
   margin:16px 0;
 }
 
 @media (min-width:980px){
   .grid{
-    grid-auto-rows: minmax(360px, 42vh);
-    gap:18px;
+    grid-auto-rows:auto;
+    gap:16px;
   }
 }
 
 .chart-card{ background:var(--card); border:1px solid var(--stroke);
-  border-radius:12px; padding:12px 12px 48px; position:relative }
+  border-radius:12px; padding:16px; position:relative; min-height:400px; height:48vh }
 
 .chart-card canvas{
   width:100% !important;
   height:100% !important;
   display:block;
 }
-.chart-card.loading::after{content:"";position:absolute;left:12px;right:12px;top:54px;bottom:16px;border-radius:10px;background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.18),rgba(255,255,255,.05));background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite;pointer-events:none}
+.chart-card[data-chart="composite"]{ min-height:460px; height:58vh }
+.chart-card.loading::after{content:"";position:absolute;left:16px;right:16px;top:58px;bottom:16px;border-radius:10px;background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.18),rgba(255,255,255,.05));background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite;pointer-events:none}
 .chart-card.loading canvas{opacity:.2}
 .chart-card[draggable="true"]{cursor:grab}
 .chart-card h3{margin:0}
@@ -193,21 +199,36 @@ button:hover{filter:brightness(1.08)}
   gap:10px;
   padding-left:2px;
 }
-.chart-card[draggable="true"] h3::before{
-  content:"☰";
-  font-size:10px;
-  line-height:1;
+.chart-card[draggable="true"] h3 .drag-handle{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  font-size:25px;
+  line-height:.7;
   color:rgba(235,242,242,.38);
   text-shadow:0 1px 0 rgba(0,0,0,.55), 0 -1px 0 rgba(255,255,255,.06);
-  opacity:.85;
+  opacity:.55;
   transform:translateY(1px);
+  cursor:grab;
 }
+.chart-card[draggable="true"] h3 .drag-handle::before{content:"☰"}
 .chart-card.dragging{opacity:.55}
 .chart-card.drag-over{outline:1px dashed rgba(88,219,237,.7);outline-offset:2px}
 
+.chart-card.chart-collapsed{grid-column:1 / -1;padding:16px;min-height:0;height:auto}
+.chart-card.chart-collapsed canvas{display:none !important}
+.chart-card.chart-collapsed .chart-actions{
+  display:flex;
+  top:16px;
+  right:16px;
+}
+.chart-card.chart-collapsed .chart-actions .dates-pager{display:none}
+.chart-card.chart-collapsed.loading::after{display:none}
+.chart-card .chart-collapsible-title{cursor:pointer;user-select:none}
+
 .chart-actions{
   position:absolute;
-  top:12px; right:12px;
+  top:16px; right:16px;
   display:flex; align-items:center; gap:10px;
 }
 .chart-actions .dates-range{ font-size:12px; }
@@ -428,7 +449,7 @@ tbody td:first-child{
 .serp-flags{margin-top:6px;font-size:12px;opacity:.8;letter-spacing:.2px}
 .edit-flags{display:inline-flex;gap:10px;align-items:center;font-size:12px;opacity:.85;white-space:nowrap}
 .muted{color:var(--muted)}
-.serp-feature-viz{display:flex;gap:16px;flex-wrap:wrap;align-items:stretch;margin:12px 0}
+.serp-feature-viz{display:flex;gap:20px;flex-wrap:wrap;align-items:stretch;margin:12px 0}
 .serp-feature-viz > div{min-width:0}
 .serp-card.serp-feature-summary{
   margin-top:10px;
@@ -607,7 +628,6 @@ tbody td:first-child{
 }
 .fav-toggle{background:#1f2121;border:1px solid #2a3b5e;color:var(--text);border-radius:8px;padding:6px 10px;cursor:pointer;font-size:12px;display:inline-flex;gap:6px;align-items:center}
 .controls button#clearBtn,
-.controls button#fullHistoryBtn{font-size:12px;padding:6px 10px;min-height:30px}
 .fav-toggle.active{background:rgba(255,215,0,.18);border-color:rgba(255,215,0,.5);color:#ffd54f}
 .fav-star{color:#ffd54f;font-weight:700;margin-right:6px}
 .fav-inline{background:transparent;border:0;color:#666;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;display:inline-flex;align-items:center;justify-content:center}
@@ -915,7 +935,15 @@ body:has(#stockChartModal.open) {
       <div class="field-label field-label-empty" aria-hidden="true"></div>
     </div>
     <div class="controls-grid controls-inputs">
-      <select id="dateSelect"></select>
+      <div class="date-input-stack">
+        <select id="dateSelect"></select>
+        <div class="lookback-controls" role="group" aria-label="Chart lookback window">
+          <button type="button" class="lookback-btn" data-days="30" title="Show last 30 days">30d</button>
+          <button type="button" class="lookback-btn" data-days="45" title="Show last 45 days">45d</button>
+          <button type="button" class="lookback-btn" data-days="60" title="Show last 60 days">60d</button>
+          <button type="button" class="lookback-btn" data-days="90" title="Show last 90 days">90d</button>
+        </div>
+      </div>
       <input id="filterInput" type="text" placeholder="Type to filter…" />
       <select id="sectorFilterSelect" title="Filter by sector or industry">
         <option value="">All sectors</option>
@@ -938,6 +966,18 @@ body:has(#stockChartModal.open) {
   </div>
 
   <div class="grid">
+    <div class="chart-card loading" data-chart="composite">
+      <h3>Negative Signal Composite (SERP Features vs News)</h3>
+      <div class="chart-actions">
+        <span class="dates-range muted" aria-live="polite"></span>
+        <div class="dates-pager">
+          <button class="dates-prev" title="Older window">←</button>
+          <button class="dates-next" title="Newer window">→</button>
+        </div>
+      </div>
+      <canvas id="negativeCompositeChart"></canvas>
+    </div>
+
     <div class="chart-card loading" data-chart="features">
       <h3>SERP Feature Negativity (stacked)</h3>
       <div class="chart-actions">
@@ -1095,6 +1135,7 @@ body:has(#stockChartModal.open) {
 
 const DEFAULT_DAYS = 30;
 const EXTENDED_DAYS = 90;
+const LOOKBACK_OPTIONS = [30, 45, 60, 90];
 const CRISIS_DAYS = 30;
 const CRISIS_MIN_NEG = 4;
 let currentDays = DEFAULT_DAYS;
@@ -1151,6 +1192,8 @@ let favoriteCeos = new Set();
 const _narrativeCache = new Map();
 const PAGE_SIZE = 25;
 const CHART_ORDER_STORAGE_KEY = `riskdash.chart_order:${window.location.pathname}`;
+const CHART_COLLAPSE_STORAGE_KEY = `riskdash.chart_collapse:${window.location.pathname}`;
+const COMPOSITE_CHART_KEY = 'negativeCompositeChart';
 let draggedChartCard = null;
 
 function getChartGrid(){
@@ -1168,6 +1211,52 @@ function getChartCardKey(card){
   }
   return card.dataset.chartKey;
 }
+function loadChartCollapsePreference(){
+  try {
+    const raw = localStorage.getItem(CHART_COLLAPSE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  return {};
+}
+function saveChartCollapsePreference(pref){
+  try { localStorage.setItem(CHART_COLLAPSE_STORAGE_KEY, JSON.stringify(pref)); } catch {}
+}
+function setChartCollapsed(card, collapsed){
+  const key = getChartCardKey(card);
+  if (!key) return;
+  const pref = loadChartCollapsePreference();
+  pref[key] = !!collapsed;
+  saveChartCollapsePreference(pref);
+  card.classList.toggle('chart-collapsed', !!collapsed);
+}
+function applyChartCollapsePreference(){
+  const pref = loadChartCollapsePreference();
+  getChartCards().forEach(card => {
+    const key = getChartCardKey(card);
+    card.classList.toggle('chart-collapsed', !!pref[key]);
+  });
+}
+function bindChartCollapse(){
+  getChartCards().forEach(card => {
+    if (card.dataset.collapseBound === '1') return;
+    card.dataset.collapseBound = '1';
+    const titleEl = card.querySelector('h3');
+    if (!titleEl) return;
+    titleEl.classList.add('chart-collapsible-title');
+    titleEl.title = 'Click to collapse or expand';
+    titleEl.addEventListener('click', (event) => {
+      const target = (event.target && typeof event.target.closest === 'function') ? event.target : null;
+      if (target && target.closest('.drag-handle')) return;
+      event.preventDefault();
+      const willCollapse = !card.classList.contains('chart-collapsed');
+      setChartCollapsed(card, willCollapse);
+      if (!willCollapse && dataReady && typeof renderCharts === 'function') {
+        requestAnimationFrame(() => { renderCharts(); });
+      }
+    });
+  });
+}
 function saveChartOrderPreference(){
   const keys = getChartCards().map(getChartCardKey).filter(Boolean);
   if (!keys.length) return;
@@ -1176,15 +1265,19 @@ function saveChartOrderPreference(){
 function applyChartOrderPreference(){
   const grid = getChartGrid();
   if (!grid) return;
+  const cards = getChartCards();
+  const byKey = new Map(cards.map(card => [getChartCardKey(card), card]));
   let saved = [];
   try {
     const raw = localStorage.getItem(CHART_ORDER_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     if (Array.isArray(parsed)) saved = parsed.map(v => String(v || '')).filter(Boolean);
   } catch {}
+  if (byKey.has(COMPOSITE_CHART_KEY) && !saved.includes(COMPOSITE_CHART_KEY)) {
+    saved = [COMPOSITE_CHART_KEY, ...saved];
+  }
+  saved = [...new Set(saved)];
   if (!saved.length) return;
-  const cards = getChartCards();
-  const byKey = new Map(cards.map(card => [getChartCardKey(card), card]));
   const ordered = [];
   saved.forEach(key => {
     const card = byKey.get(key);
@@ -1203,8 +1296,16 @@ function bindChartReorder(){
     if (card.dataset.reorderBound === '1') return;
     card.dataset.reorderBound = '1';
     card.setAttribute('draggable', 'true');
-    card.title = 'Drag to reorder charts';
+    card.removeAttribute('title');
     card.setAttribute('aria-label', 'Drag to reorder chart card');
+    const titleEl = card.querySelector('h3');
+    if (titleEl && !titleEl.querySelector('.drag-handle')){
+      const handle = document.createElement('span');
+      handle.className = 'drag-handle';
+      handle.title = 'Drag to reorder charts';
+      handle.setAttribute('aria-hidden', 'true');
+      titleEl.insertBefore(handle, titleEl.firstChild);
+    }
     card.addEventListener('dragstart', () => {
       draggedChartCard = card;
       card.classList.add('dragging');
@@ -1240,14 +1341,20 @@ function initChartOrderPreference(){
   if (grid.dataset.chartOrderInit === '1') return;
   applyChartOrderPreference();
   bindChartReorder();
+  bindChartCollapse();
+  applyChartCollapsePreference();
   grid.dataset.chartOrderInit = '1';
 }
 
 function updateChartSkeletons(){
+  const compositeState = (_loadState.news === 'done' && _loadState.features === 'done')
+    ? 'done'
+    : ((_loadState.news === 'error' || _loadState.features === 'error') ? 'error' : 'loading');
   const map = {
     news: _loadState.news,
     serps: _loadState.serps,
-    features: _loadState.features
+    features: _loadState.features,
+    composite: compositeState
   };
   document.querySelectorAll('.chart-card[data-chart]').forEach(card=>{
     const key = card.getAttribute('data-chart');
@@ -1257,45 +1364,86 @@ function updateChartSkeletons(){
 }
 
 function updateDateOptions(){
-  const dateSet = new Set([ ...allCountsRows.map(r => r.date), ...serpsDaily.map(r => r.date) ].filter(isISODate));
-  if (!dateSet.size) return;
+  const dateSet = new Set([ ...allCountsRows.map(r=>r.date), ...serpsDaily.map(r=>r.date) ].filter(isISODate));
   const dates = [...dateSet].sort();
   const sel = document.getElementById('dateSelect');
+  if (!sel) return;
   const prev = sel.value;
-  sel.innerHTML = dates.map(d => `<option value="${d}">${d}</option>`).join('');
+  sel.innerHTML = dates.map(d=>`<option value="${d}">${d}</option>`).join('');
   sel.value = dates.includes(prev) ? prev : (dates[dates.length-1] || '');
-  const fullHistoryBtn = document.getElementById('fullHistoryBtn');
-  if (fullHistoryBtn) fullHistoryBtn.disabled = currentDays >= EXTENDED_DAYS;
+  updateLookbackButtons();
 }
 
-function queueExtendedHistoryLoad(){
-  if (extendedHistoryQueued || currentDays >= EXTENDED_DAYS) return;
-  extendedHistoryQueued = true;
-  const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 600));
-  idle(() => { ensureExtendedHistory(); });
+function updateLookbackButtons(){
+  document.querySelectorAll('.lookback-btn').forEach(btn => {
+    const days = Number(btn.dataset.days || DEFAULT_DAYS);
+    const active = days === currentDays;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
 }
 
-async function ensureExtendedHistory(){
-  if (currentDays >= EXTENDED_DAYS) return false;
-  if (extendingHistoryPromise) return extendingHistoryPromise;
+function bindLookbackControls(){
+  document.querySelectorAll('.lookback-btn').forEach(btn => {
+    if (btn.dataset.boundLookback === '1') return;
+    btn.dataset.boundLookback = '1';
+    btn.addEventListener('click', async () => {
+      await setLookbackDays(btn.dataset.days);
+    });
+  });
+  updateLookbackButtons();
+}
 
-  currentDays = EXTENDED_DAYS;
+function setLookbackLoadState(){
+  ['news', 'serps', 'features'].forEach(key => {
+    if (Object.prototype.hasOwnProperty.call(_loadState, key)) {
+      setLoadStatus(key, 'loading');
+    }
+  });
+}
+
+async function reloadLookbackData(){
+  const tasks = [loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()];
+  if (crisisOnly || crisisEntityKeys.size) tasks.push(loadCrisisEntityKeys());
+  await Promise.all(tasks);
+  const selectedDate = String(document.getElementById('dateSelect')?.value || '').trim();
+  if (selectedDate) await loadTopStoriesForDate(selectedDate);
+  if (selectedCeo) await loadSerpFeaturesForEntity(selectedCeo);
+  await renderAll();
+}
+
+function normalizeLookbackDays(days){
+  const next = Number(days);
+  return LOOKBACK_OPTIONS.includes(next) ? next : DEFAULT_DAYS;
+}
+
+async function setLookbackDays(days, { force = false } = {}){
+  const nextDays = normalizeLookbackDays(days);
+  if (!force && nextDays === currentDays) {
+    updateLookbackButtons();
+    return false;
+  }
+  currentDays = nextDays;
+  DATE_WINDOW_SIZE = nextDays;
+  dateWindowStart = null;
+  dateWindowPinned = false;
+  extendingHistoryPromise = null;
+  extendedHistoryQueued = currentDays >= EXTENDED_DAYS;
   _serpFeatureCache.clear();
   _serpFeatureControlCache.clear();
-
-  extendingHistoryPromise = (async () => {
-    const tasks = [loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()];
-    if (crisisOnly || crisisEntityKeys.size) tasks.push(loadCrisisEntityKeys());
-    await Promise.all(tasks);
-    if (selectedCeo) await loadSerpFeaturesForEntity(selectedCeo);
-    renderAll();
-    return true;
-  })().catch(() => false).finally(() => {
-    extendingHistoryPromise = null;
-  });
-
-  return extendingHistoryPromise;
+  topStoriesNegByDate = new Map();
+  updateLookbackButtons();
+  setLookbackLoadState();
+  await reloadLookbackData();
+  return true;
 }
+
+function queueExtendedHistoryLoad(){ return; }
+
+async function ensureExtendedHistory(){
+  return setLookbackDays(EXTENDED_DAYS, { force: currentDays !== EXTENDED_DAYS });
+}
+
 
 function maybeRenderAll(){
   const sel = document.getElementById('dateSelect');
@@ -1368,7 +1516,7 @@ function isTrue(val){
   return ['true','1','yes','y'].includes(String(val || '').trim().toLowerCase());
 }
 
-let newsChart, serpChart, stockChart, featureChart, featureControlChart;
+let newsChart, serpChart, stockChart, featureChart, featureControlChart, negativeCompositeChart;
 let globalStockData = {};
 let showVolume = false; // Toggle state for volume display
 let showTrends = false; // Toggle state for trends display
@@ -1512,7 +1660,7 @@ function maybeHideLoadStatus(){
   }
 }
 
-const DATE_WINDOW_SIZE = 30;
+let DATE_WINDOW_SIZE = currentDays;
 let dateWindowStart = null;
 let dateWindowPinned = false;
 const negativeSummaryCache = new Map();
@@ -1520,6 +1668,15 @@ let negativeSummaryIndex = null;
 const NEGATIVE_ARTICLE_THRESHOLD = 3;
 
 const isISODate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s||'').trim());
+function articlePublishedMeta(row){
+  const raw = String(row?.published_date || row?.published_at || '').trim();
+  if (!raw) return '';
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match) return `Published ${match[1]}`;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return `Published ${parsed.toISOString().slice(0, 10)}`;
+}
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[m]));
 function fmtPct(v){ 
   return (v==null) ? 'N/A' : Math.round(v*100) + '%'; 
@@ -2204,33 +2361,17 @@ function updateDateRangeUI(allDates){
   document.querySelectorAll('.dates-range').forEach(el => el.textContent = label);
 
   const atStart = start === 0;
-  const canLoadOlder = atStart && currentDays < EXTENDED_DAYS;
   const atEnd   = (start + DATE_WINDOW_SIZE) >= allDates.length;
-  document.querySelectorAll('.dates-prev').forEach(b => b.disabled = atStart && !canLoadOlder);
+  document.querySelectorAll('.dates-prev').forEach(b => b.disabled = atStart);
   document.querySelectorAll('.dates-next').forEach(b => b.disabled = atEnd);
 }
-
 function hookDatePager(allDates){
-  const goPrev = async () => {
+  const goPrev = () => {
     const total = allDates.length;
-    const start = clampDateStart(total);
-    if (start === 0 && currentDays < EXTENDED_DAYS){
-      const loadedMore = await ensureExtendedHistory();
-      if (loadedMore){
-        const nextTotal = getDateSeries().dates.length;
-        if (nextTotal > DATE_WINDOW_SIZE){
-          const maxStart = nextTotal - DATE_WINDOW_SIZE;
-          dateWindowPinned = true;
-          dateWindowStart = Math.max(0, maxStart - DATE_WINDOW_SIZE);
-        }
-        renderCharts();
-      }
-      return;
-    }
     if (total <= DATE_WINDOW_SIZE) return;
+    const start = clampDateStart(total);
     dateWindowPinned = true;
-    dateWindowStart = start - DATE_WINDOW_SIZE;
-    if (dateWindowStart < 0) dateWindowStart = 0;
+    dateWindowStart = Math.max(0, start - DATE_WINDOW_SIZE);
     renderCharts();
   };
   const goNext = () => {
@@ -2636,6 +2777,7 @@ async function init(){
   initChartOrderPreference();
   initLoadStatus();
   dataReady = false;
+  bindLookbackControls();
   _narrativeCache.clear();
   updateChartSkeletons();
   const sel = document.getElementById('dateSelect');
@@ -2721,13 +2863,6 @@ async function init(){
     updateEntityUrlParam('ceo', null);
     renderAll();
   };
-  const fullHistoryBtn = document.getElementById('fullHistoryBtn');
-  if (fullHistoryBtn) {
-    fullHistoryBtn.onclick = async ()=>{
-      fullHistoryBtn.disabled = true;
-      await ensureExtendedHistory();
-    };
-  }
   document.getElementById('prevBtn').onclick = ()=>{ if (currentPage>1){ currentPage--; renderTable(); } };
   document.getElementById('nextBtn').onclick = ()=>{ const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE)); if (currentPage<totalPages){ currentPage++; renderTable(); } };
 
@@ -2767,12 +2902,6 @@ async function init(){
       }
     });
     sel.dataset.boundChange = '1';
-  }
-  if (!sel.dataset.boundHistoryPrefetch){
-    const triggerHistoryPrefetch = ()=>{ queueExtendedHistoryLoad(); };
-    sel.addEventListener('focus', triggerHistoryPrefetch, { once: true });
-    sel.addEventListener('pointerdown', triggerHistoryPrefetch, { once: true });
-    sel.dataset.boundHistoryPrefetch = '1';
   }
 
   renderTable();
@@ -3277,11 +3406,11 @@ function renderCharts(){
     maintainAspectRatio: false,
     layout: { padding: { bottom: 24 } },
     scales: {
-      x: { ticks: { color: '#ebf2f2' }, grid: { color: 'rgba(255,255,255,.05)' } },
+      x: { ticks: { color: '#ebf2f2' }, grid: { color: 'transparent' } },
       y: {
         ticks: { color: '#ebf2f2', stepSize: 20, callback: (v) => fmtPctInt(v) },
-        grid: { color: 'rgba(255,255,255,.06)' },
-        suggestedMin: 0, suggestedMax: 100
+        grid: { color: 'transparent' },
+        min: 0, max: 100
       }
     },
     plugins: {
@@ -3294,6 +3423,124 @@ function renderCharts(){
       }}}
     }
   };
+
+  const compositeDatasets = featureOrder.map((feature, idx) => ({
+    label: FEATURE_LABELS[feature] || feature,
+    data: (featureData[idx] || []).map(v => Math.max(0, Math.min(100, Number(v) || 0))),
+    tension: 0.2,
+    fill: true,
+    borderWidth: 1,
+    borderColor: FEATURE_COLORS[idx % FEATURE_COLORS.length],
+    backgroundColor: (FEATURE_COLORS[idx % FEATURE_COLORS.length] + 'b3'),
+    pointRadius: 0,
+    pointHoverRadius: 4,
+    pointHitRadius: 10,
+    stack: 'composite_features'
+  }));
+  const newsNegComposite = nG.map(v => -Math.max(0, Math.min(100, Number(v) || 0)));
+  const splitFillPlugin = {
+    id: 'compositeSplitFill',
+    afterDatasetsDraw(chart){
+      const {ctx, chartArea, scales} = chart;
+      if (!ctx || !chartArea || !scales?.y) return;
+      const {left, right} = chartArea;
+      const mid = scales.y.getPixelForValue(0);
+      const cardBg = getComputedStyle(document.documentElement).getPropertyValue('--card').trim() || '#092e37';
+      ctx.save();
+      ctx.fillStyle = cardBg;
+      ctx.fillRect(left, mid - 2, right - left, 4);
+      ctx.restore();
+    }
+  };
+  const compositeCtx = document.getElementById('negativeCompositeChart')?.getContext('2d');
+  if (negativeCompositeChart) negativeCompositeChart.destroy();
+  if (compositeCtx) {
+    negativeCompositeChart = new Chart(compositeCtx, {
+      type: 'line',
+      data: {
+        labels: d,
+        datasets: [
+          ...compositeDatasets,
+          {
+            type: 'bar',
+            label: 'Negative Google Newsfeed',
+            data: newsNegComposite,
+            borderWidth: 1,
+            borderColor: '#ff8261',
+            backgroundColor: 'rgba(255,130,97,.92)',
+            isNewsComposite: true,
+            order: 10
+          }
+        ]
+      },
+      options: {
+        ...commonOpts,
+        scales: {
+          ...commonOpts.scales,
+          x: { ...commonOpts.scales.x, stacked: true },
+          y: {
+            ...commonOpts.scales.y,
+            stacked: true,
+            min: -100,
+            max: 100,
+            ticks: {
+              ...commonOpts.scales.y.ticks,
+              stepSize: 20,
+              autoSkip: false,
+              maxTicksLimit: 11,
+              callback: v => pct(Math.abs(Number(v) || 0))
+              },
+            grid: {
+              ...commonOpts.scales.y.grid,
+              color: 'transparent',
+              lineWidth: 0
+            }
+          }
+        },
+        interaction: { mode: 'index', intersect: false },
+        onClick: (event, _elements, chart) => {
+          const date = getClickedDate(event, chart);
+          const points = chart.getElementsAtEventForMode(event, 'nearest', { intersect: true }, false);
+          const datasetIdx = points && points.length ? points[0].datasetIndex : -1;
+          if (datasetIdx === featureOrder.length) return void openChartDetailAt('news', date);
+          return void openChartDetailAt('features', date);
+        },
+        plugins: {
+          ...commonOpts.plugins,
+          title: { ...commonOpts.plugins.title, text: `${who} • Negative Signal Composite` },
+          tooltip: {
+            ...commonOpts.plugins.tooltip,
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              ...commonOpts.plugins.tooltip.callbacks,
+              label: (ctx) => {
+                const raw = (typeof ctx.parsed?.y === 'number') ? ctx.parsed.y : ctx.parsed;
+                const val = Math.abs(Number(raw) || 0);
+                const date = ctx.label;
+                if (ctx.dataset?.isNewsComposite) {
+                  return `${ctx.dataset?.label ? ctx.dataset.label + ': ' : ''}${pct(val)}`;
+                }
+                const feature = featureOrder[ctx.datasetIndex];
+                const bucket = featureCountsByDate.get(date) || {};
+                const count = bucket[feature]?.neg || 0;
+                return `${ctx.dataset?.label ? ctx.dataset.label + ': ' : ''}${pct(val)} (${Math.round(count)})`;
+              },
+              footer: (items) => {
+                const featureTotal = items
+                  .filter(i => !i.dataset?.isNewsComposite)
+                  .reduce((sum, i) => sum + Math.abs(Number(i.parsed?.y || 0)), 0);
+                const newsItem = items.find(i => i.dataset?.isNewsComposite);
+                const newsVal = newsItem ? Math.abs(Number(newsItem.parsed?.y || 0)) : 0;
+                return `SERP feature negative: ${Math.round(featureTotal)}% | News negative: ${Math.round(newsVal)}%`;
+              }
+            }
+          }
+        }
+      },
+      plugins: [splitFillPlugin]
+    });
+  }
 
   const nh = document.getElementById('newsChart').getContext('2d');
   if (newsChart) newsChart.destroy();
@@ -3556,6 +3803,12 @@ function bindModalTabs(){
   });
 }
 const getDashboardDate = () => String(document.getElementById('dateSelect')?.value || '').trim();
+function syncModalDateOverride(contextDate = null){
+  const target = String(contextDate || '').trim();
+  if (!isISODate(target)) return;
+  const dashboardDate = getDashboardDate();
+  modalDateOverride = (target && target !== dashboardDate) ? target : null;
+}
 function getModalDate(contextDate = null){
   if (isISODate(modalDateOverride)) return modalDateOverride;
   const fallback = String(contextDate || getDashboardDate() || '').trim();
@@ -3952,6 +4205,7 @@ async function showHeadlines({ ceo, company }, modalDate = null) {
   setCeoModalState(ctx, 'headlines');
   ceo = ctx.ceo;
   const d = String(modalDate || getModalDate()).trim();
+  syncModalDateOverride(d);
   const modalOpts = { contextDate: d, onDateChange: (nextDate) => showHeadlines({ ceo, company: ctx.company }, nextDate) };
   openModal(`Headlines — ${esc(ceo)}`, `<div class="muted">Loading…</div>`, modalOpts);
   await _nextFrame();
@@ -3990,7 +4244,9 @@ async function showHeadlines({ ceo, company }, modalDate = null) {
     let domain = '';
     try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
     const source = esc(r.source || '');
-    const sourceLabel = source || domain;
+    const sourceLabel = source || esc(domain || '');
+    const publishedLabel = esc(articlePublishedMeta(r));
+    const metaLabel = [sourceLabel, publishedLabel].filter(Boolean).join(' · ');
     const title = esc(r.title || domain || '(no title)');
     const link = url
       ? `<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>`
@@ -4004,7 +4260,7 @@ async function showHeadlines({ ceo, company }, modalDate = null) {
     const flags = flagIcons(r);
     return `
       <div class="serp-card" data-mention-id="${esc(mentionId)}" data-sentiment-override="${esc(r.sentiment_override||'')}" data-control-override="${esc(r.control_override||'')}" data-llm-label="${esc(r.llm_label||'')}" data-current-sentiment="${esc(s)}" data-current-control="${esc(ctrl)}">
-        ${sourceLabel ? `<div class="serp-domain">${sourceLabel}</div>` : ''}
+        ${metaLabel ? `<div class="serp-domain">${metaLabel}</div>` : ''}
         <div class="serp-title">${link}</div>
         ${flags ? `<div class="edit-flags">${flags}</div>` : ''}
         ${mentionId ? `<div class="edit-controls">
@@ -4081,6 +4337,7 @@ async function showSerp(row, modalDate = null){
   row = normalizeCeoModalContext(row);
   setCeoModalState(row, 'serp');
   const d = String(modalDate || getModalDate()).trim();
+  syncModalDateOverride(d);
   const modalOpts = { contextDate: d, onDateChange: (nextDate) => showSerp(row, nextDate) };
   openModal(`SERP — ${esc(row.ceo)}`, `<div class="muted">Loading…</div>`, modalOpts);
   await _nextFrame();
@@ -4227,6 +4484,7 @@ async function showSerpFeatures({ceo, company}, modalDate = null){
   setCeoModalState(ctx, 'features');
   ceo = ctx.ceo;
   const d = String(modalDate || getModalDate()).trim();
+  syncModalDateOverride(d);
   const modalOpts = { contextDate: d, onDateChange: (nextDate) => showSerpFeatures({ ceo, company: ctx.company }, nextDate) };
   openModal(`SERP Features — ${esc(ceo)}`, `<div class="muted">Loading…</div>`, modalOpts);
   await _nextFrame();
@@ -4648,6 +4906,7 @@ async function showNarrativeTimeline({ceo}, modalDate = null){
   if (!ceoName) return;
   modalEntityState = null;
   const d = String(modalDate || getModalDate()).trim();
+  syncModalDateOverride(d);
   const modalOpts = { contextDate: d, onDateChange: (nextDate) => showNarrativeTimeline({ ceo: ceoName }, nextDate) };
   openModal(`Narrative Tags — ${esc(ceoName)}`, `<div class="muted">Loading…</div>`, modalOpts);
 

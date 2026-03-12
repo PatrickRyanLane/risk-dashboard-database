@@ -665,6 +665,7 @@ def processed_articles_json():
                 rows = query_rows(
                     f"""
                     select c.name as company, a.title, a.canonical_url as url, a.publisher as source,
+                           to_char(a.published_at at time zone 'UTC', 'YYYY-MM-DD') as published_date,
                            coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                            coalesce(ov.override_control_class, cm.control_class) as control_class,
                            ov.override_sentiment_label as sentiment_override,
@@ -695,7 +696,7 @@ def processed_articles_json():
                     tuple(total_params)
                 )
                 total = int(total_rows[0][0]) if total_rows else 0
-                headers = ['company','title','url','source','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
+                headers = ['company','title','url','source','published_date','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
             else:
                 params = [dstr]
                 scope_sql, params = scope_clause("c.id", params)
@@ -708,6 +709,7 @@ def processed_articles_json():
                 rows = query_rows(
                     f"""
                     select ceo.name as ceo, c.name as company, a.title, a.canonical_url as url, a.publisher as source,
+                           to_char(a.published_at at time zone 'UTC', 'YYYY-MM-DD') as published_date,
                            coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                            coalesce(ov.override_control_class, cm.control_class) as control_class,
                            ov.override_sentiment_label as sentiment_override,
@@ -740,7 +742,7 @@ def processed_articles_json():
                     tuple(total_params)
                 )
                 total = int(total_rows[0][0]) if total_rows else 0
-                headers = ['ceo','company','title','url','source','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
+                headers = ['ceo','company','title','url','source','published_date','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
             return jsonify({"rows": [dict(zip(headers, row)) for row in rows], "total": total})
         except Exception as exc:
             app.logger.exception("processed_articles failed")
@@ -2334,6 +2336,7 @@ def processed_articles_csv(filename: str):
             rows = query_rows(
                 f"""
                 select c.name as company, a.title, a.canonical_url as url, a.publisher as source,
+                       to_char(a.published_at at time zone 'UTC', 'YYYY-MM-DD') as published_date,
                        coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                        coalesce(ov.override_control_class, cm.control_class) as control_class,
                        ov.override_sentiment_label as sentiment_override,
@@ -2350,13 +2353,14 @@ def processed_articles_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['company','title','url','source','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
+            headers = ['company','title','url','source','published_date','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
         else:
             params = [dstr]
             scope_sql, params = scope_clause("c.id", params)
             rows = query_rows(
                 f"""
                 select ceo.name as ceo, c.name as company, a.title, a.canonical_url as url, a.publisher as source,
+                       to_char(a.published_at at time zone 'UTC', 'YYYY-MM-DD') as published_date,
                        coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                        coalesce(ov.override_control_class, cm.control_class) as control_class,
                        ov.override_sentiment_label as sentiment_override,
@@ -2374,7 +2378,7 @@ def processed_articles_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['ceo','company','title','url','source','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
+            headers = ['ceo','company','title','url','source','published_date','sentiment','control_class','sentiment_override','control_override','llm_label','mention_id']
         csv_text = rows_to_csv(headers, rows)
         return Response(csv_text, content_type='text/csv')
 

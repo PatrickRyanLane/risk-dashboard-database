@@ -3,6 +3,7 @@ import re
 import time
 import zlib
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
 import psycopg2
@@ -43,6 +44,22 @@ def parse_control_class(value: str | None) -> str | None:
     if val in {"uncontrolled", "false", "0", "no", "n"}:
         return "uncontrolled"
     return None
+
+
+def parse_datetime_value(value) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def fetch_company_domains(conn) -> dict[str, set[str]]:
@@ -180,7 +197,16 @@ def upsert_articles(conn, rows):
           publisher = coalesce(excluded.publisher, articles.publisher),
           snippet = coalesce(excluded.snippet, articles.snippet),
           published_at = coalesce(excluded.published_at, articles.published_at),
-          last_seen_at = excluded.last_seen_at
+          first_seen_at = case
+            when articles.first_seen_at is null then excluded.first_seen_at
+            when excluded.first_seen_at is null then articles.first_seen_at
+            else least(articles.first_seen_at, excluded.first_seen_at)
+          end,
+          last_seen_at = case
+            when articles.last_seen_at is null then excluded.last_seen_at
+            when excluded.last_seen_at is null then articles.last_seen_at
+            else greatest(articles.last_seen_at, excluded.last_seen_at)
+          end
     """
     def _do_upsert():
         with conn:
@@ -220,7 +246,8 @@ def ensure_daily_partitions(cur, dt: datetime) -> None:
 
 def ingest_article_mentions(conn, file_obj, entity_type, date_str):
     reader = csv.DictReader(file_obj)
-    now = datetime.now(timezone.utc)
+    scored_at = datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    seen_at = scored_at
 
     articles = {}
     mentions = []
@@ -253,8 +280,18 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
         llm_label = (row.get('llm_label') or '').strip() or None
         llm_severity = (row.get('llm_severity') or '').strip() or None
         llm_reason = (row.get('llm_reason') or '').strip() or None
+        published_at = parse_datetime_value(
+            row.get('published_at')
+            or row.get('published')
+            or row.get('pub_date')
+            or row.get('pubDate')
+            or row.get('published_date')
+        )
 
-        articles[canonical] = (canonical, title, publisher, None, None, now, now, 'google_rss')
+        existing_article = articles.get(canonical)
+        if existing_article:
+            published_at = existing_article[4] or published_at
+        articles[canonical] = (canonical, title, publisher, None, published_at, seen_at, seen_at, 'google_rss')
         article_urls.append(canonical)
 
         if entity_type == 'company':
@@ -298,8 +335,6 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
 
     upsert_articles(conn, list(articles.values()))
     article_map = fetch_article_map(conn, article_urls)
-
-    scored_at = datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
 
     if entity_type == 'company':
         insert_rows = []
