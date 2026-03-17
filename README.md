@@ -23,6 +23,11 @@ The active daily ingest writers now live in the sibling `risk-dashboard` repo. T
 - `sql/negative_summary_mv.sql`
   Materialized views used for dashboard counts and feature rollups.
 
+- `sql/entity_daily_metrics_v.sql`
+- `sql/entity_weekly_rollup_v.sql`
+- `sql/entity_anomalies_v.sql`
+  Read-only analytics views used by the AI-ready insights endpoints.
+
 - `dashboard_app/app.py`
   Flask app that serves static dashboards, DB-backed JSON APIs, CSV compatibility endpoints, internal edit routes, and aggregate refresh endpoints.
 
@@ -64,7 +69,10 @@ for f in \
   sql/serp_feature_control_daily_mv.sql \
   sql/serp_feature_daily_index_mv.sql \
   sql/serp_feature_control_daily_index_mv.sql \
-  sql/negative_summary_mv.sql
+  sql/negative_summary_mv.sql \
+  sql/entity_daily_metrics_v.sql \
+  sql/entity_weekly_rollup_v.sql \
+  sql/entity_anomalies_v.sql
 do
   psql "$DATABASE_URL" -f "$f"
 done
@@ -142,6 +150,7 @@ The Flask app serves:
 - Static dashboards from `/`, `/internal/*`, and `/external/*`
 - Legacy-style CSV endpoints under `/api/data/*`
 - DB-backed JSON endpoints under `/api/v1/*`
+- Insights endpoints for trend summaries, anomalies, and supporting evidence under `/api/v1/insights/*`
 - Internal-only endpoints for overrides, favorites, LLM SERP feature summaries, and aggregate refreshes under `/api/internal/*`
 
 Internal mode is authenticated and editable. External mode is public and read-only.

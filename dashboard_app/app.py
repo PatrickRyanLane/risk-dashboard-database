@@ -12,8 +12,10 @@ import logging
 import os
 import re
 import threading
+from decimal import Decimal
 from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Tuple
+from uuid import UUID
 
 import psycopg2
 from psycopg2 import extensions as pg_ext
@@ -103,6 +105,20 @@ NON_CRISIS_NARRATIVE_TAGS = {
     'Mergers and acquisitions',
     'Planned Executive Turnover',
 }
+
+
+BRAND_COMPAT_ENTITY_TYPES = ('brand', 'company')
+
+
+def canonical_entity_type(entity: str) -> str:
+    return 'company' if (entity or '').strip().lower() == 'brand' else 'ceo'
+
+
+def compatible_entity_types(entity: str) -> List[str]:
+    entity_type = canonical_entity_type(entity)
+    if entity_type == 'company':
+        return list(BRAND_COMPAT_ENTITY_TYPES)
+    return [entity_type]
 
 
 # --------------------------- Auth helpers ---------------------------
@@ -399,6 +415,10 @@ def serialize_rows(rows: List[Dict]) -> List[Dict]:
         for k, v in r.items():
             if isinstance(v, (datetime,)):
                 clean[k] = v.isoformat()
+            elif isinstance(v, UUID):
+                clean[k] = str(v)
+            elif isinstance(v, Decimal):
+                clean[k] = int(v) if v == v.to_integral_value() else float(v)
             elif hasattr(v, 'isoformat'):
                 clean[k] = v.isoformat()
             else:
@@ -421,6 +441,109 @@ def get_cached_json(key: str):
 
 def set_cached_json(key: str, data):
     _api_cache[key] = (data, datetime.utcnow().timestamp())
+
+
+def analytics_entity_type(entity: str) -> str:
+    return 'brand' if canonical_entity_type(entity) == 'company' else 'ceo'
+
+
+def resolve_entity_lookup(entity: str, entity_name: str) -> Dict | None:
+    entity_name = (entity_name or '').strip()
+    if not entity_name:
+        return None
+
+    if canonical_entity_type(entity) == 'company':
+        params = [entity_name]
+        scope_sql, params = scope_clause("c.id", params)
+        rows = query_dict(
+            f"""
+            select c.id as entity_id,
+                   c.id as company_id,
+                   null::uuid as ceo_id,
+                   c.name as entity_name,
+                   c.name as company,
+                   ''::text as ceo,
+                   'brand'::text as analytics_entity_type
+            from companies c
+            where lower(c.name) = lower(%s) {scope_sql}
+            order by c.name
+            limit 1
+            """,
+            tuple(params),
+        )
+        return rows[0] if rows else None
+
+    params = [entity_name]
+    scope_sql, params = scope_clause("c.id", params)
+    rows = query_dict(
+        f"""
+        select ceo.id as entity_id,
+               c.id as company_id,
+               ceo.id as ceo_id,
+               ceo.name as entity_name,
+               c.name as company,
+               ceo.name as ceo,
+               'ceo'::text as analytics_entity_type
+        from ceos ceo
+        join companies c on c.id = ceo.company_id
+        where lower(ceo.name) = lower(%s) {scope_sql}
+        order by ceo.name, c.name
+        limit 1
+        """,
+        tuple(params),
+    )
+    return rows[0] if rows else None
+
+
+def coerce_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if hasattr(value, 'year') and hasattr(value, 'month') and hasattr(value, 'day'):
+        return value
+    text = str(value or '').strip()
+    if not text:
+        return None
+    return datetime.strptime(text[:10], '%Y-%m-%d').date()
+
+
+def rows_within_dates(rows: List[Dict], start_date, end_date) -> List[Dict]:
+    out = []
+    for row in rows:
+        row_date = coerce_date(row.get('date'))
+        if row_date is None:
+            continue
+        if start_date <= row_date <= end_date:
+            out.append(row)
+    return out
+
+
+def sum_metric(rows: List[Dict], key: str) -> int:
+    total = 0
+    for row in rows:
+        total += int(row.get(key) or 0)
+    return total
+
+
+def top_stories_streak_days(rows: List[Dict], threshold: int = 4) -> int:
+    streak = 0
+    for row in reversed(rows):
+        if int(row.get('top_stories_negative_count') or 0) >= threshold:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def entity_payload(resolved: Dict) -> Dict:
+    return {
+        'entity_type': resolved.get('analytics_entity_type'),
+        'entity_id': str(resolved['entity_id']) if resolved.get('entity_id') else None,
+        'company_id': str(resolved['company_id']) if resolved.get('company_id') else None,
+        'ceo_id': str(resolved['ceo_id']) if resolved.get('ceo_id') else None,
+        'entity_name': resolved.get('entity_name') or '',
+        'company': resolved.get('company') or '',
+        'ceo': resolved.get('ceo') or '',
+    }
 
 
 # --------------------------- Static routes ---------------------------
@@ -890,8 +1013,8 @@ def serp_features_json():
     cached = get_cached_json(cache_key)
     if cached is not None:
         return jsonify(cached)
-    entity_type = 'company' if entity == 'brand' else 'ceo'
-    entity_types = ['brand', 'company'] if entity_type == 'company' else [entity_type]
+    entity_type = canonical_entity_type(entity)
+    entity_types = compatible_entity_types(entity)
 
     if entity_type == 'company':
         if mode == "index":
@@ -1026,8 +1149,8 @@ def serp_feature_controls_json():
     cached = get_cached_json(cache_key)
     if cached is not None:
         return jsonify(cached)
-    entity_type = 'company' if entity == 'brand' else 'ceo'
-    entity_types = ['brand', 'company'] if entity_type == 'company' else [entity_type]
+    entity_type = canonical_entity_type(entity)
+    entity_types = compatible_entity_types(entity)
 
     if entity_type == 'company':
         if mode == "index":
@@ -1151,9 +1274,9 @@ def serp_feature_items_json():
     if offset < 0:
         offset = 0
 
-    entity_type = 'company' if entity == 'brand' else 'ceo'
+    entity_type = canonical_entity_type(entity)
     if entity_type == 'company':
-        entity_types = ['brand', 'company']
+        entity_types = compatible_entity_types(entity)
         params = [date_str, entity_types]
         scope_sql, params = scope_clause("c.id", params)
         name_sql = ""
@@ -1237,9 +1360,9 @@ def narrative_tags_json():
     if cached is not None:
         return jsonify(cached)
 
-    entity_type = 'company' if entity == 'brand' else 'ceo'
+    entity_type = canonical_entity_type(entity)
     if entity_type == 'company':
-        entity_types = ['brand', 'company']
+        entity_types = compatible_entity_types(entity)
         params = [date_str, entity_types]
         scope_sql, params = scope_clause("c.id", params)
         join_sql = "join companies c on c.id = sfi.entity_id" if scope_sql else ""
@@ -1393,9 +1516,9 @@ def narrative_timeline_json():
     if cached is not None:
         return jsonify(cached)
 
-    entity_type = 'company' if entity == 'brand' else 'ceo'
+    entity_type = canonical_entity_type(entity)
     if entity_type == 'company':
-        entity_types = ['brand', 'company']
+        entity_types = compatible_entity_types(entity)
         params = [start_date, target_date, entity_types, entity_name]
         scope_sql, params = scope_clause("c.id", params)
         join_sql = "join companies c on c.id = sfi.entity_id" if scope_sql else ""
@@ -1600,9 +1723,9 @@ def serp_feature_series_json():
     if days > 365:
         days = 365
 
-    entity_type = 'company' if entity == 'brand' else 'ceo'
+    entity_type = canonical_entity_type(entity)
     if entity_type == 'company':
-        entity_types = ['brand', 'company']
+        entity_types = compatible_entity_types(entity)
         params = [entity_types, entity_name, feature_type, days]
         scope_sql, params = scope_clause("c.id", params)
         sql = f"""
@@ -1685,13 +1808,9 @@ def negative_summary_json():
             rows = negative_summary_live(days=days, company=None, mode='index')
         else:
             rows = negative_summary_live(days=days, company=company_filter or None, mode='detail')
-        if not rows:
-            resp = negative_articles_summary(days=days)
-            if resp.status_code != 200:
-                return resp
-            rows = list(csv.DictReader(io.StringIO(resp.get_data(as_text=True))))
-        set_cached_json(cache_key, rows)
-        return jsonify(rows)
+        data = serialize_rows(rows)
+        set_cached_json(cache_key, data)
+        return jsonify(data)
     except Exception as exc:
         app.logger.exception("negative_summary failed")
         if debug:
@@ -1753,6 +1872,540 @@ def trends_data_json():
     return jsonify(rows)
 
 
+@app.route('/api/v1/insights/trend_summary')
+def insights_trend_summary_json():
+    entity = request.args.get('entity', 'brand')
+    entity_name = (request.args.get('entity_name') or '').strip()
+    if not entity_name:
+        return jsonify({'error': 'entity_name is required'}), 400
+    try:
+        days = int(request.args.get('days', '30') or 30)
+    except ValueError:
+        days = 30
+    try:
+        weeks = int(request.args.get('weeks', '8') or 8)
+    except ValueError:
+        weeks = 8
+    days = min(max(days, 7), 180)
+    weeks = min(max(weeks, 1), 26)
+
+    cache_key = f"insights_trend_summary:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    resolved = resolve_entity_lookup(entity, entity_name)
+    if not resolved:
+        return jsonify({'error': 'entity not found'}), 404
+
+    analytics_type = resolved['analytics_entity_type']
+    entity_id = resolved['entity_id']
+    daily_rows = query_dict(
+        """
+        select date,
+               entity_type,
+               entity_name,
+               company,
+               ceo,
+               article_negative_count,
+               article_total_count,
+               article_negative_pct,
+               serp_negative_count,
+               serp_total_count,
+               serp_controlled_count,
+               serp_uncontrolled_count,
+               top_stories_negative_count,
+               top_stories_total_count,
+               top_stories_controlled_count,
+               top_stories_uncontrolled_count,
+               crisis_risk_count
+        from entity_daily_metrics_v
+        where entity_type = %s
+          and entity_id = %s
+          and date >= (current_date - (%s || ' days')::interval)
+        order by date
+        """,
+        (analytics_type, entity_id, days),
+    )
+    if not daily_rows:
+        return jsonify({'error': 'no_data'}), 404
+
+    weekly_rows = query_dict(
+        """
+        select week_start,
+               article_negative_7d,
+               article_total_7d,
+               article_negative_pct_avg_7d,
+               serp_negative_7d,
+               serp_total_7d,
+               serp_controlled_7d,
+               serp_uncontrolled_7d,
+               top_stories_total_7d,
+               top_stories_negative_7d,
+               top_stories_controlled_7d,
+               top_stories_uncontrolled_7d,
+               top_stories_crisis_days_7d,
+               crisis_risk_7d
+        from entity_weekly_rollup_v
+        where entity_type = %s
+          and entity_id = %s
+          and week_start >= date_trunc('week', current_date - (%s || ' days')::interval)::date
+        order by week_start
+        """,
+        (analytics_type, entity_id, weeks * 7),
+    )
+    anomaly_rows = query_dict(
+        """
+        select date,
+               anomaly_type,
+               severity_score,
+               observed_value,
+               baseline_value,
+               article_negative_count,
+               serp_uncontrolled_count,
+               top_stories_negative_count,
+               summary
+        from entity_anomalies_v
+        where entity_type = %s
+          and entity_id = %s
+          and date >= (current_date - (%s || ' days')::interval)
+        order by date desc, severity_score desc
+        limit 12
+        """,
+        (analytics_type, entity_id, days),
+    )
+
+    latest_row = daily_rows[-1]
+    latest_date = coerce_date(latest_row.get('date'))
+    current_rows = rows_within_dates(daily_rows, latest_date - timedelta(days=6), latest_date)
+    prior_rows = rows_within_dates(daily_rows, latest_date - timedelta(days=13), latest_date - timedelta(days=7))
+
+    current_window = {
+        'article_negative_count': sum_metric(current_rows, 'article_negative_count'),
+        'serp_negative_count': sum_metric(current_rows, 'serp_negative_count'),
+        'serp_uncontrolled_count': sum_metric(current_rows, 'serp_uncontrolled_count'),
+        'top_stories_negative_count': sum_metric(current_rows, 'top_stories_negative_count'),
+        'crisis_risk_count': sum_metric(current_rows, 'crisis_risk_count'),
+    }
+    prior_window = {
+        'article_negative_count': sum_metric(prior_rows, 'article_negative_count'),
+        'serp_negative_count': sum_metric(prior_rows, 'serp_negative_count'),
+        'serp_uncontrolled_count': sum_metric(prior_rows, 'serp_uncontrolled_count'),
+        'top_stories_negative_count': sum_metric(prior_rows, 'top_stories_negative_count'),
+        'crisis_risk_count': sum_metric(prior_rows, 'crisis_risk_count'),
+    }
+    delta_window = {
+        key: current_window[key] - prior_window.get(key, 0)
+        for key in current_window.keys()
+    }
+
+    current_articles = current_window['article_negative_count']
+    current_search = current_window['serp_uncontrolled_count']
+    current_top_stories = current_window['top_stories_negative_count']
+    if current_articles >= 7 and (current_search >= 5 or current_top_stories >= 8):
+        search_impact_label = 'news_and_search'
+    elif current_search >= 5 or current_top_stories >= 8:
+        search_impact_label = 'search_led'
+    elif current_articles >= 7:
+        search_impact_label = 'news_led'
+    else:
+        search_impact_label = 'muted'
+
+    payload = {
+        'entity': entity_payload(resolved),
+        'latest_date': latest_date.isoformat() if latest_date else '',
+        'latest_metrics': serialize_rows([latest_row])[0],
+        'current_7d': current_window,
+        'prior_7d': prior_window,
+        'delta_7d': delta_window,
+        'search_impact': {
+            'label': search_impact_label,
+            'negative_top_stories_days': sum(1 for row in daily_rows if int(row.get('top_stories_negative_count') or 0) > 0),
+            'crisis_top_stories_streak_days': top_stories_streak_days(daily_rows),
+            'latest_top_stories_negative_count': int(latest_row.get('top_stories_negative_count') or 0),
+            'latest_serp_uncontrolled_count': int(latest_row.get('serp_uncontrolled_count') or 0),
+        },
+        'daily_series': serialize_rows(daily_rows),
+        'weekly_rollups': serialize_rows(weekly_rows),
+        'recent_anomalies': serialize_rows(anomaly_rows),
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/insights/anomalies')
+def insights_anomalies_json():
+    entity = (request.args.get('entity') or '').strip()
+    entity_name = (request.args.get('entity_name') or '').strip()
+    try:
+        days = int(request.args.get('days', '30') or 30)
+    except ValueError:
+        days = 30
+    try:
+        limit = int(request.args.get('limit', '50') or 50)
+    except ValueError:
+        limit = 50
+    days = min(max(days, 1), 180)
+    limit = min(max(limit, 1), 200)
+
+    cache_key = f"insights_anomalies:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    params = [days]
+    scope_sql, params = scope_clause("company_id", params)
+    entity_sql = ""
+    payload_entity = None
+
+    if entity_name:
+        resolved = resolve_entity_lookup(entity or 'brand', entity_name)
+        if not resolved:
+            return jsonify({'error': 'entity not found'}), 404
+        payload_entity = entity_payload(resolved)
+        params.extend([resolved['analytics_entity_type'], resolved['entity_id']])
+        entity_sql = " and entity_type = %s and entity_id = %s"
+    elif entity:
+        params.append(analytics_entity_type(entity))
+        entity_sql = " and entity_type = %s"
+
+    params.append(limit)
+    rows = query_dict(
+        f"""
+        select date,
+               entity_type,
+               entity_id,
+               company_id,
+               ceo_id,
+               entity_name,
+               company,
+               ceo,
+               anomaly_type,
+               severity_score,
+               observed_value,
+               baseline_value,
+               article_negative_count,
+               serp_uncontrolled_count,
+               top_stories_negative_count,
+               summary
+        from entity_anomalies_v
+        where date >= (current_date - (%s || ' days')::interval)
+          {scope_sql}
+          {entity_sql}
+        order by date desc, severity_score desc
+        limit %s
+        """,
+        tuple(params),
+    )
+    payload = {
+        'entity': payload_entity,
+        'days': days,
+        'rows': serialize_rows(rows),
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/insights/evidence')
+def insights_evidence_json():
+    entity = request.args.get('entity', 'brand')
+    entity_name = (request.args.get('entity_name') or '').strip()
+    if not entity_name:
+        return jsonify({'error': 'entity_name is required'}), 400
+    try:
+        days = int(request.args.get('days', '14') or 14)
+    except ValueError:
+        days = 14
+    try:
+        limit = int(request.args.get('limit', '50') or 50)
+    except ValueError:
+        limit = 50
+    days = min(max(days, 1), 90)
+    limit = min(max(limit, 1), 200)
+
+    cache_key = f"insights_evidence:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    resolved = resolve_entity_lookup(entity, entity_name)
+    if not resolved:
+        return jsonify({'error': 'entity not found'}), 404
+
+    analytics_type = resolved['analytics_entity_type']
+    entity_id = resolved['entity_id']
+    latest_rows = query_rows(
+        """
+        select max(date)
+        from entity_daily_metrics_v
+        where entity_type = %s and entity_id = %s
+        """,
+        (analytics_type, entity_id),
+    )
+    latest_date = latest_rows[0][0] if latest_rows and latest_rows[0] else None
+    if latest_date is None:
+        return jsonify({'error': 'no_data'}), 404
+
+    start_raw = (request.args.get('start_date') or '').strip()
+    end_raw = (request.args.get('end_date') or '').strip()
+    try:
+        end_date = datetime.strptime(end_raw, '%Y-%m-%d').date() if end_raw else latest_date
+        start_date = datetime.strptime(start_raw, '%Y-%m-%d').date() if start_raw else (end_date - timedelta(days=days - 1))
+    except ValueError:
+        return jsonify({'error': 'invalid date format (YYYY-MM-DD)'}), 400
+
+    if canonical_entity_type(entity) == 'company':
+        rows = query_dict(
+            """
+            with evidence as (
+                select cad.date,
+                       'article'::text as evidence_type,
+                       a.title,
+                       a.snippet,
+                       a.canonical_url as url,
+                       a.publisher as source,
+                       coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment_label,
+                       coalesce(ov.override_control_class, cam.llm_control_class, cam.control_class, '') as control_class,
+                       cam.llm_risk_label,
+                       null::text as narrative_primary_tag,
+                       2 as sort_weight
+                from company_article_mentions_daily cad
+                join articles a on a.id = cad.article_id
+                left join company_article_mentions cam
+                  on cam.company_id = cad.company_id and cam.article_id = cad.article_id
+                left join company_article_overrides ov
+                  on ov.company_id = cad.company_id and ov.article_id = cad.article_id
+                where cad.company_id = %s
+                  and cad.date between %s and %s
+                  and coalesce(ov.override_sentiment_label, cad.sentiment_label) = 'negative'
+
+                union all
+
+                select sr.run_at::date as date,
+                       'serp'::text as evidence_type,
+                       r.title,
+                       r.snippet,
+                       r.url,
+                       coalesce(r.domain, sr.provider) as source,
+                       coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) as sentiment_label,
+                       coalesce(ov.override_control_class, r.llm_control_class, r.control_class, '') as control_class,
+                       r.llm_risk_label,
+                       null::text as narrative_primary_tag,
+                       case
+                           when coalesce(ov.override_control_class, r.llm_control_class, r.control_class) = 'uncontrolled' then 3
+                           else 1
+                       end as sort_weight
+                from serp_runs sr
+                join serp_results r on r.serp_run_id = sr.id
+                left join serp_result_overrides ov on ov.serp_result_id = r.id
+                where sr.entity_type = 'company'
+                  and sr.company_id = %s
+                  and sr.run_at::date between %s and %s
+                  and (
+                      coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) = 'negative'
+                      or coalesce(ov.override_control_class, r.llm_control_class, r.control_class) = 'uncontrolled'
+                  )
+
+                union all
+
+                select sfi.date,
+                       'top_stories'::text as evidence_type,
+                       sfi.title,
+                       sfi.snippet,
+                       sfi.url,
+                       coalesce(sfi.source, sfi.domain) as source,
+                       coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
+                       coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class, '') as control_class,
+                       sfi.llm_risk_label,
+                       sfi.narrative_primary_tag,
+                       4 as sort_weight
+                from serp_feature_items sfi
+                left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                where sfi.entity_type = any(%s)
+                  and sfi.entity_id = %s
+                  and sfi.feature_type = 'top_stories_items'
+                  and sfi.date between %s and %s
+                  and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+            ),
+            deduped as (
+                select distinct on (date, evidence_type, coalesce(url, ''), coalesce(title, ''))
+                       date,
+                       evidence_type,
+                       title,
+                       snippet,
+                       url,
+                       source,
+                       sentiment_label,
+                       control_class,
+                       llm_risk_label,
+                       narrative_primary_tag,
+                       sort_weight
+                from evidence
+                order by date desc,
+                         evidence_type,
+                         coalesce(url, ''),
+                         coalesce(title, ''),
+                         sort_weight desc
+            )
+            select date,
+                   evidence_type,
+                   title,
+                   snippet,
+                   url,
+                   source,
+                   sentiment_label,
+                   control_class,
+                   llm_risk_label,
+                   narrative_primary_tag
+            from deduped
+            order by date desc, sort_weight desc, title
+            limit %s
+            """,
+            (
+                entity_id,
+                start_date,
+                end_date,
+                entity_id,
+                start_date,
+                end_date,
+                compatible_entity_types(entity),
+                entity_id,
+                start_date,
+                end_date,
+                limit,
+            ),
+        )
+    else:
+        rows = query_dict(
+            """
+            with evidence as (
+                select cad.date,
+                       'article'::text as evidence_type,
+                       a.title,
+                       a.snippet,
+                       a.canonical_url as url,
+                       a.publisher as source,
+                       coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment_label,
+                       coalesce(ov.override_control_class, cem.llm_control_class, cem.control_class, '') as control_class,
+                       cem.llm_risk_label,
+                       null::text as narrative_primary_tag,
+                       2 as sort_weight
+                from ceo_article_mentions_daily cad
+                join articles a on a.id = cad.article_id
+                left join ceo_article_mentions cem
+                  on cem.ceo_id = cad.ceo_id and cem.article_id = cad.article_id
+                left join ceo_article_overrides ov
+                  on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
+                where cad.ceo_id = %s
+                  and cad.date between %s and %s
+                  and coalesce(ov.override_sentiment_label, cad.sentiment_label) = 'negative'
+
+                union all
+
+                select sr.run_at::date as date,
+                       'serp'::text as evidence_type,
+                       r.title,
+                       r.snippet,
+                       r.url,
+                       coalesce(r.domain, sr.provider) as source,
+                       coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) as sentiment_label,
+                       coalesce(ov.override_control_class, r.llm_control_class, r.control_class, '') as control_class,
+                       r.llm_risk_label,
+                       null::text as narrative_primary_tag,
+                       case
+                           when coalesce(ov.override_control_class, r.llm_control_class, r.control_class) = 'uncontrolled' then 3
+                           else 1
+                       end as sort_weight
+                from serp_runs sr
+                join serp_results r on r.serp_run_id = sr.id
+                left join serp_result_overrides ov on ov.serp_result_id = r.id
+                where sr.entity_type = 'ceo'
+                  and sr.ceo_id = %s
+                  and sr.run_at::date between %s and %s
+                  and (
+                      coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) = 'negative'
+                      or coalesce(ov.override_control_class, r.llm_control_class, r.control_class) = 'uncontrolled'
+                  )
+
+                union all
+
+                select sfi.date,
+                       'top_stories'::text as evidence_type,
+                       sfi.title,
+                       sfi.snippet,
+                       sfi.url,
+                       coalesce(sfi.source, sfi.domain) as source,
+                       coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
+                       coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class, '') as control_class,
+                       sfi.llm_risk_label,
+                       sfi.narrative_primary_tag,
+                       4 as sort_weight
+                from serp_feature_items sfi
+                left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                where sfi.entity_type = 'ceo'
+                  and sfi.entity_id = %s
+                  and sfi.feature_type = 'top_stories_items'
+                  and sfi.date between %s and %s
+                  and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+            ),
+            deduped as (
+                select distinct on (date, evidence_type, coalesce(url, ''), coalesce(title, ''))
+                       date,
+                       evidence_type,
+                       title,
+                       snippet,
+                       url,
+                       source,
+                       sentiment_label,
+                       control_class,
+                       llm_risk_label,
+                       narrative_primary_tag,
+                       sort_weight
+                from evidence
+                order by date desc,
+                         evidence_type,
+                         coalesce(url, ''),
+                         coalesce(title, ''),
+                         sort_weight desc
+            )
+            select date,
+                   evidence_type,
+                   title,
+                   snippet,
+                   url,
+                   source,
+                   sentiment_label,
+                   control_class,
+                   llm_risk_label,
+                   narrative_primary_tag
+            from deduped
+            order by date desc, sort_weight desc, title
+            limit %s
+            """,
+            (
+                entity_id,
+                start_date,
+                end_date,
+                entity_id,
+                start_date,
+                end_date,
+                entity_id,
+                start_date,
+                end_date,
+                limit,
+            ),
+        )
+
+    payload = {
+        'entity': entity_payload(resolved),
+        'start_date': start_date.isoformat(),
+        'end_date': end_date.isoformat(),
+        'rows': serialize_rows(rows),
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
 @app.after_request
 def add_cache_headers(response):
     if request.method == 'GET' and request.path.startswith('/api/') and not request.path.startswith('/api/internal/'):
@@ -1800,8 +2453,8 @@ def serp_feature_summary():
     if not date_str or not entity_name or not feature_type:
         return jsonify({'error': 'date, entity_name, feature_type are required'}), 400
 
-    entity_type = 'company' if entity == 'brand' else 'ceo'
-    entity_types = ['brand', 'company'] if entity_type == 'company' else [entity_type]
+    entity_type = canonical_entity_type(entity)
+    entity_types = compatible_entity_types(entity)
     if request.args.get('debug', '').strip() in {'1', 'true', 'yes'}:
         return jsonify({
             'date': date_str,
@@ -2748,54 +3401,25 @@ def build_trends_rows(target: datetime.date) -> List[Dict]:
 
 
 def negative_articles_summary(days: int | None = None):
-    lookback_days = days or int(os.environ.get('NEGATIVE_SUMMARY_LOOKBACK_DAYS', '90'))
-    start_date = datetime.utcnow().date() - timedelta(days=lookback_days)
-
-    params = [start_date]
-    scope_sql, params = scope_clause("c.id", params)
-    rows = query_dict(
-        f"""
-        select cad.date as date, c.name as company, ''::text as ceo,
-               coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
-               a.title, 'brand' as article_type
-        from company_article_mentions_daily cad
-        join companies c on c.id = cad.company_id
-        join articles a on a.id = cad.article_id
-        left join company_article_overrides ov on ov.company_id = cad.company_id and ov.article_id = cad.article_id
-        where cad.date >= %s {scope_sql}
-        union all
-        select cad.date as date, c.name as company, ceo.name as ceo,
-               coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
-               a.title, 'ceo' as article_type
-        from ceo_article_mentions_daily cad
-        join ceos ceo on ceo.id = cad.ceo_id
-        join companies c on c.id = ceo.company_id
-        join articles a on a.id = cad.article_id
-        left join ceo_article_overrides ov on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
-        where cad.date >= %s {scope_sql}
-        """,
-        tuple(params + params),
-    )
-
-    grouped: Dict[Tuple[str, str, str, str], List[str]] = {}
-    for r in rows:
-        if r.get('sentiment') != 'negative':
-            continue
-        date_str = r['date'].isoformat()
-        company = (r.get('company') or '').strip()
-        if not company:
-            continue
-        ceo = r.get('ceo') or ''
-        article_type = r.get('article_type') or 'brand'
-        key = (date_str, company, ceo, article_type)
-        grouped.setdefault(key, []).append(r.get('title') or '')
-
+    rows = negative_summary_live(days=days, company=None, mode='detail')
     out_rows = []
-    for (date_str, company, ceo, article_type), titles in grouped.items():
-        clean = [t.strip() for t in titles if t.strip()]
-        top = '|'.join(clean[:3])
-        out_rows.append((date_str, company, ceo, len(clean), top, article_type))
-
+    for row in rows:
+        negative_count = int(row.get('negative_count') or 0)
+        if negative_count <= 0:
+            continue
+        date_val = row.get('date')
+        if hasattr(date_val, 'isoformat'):
+            date_str = date_val.isoformat()
+        else:
+            date_str = str(date_val or '')
+        out_rows.append((
+            date_str,
+            row.get('company') or '',
+            row.get('ceo') or '',
+            negative_count,
+            row.get('top_headlines') or '',
+            row.get('article_type') or '',
+        ))
     headers = ['date','company','ceo','negative_count','top_headlines','article_type']
     csv_text = rows_to_csv(headers, out_rows)
     return Response(csv_text, content_type='text/csv')
@@ -2819,9 +3443,11 @@ def negative_summary_live(days: int | None = None, company: str | None = None, m
                    'brand'::text as article_type,
                    count(*) filter (where coalesce(ov.override_sentiment_label, cad.sentiment_label) = 'negative') as negative_count,
                    '' as top_headlines,
-                   0 as crisis_risk_count
+                   count(*) filter (where cam.llm_risk_label = 'crisis_risk') as crisis_risk_count
             from company_article_mentions_daily cad
             join companies c on c.id = cad.company_id
+            left join company_article_mentions cam
+              on cam.company_id = cad.company_id and cam.article_id = cad.article_id
             left join company_article_overrides ov
               on ov.company_id = cad.company_id and ov.article_id = cad.article_id
             where cad.date >= %s {scope_sql}
@@ -2833,10 +3459,12 @@ def negative_summary_live(days: int | None = None, company: str | None = None, m
                    'ceo'::text as article_type,
                    count(*) filter (where coalesce(ov.override_sentiment_label, cad.sentiment_label) = 'negative') as negative_count,
                    '' as top_headlines,
-                   0 as crisis_risk_count
+                   count(*) filter (where cem.llm_risk_label = 'crisis_risk') as crisis_risk_count
             from ceo_article_mentions_daily cad
             join ceos ceo on ceo.id = cad.ceo_id
             join companies c on c.id = ceo.company_id
+            left join ceo_article_mentions cem
+              on cem.ceo_id = cad.ceo_id and cem.article_id = cad.article_id
             left join ceo_article_overrides ov
               on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
             where cad.date >= %s {scope_sql}
@@ -2854,11 +3482,13 @@ def negative_summary_live(days: int | None = None, company: str | None = None, m
                    ''::text as ceo,
                    coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                    a.title as title,
-                   null::text as llm_risk_label,
+                   cam.llm_risk_label as llm_risk_label,
                    'brand'::text as article_type
             from company_article_mentions_daily cad
             join companies c on c.id = cad.company_id
             join articles a on a.id = cad.article_id
+            left join company_article_mentions cam
+              on cam.company_id = cad.company_id and cam.article_id = cad.article_id
             left join company_article_overrides ov
               on ov.company_id = cad.company_id and ov.article_id = cad.article_id
             where cad.date >= %s {scope_sql}{company_sql}
@@ -2869,12 +3499,14 @@ def negative_summary_live(days: int | None = None, company: str | None = None, m
                    coalesce(ceo.name, '') as ceo,
                    coalesce(ov.override_sentiment_label, cad.sentiment_label) as sentiment,
                    a.title as title,
-                   null::text as llm_risk_label,
+                   cem.llm_risk_label as llm_risk_label,
                    'ceo'::text as article_type
             from ceo_article_mentions_daily cad
             join ceos ceo on ceo.id = cad.ceo_id
             join companies c on c.id = ceo.company_id
             join articles a on a.id = cad.article_id
+            left join ceo_article_mentions cem
+              on cem.ceo_id = cad.ceo_id and cem.article_id = cad.article_id
             left join ceo_article_overrides ov
               on ov.ceo_id = cad.ceo_id and ov.article_id = cad.article_id
             where cad.date >= %s {scope_sql}{company_sql}
