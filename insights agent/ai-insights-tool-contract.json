@@ -1,0 +1,279 @@
+{
+  "version": "2026-03-18",
+  "purpose": "Provider-neutral tool contract for the AI insights assistant.",
+  "notes": [
+    "This file is loaded by your app and converted into provider-specific tool definitions.",
+    "It is not automatically visible to the model on its own.",
+    "These tools should be implemented server-side as thin wrappers over the existing /api/v1/insights/* endpoints or existing dashboard API endpoints."
+  ],
+  "tools": [
+    {
+      "name": "resolve_entity",
+      "description": "Resolve a brand or CEO name, abbreviation, or ticker to the canonical dashboard entity and return close suggestions when the match is uncertain.",
+      "endpoint": "/api/v1/insights/resolve_entity",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "entity_name": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 10 }
+        },
+        "required": ["entity_name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "resolve_sector",
+      "description": "Resolve a sector or industry phrase like insurers, education, or financial services to the canonical dashboard sector label and return close suggestions if needed.",
+      "endpoint": "/api/v1/insights/resolve_sector",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sector_name": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 10 }
+        },
+        "required": ["sector_name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_trend_summary",
+      "description": "Get one brand or CEO's trend summary, including 7-day deltas, search impact, search nuance, daily metrics, rolling 7-day windows, and recent anomalies.",
+      "endpoint": "/api/v1/insights/trend_summary",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "entity_name": { "type": "string" },
+          "days": { "type": "integer", "minimum": 7, "maximum": 180 },
+          "weeks": { "type": "integer", "minimum": 1, "maximum": 26 }
+        },
+        "required": ["entity_name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "screen_entities",
+      "description": "Rank visible brands or CEOs by a selected metric over the latest available 1-90 day window, with optional sector filtering. Use this for ranking, leaderboard, which brands, and sector candidate questions.",
+      "endpoint": "/api/v1/insights/screen_entities",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string",
+            "enum": [
+              "article_negative_count",
+              "serp_negative_count",
+              "serp_uncontrolled_count",
+              "top_stories_negative_count",
+              "top_stories_uncontrolled_count",
+              "crisis_risk_count"
+            ]
+          },
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "sector": { "type": "string" },
+          "days": { "type": "integer", "minimum": 1, "maximum": 90 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "min_value": { "type": "number", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_sector_baseline",
+      "description": "Compare a brand, CEO, or the peer set against a sector baseline for a selected metric. Use this for questions like is this unusual for insurance, how does Nike compare with retail peers, or what is normal for the sector.",
+      "endpoint": "/api/v1/insights/sector_baseline",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sector": { "type": "string" },
+          "metric": {
+            "type": "string",
+            "enum": [
+              "article_negative_count",
+              "serp_negative_count",
+              "serp_uncontrolled_count",
+              "top_stories_negative_count",
+              "top_stories_uncontrolled_count",
+              "crisis_risk_count"
+            ]
+          },
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "days": { "type": "integer", "minimum": 1, "maximum": 180 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "entity_name": { "type": "string" }
+        },
+        "required": ["sector"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "aggregate_crisis_patterns",
+      "description": "Aggregate the most common crisis or narrative types across a sector or the visible scope, including average search duration based on consecutive days of negative Top Stories presence. Use this for pattern questions within one sector, not for listing specific brands.",
+      "endpoint": "/api/v1/insights/aggregate_crisis_patterns",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sector": { "type": "string" },
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "days": { "type": "integer", "minimum": 7, "maximum": 365 },
+          "start_date": { "type": "string" },
+          "end_date": { "type": "string" },
+          "period_label": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+          "include_non_crisis": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "aggregate_industry_durations",
+      "description": "Return average crisis duration broken down by industry or sector, using crisis-episode streaks derived from negative Top Stories narrative tags. Use this for cross-industry comparison, not for identifying specific brands within one sector.",
+      "endpoint": "/api/v1/insights/aggregate_industry_durations",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "days": { "type": "integer", "minimum": 7, "maximum": 365 },
+          "start_date": { "type": "string" },
+          "end_date": { "type": "string" },
+          "period_label": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "include_non_crisis": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "find_storylines",
+      "description": "Find the strongest editorial storylines for a thought-leadership or research prompt across a rolling or calendar window. Use this for prompts like review last quarter and find 3 storylines for an article on reputational risk.",
+      "endpoint": "/api/v1/insights/find_storylines",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "days": { "type": "integer", "minimum": 7, "maximum": 365 },
+          "start_date": { "type": "string" },
+          "end_date": { "type": "string" },
+          "period_label": { "type": "string" },
+          "sector": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 10 },
+          "include_non_crisis": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_narrative_timeline",
+      "description": "Return narrative persistence, current crisis windows, and tag evolution for one brand or CEO over a lookback window.",
+      "endpoint": "/api/v1/narrative_timeline",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "entity_name": { "type": "string" },
+          "days": { "type": "integer", "minimum": 1, "maximum": 365 },
+          "date": { "type": "string" }
+        },
+        "required": ["entity_name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_narrative_tags",
+      "description": "Return the dominant narrative tags visible on the latest available date or a requested date across the visible scope for brands or CEOs.",
+      "endpoint": "/api/v1/narrative_tags",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "date": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_search_feature_series",
+      "description": "Return daily counts for one search feature, split by positive, neutral, negative, and controlled counts. Use this to see whether a crisis is concentrated in Top Stories or spreading to other search surfaces.",
+      "endpoint": "/api/v1/serp_feature_series",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "entity_name": { "type": "string" },
+          "feature_type": { "type": "string" },
+          "days": { "type": "integer", "minimum": 1, "maximum": 365 }
+        },
+        "required": ["entity_name", "feature_type"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_search_feature_items",
+      "description": "Return the underlying search feature items for a given date and optional entity or feature type. Use this when the user wants the actual URLs or titles behind a feature spike.",
+      "endpoint": "/api/v1/serp_feature_items",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "entity_name": { "type": "string" },
+          "feature_type": { "type": "string" },
+          "date": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 500 },
+          "offset": { "type": "integer", "minimum": 0, "maximum": 5000 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "compare_entities",
+      "description": "Compare two brands or two CEOs across recent coverage, search, control, and anomaly metrics. Use this for questions like compare Delta and United, or who is worse right now.",
+      "endpoint": "wrapper:get_trend_summary*2",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "entity_a_name": { "type": "string" },
+          "entity_b_name": { "type": "string" },
+          "days": { "type": "integer", "minimum": 7, "maximum": 180 },
+          "weeks": { "type": "integer", "minimum": 1, "maximum": 26 }
+        },
+        "required": ["entity_a_name", "entity_b_name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_anomalies",
+      "description": "Get recent anomaly rows for one entity or the full visible scope.",
+      "endpoint": "/api/v1/insights/anomalies",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "entity_name": { "type": "string" },
+          "days": { "type": "integer", "minimum": 1, "maximum": 180 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_evidence",
+      "description": "Get supporting article, SERP, and Top Stories evidence, including included_reason and summary.search_interpretation.",
+      "endpoint": "/api/v1/insights/evidence",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "enum": ["brand", "ceo"] },
+          "entity_name": { "type": "string" },
+          "days": { "type": "integer", "minimum": 1, "maximum": 90 },
+          "start_date": { "type": "string" },
+          "end_date": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+        },
+        "required": ["entity_name"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

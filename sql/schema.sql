@@ -285,6 +285,78 @@ create index if not exists serp_feature_items_feature_idx on serp_feature_items 
 create unique index if not exists serp_feature_items_unique_idx
   on serp_feature_items (date, entity_type, entity_name, feature_type, url_hash);
 
+create table if not exists entity_crisis_tag_daily (
+  date date not null,
+  entity_type text not null,
+  entity_id uuid,
+  entity_name text not null,
+  primary_tag text,
+  primary_group text,
+  tags text[],
+  is_crisis boolean,
+  negative_top_stories_count int not null default 0,
+  tagged_item_count int not null default 0,
+  unmatched_negative_items int not null default 0,
+  supporting_negative_items int not null default 0,
+  tag_counts jsonb not null default '{}'::jsonb,
+  narrative_rule_version text,
+  tagged_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists entity_crisis_tag_daily_unique_idx
+  on entity_crisis_tag_daily (date, entity_type, entity_name);
+
+create index if not exists entity_crisis_tag_daily_entity_id_idx
+  on entity_crisis_tag_daily (entity_type, entity_id, date);
+
+create index if not exists entity_crisis_tag_daily_tag_idx
+  on entity_crisis_tag_daily (primary_tag, date);
+
+create table if not exists entity_crisis_event_daily (
+  date date not null,
+  entity_type text not null,
+  entity_id uuid,
+  entity_name text not null,
+  primary_tag text,
+  primary_group text,
+  tags text[],
+  is_crisis boolean,
+  trigger_sources text[] not null default '{}'::text[],
+  trigger_top_stories boolean not null default false,
+  trigger_newsfeed_delta boolean not null default false,
+  trigger_continued_coverage boolean not null default false,
+  negative_top_stories_count int not null default 0,
+  recent_negative_article_count int not null default 0,
+  article_negative_count int not null default 0,
+  article_total_count int not null default 0,
+  article_negative_pct numeric not null default 0,
+  prior_article_negative_count int not null default 0,
+  prior_article_total_count int not null default 0,
+  prior_article_negative_pct numeric not null default 0,
+  article_negative_pct_delta numeric not null default 0,
+  negative_evidence_count int not null default 0,
+  tagged_item_count int not null default 0,
+  unmatched_negative_items int not null default 0,
+  supporting_negative_items int not null default 0,
+  tag_counts jsonb not null default '{}'::jsonb,
+  narrative_rule_version text,
+  crisis_event_rule_version text,
+  tagged_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists entity_crisis_event_daily_unique_idx
+  on entity_crisis_event_daily (date, entity_type, entity_name);
+
+create index if not exists entity_crisis_event_daily_entity_id_idx
+  on entity_crisis_event_daily (entity_type, entity_id, date);
+
+create index if not exists entity_crisis_event_daily_tag_idx
+  on entity_crisis_event_daily (primary_tag, date);
+
 create table if not exists serp_feature_item_overrides (
   id uuid primary key default gen_random_uuid(),
   serp_feature_item_id uuid not null references serp_feature_items(id) on delete cascade,

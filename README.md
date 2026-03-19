@@ -26,7 +26,7 @@ The active daily ingest writers now live in the sibling `risk-dashboard` repo. T
 - `sql/entity_daily_metrics_v.sql`
 - `sql/entity_weekly_rollup_v.sql`
 - `sql/entity_anomalies_v.sql`
-  Read-only analytics views used by the AI-ready insights endpoints.
+  Read-only analytics views used by the AI-ready insights endpoints, including trailing 7-day rollups and anomaly flags.
 
 - `dashboard_app/app.py`
   Flask app that serves static dashboards, DB-backed JSON APIs, CSV compatibility endpoints, internal edit routes, and aggregate refresh endpoints.

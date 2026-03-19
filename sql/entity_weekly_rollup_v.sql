@@ -1,31 +1,29 @@
 create or replace view entity_weekly_rollup_v as
-select date_trunc('week', date)::date as week_start,
-       entity_type,
-       entity_id,
-       company_id,
-       ceo_id,
-       entity_name,
-       company,
-       ceo,
-       sum(article_negative_count) as article_negative_7d,
-       sum(article_total_count) as article_total_7d,
-       avg(article_negative_pct) as article_negative_pct_avg_7d,
-       sum(serp_negative_count) as serp_negative_7d,
-       sum(serp_total_count) as serp_total_7d,
-       sum(serp_controlled_count) as serp_controlled_7d,
-       sum(serp_uncontrolled_count) as serp_uncontrolled_7d,
-       sum(top_stories_total_count) as top_stories_total_7d,
-       sum(top_stories_negative_count) as top_stories_negative_7d,
-       sum(top_stories_controlled_count) as top_stories_controlled_7d,
-       sum(top_stories_uncontrolled_count) as top_stories_uncontrolled_7d,
-       count(*) filter (where top_stories_negative_count >= 4) as top_stories_crisis_days_7d,
-       sum(crisis_risk_count) as crisis_risk_7d
-from entity_daily_metrics_v
-group by date_trunc('week', date)::date,
-         entity_type,
-         entity_id,
-         company_id,
-         ceo_id,
-         entity_name,
-         company,
-         ceo;
+select min(edm.date) over w as week_start,
+       edm.entity_type,
+       edm.entity_id,
+       edm.company_id,
+       edm.ceo_id,
+       edm.entity_name,
+       edm.company,
+       edm.ceo,
+       sum(edm.article_negative_count) over w as article_negative_7d,
+       sum(edm.article_total_count) over w as article_total_7d,
+       avg(edm.article_negative_pct) over w as article_negative_pct_avg_7d,
+       sum(edm.serp_negative_count) over w as serp_negative_7d,
+       sum(edm.serp_total_count) over w as serp_total_7d,
+       sum(edm.serp_controlled_count) over w as serp_controlled_7d,
+       sum(edm.serp_uncontrolled_count) over w as serp_uncontrolled_7d,
+       sum(edm.top_stories_total_count) over w as top_stories_total_7d,
+       sum(edm.top_stories_negative_count) over w as top_stories_negative_7d,
+       sum(edm.top_stories_controlled_count) over w as top_stories_controlled_7d,
+       sum(edm.top_stories_uncontrolled_count) over w as top_stories_uncontrolled_7d,
+       sum(case when edm.top_stories_negative_count >= 4 then 1 else 0 end) over w as top_stories_crisis_days_7d,
+       sum(edm.crisis_risk_count) over w as crisis_risk_7d,
+       edm.date as window_end
+from entity_daily_metrics_v edm
+window w as (
+    partition by edm.entity_type, edm.entity_id
+    order by edm.date
+    rows between 6 preceding and current row
+);

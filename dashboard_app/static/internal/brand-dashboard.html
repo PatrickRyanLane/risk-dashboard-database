@@ -217,6 +217,11 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
   font:inherit;
   line-height:1.2;
 }
+.pill.narrative-pill-btn.na{
+  background:rgba(162,235,243,.08);
+  border-color:rgba(162,235,243,.18);
+  color:var(--muted);
+}
 .pill.narrative-pill-btn:hover{filter:brightness(1.08)}
 .pill.narrative-pill-btn:focus-visible{outline:2px solid rgba(88,219,237,.45);outline-offset:1px}
 .link{color:var(--accent);text-decoration:underline}
@@ -1138,6 +1143,10 @@ const NARRATIVE_TAGS_PATH = d => `/api/v1/narrative_tags?entity=brand&date=${enc
 const NARRATIVE_TIMELINE_DAYS = 90;
 const NARRATIVE_TIMELINE_PATH = (d, company, days = NARRATIVE_TIMELINE_DAYS) =>
   `/api/v1/narrative_timeline?entity=brand&date=${encodeURIComponent(d)}&entity_name=${encodeURIComponent(company)}&days=${days}`;
+const NARRATIVE_OVERLAY_LIMIT = 0;
+const COMPOSITE_TAG_OVERLAY_STYLE = 'top-band';
+const NARRATIVE_OVERLAY_PATH = (company, startDate, endDate, limit = NARRATIVE_OVERLAY_LIMIT) =>
+  `/api/v1/narrative_overlay?entity=brand&entity_name=${encodeURIComponent(company)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&limit=${limit}`;
 
 /********************** Runtime **********************/
 let allCountsRows = [];
@@ -1156,6 +1165,8 @@ let currentPage = 1;
 let dataReady = false;
 let favoriteCompanies = new Set();
 const _narrativeCache = new Map();
+const _narrativeOverlayCache = new Map();
+const _narrativeOverlayPending = new Map();
 const PAGE_SIZE = 25;
 const CHART_ORDER_STORAGE_KEY = `riskdash.chart_order:${window.location.pathname}`;
 const CHART_COLLAPSE_STORAGE_KEY = `riskdash.chart_collapse:${window.location.pathname}`;
@@ -1474,6 +1485,7 @@ async function selectCompany(name){
   selectedCompany = name;
   updateEntityUrlParam('company', selectedCompany);
   await loadSerpFeaturesForEntity(selectedCompany);
+  await prefetchCompositeNarrativeOverlay(selectedCompany, getVisibleCompositeDateWindow());
   renderTable();
   if (chartsDataReady()) renderCharts();
 }
@@ -2395,20 +2407,26 @@ function updateDateRangeUI(allDates){
   document.querySelectorAll('.dates-next').forEach(b => b.disabled = atEnd);
 }
 function hookDatePager(allDates){
-  const goPrev = () => {
+  const goPrev = async () => {
     const total = allDates.length;
     if (total <= DATE_WINDOW_SIZE) return;
     const start = clampDateStart(total);
     dateWindowPinned = true;
     dateWindowStart = Math.max(0, start - DATE_WINDOW_SIZE);
+    if (selectedCompany){
+      await prefetchCompositeNarrativeOverlay(selectedCompany, sliceWindow(allDates, dateWindowStart, DATE_WINDOW_SIZE));
+    }
     renderCharts();
   };
-  const goNext = () => {
+  const goNext = async () => {
     const total = allDates.length;
     if (total <= DATE_WINDOW_SIZE) return;
     const maxStart = total - DATE_WINDOW_SIZE;
     dateWindowPinned = true;
     dateWindowStart = Math.min(maxStart, clampDateStart(total) + DATE_WINDOW_SIZE);
+    if (selectedCompany){
+      await prefetchCompositeNarrativeOverlay(selectedCompany, sliceWindow(allDates, dateWindowStart, DATE_WINDOW_SIZE));
+    }
     renderCharts();
   };
   document.querySelectorAll('.dates-prev').forEach(b => b.onclick = goPrev);
@@ -2697,6 +2715,137 @@ async function getNarrativesForDate(d){
   return map;
 }
 
+function getVisibleCompositeDateWindow(){
+  const {dates} = getDateSeries();
+  const start = clampDateStart(dates.length);
+  return sliceWindow(dates, start, DATE_WINDOW_SIZE);
+}
+
+function getCompositeNarrativeOverlayKey(entityName, visibleDates){
+  const key = normEntityKey(entityName);
+  const startDate = String(visibleDates?.[0] || '').trim();
+  const endDate = String(visibleDates?.[visibleDates.length - 1] || '').trim();
+  if (!key || !isISODate(startDate) || !isISODate(endDate)) return '';
+  return `${key}|${startDate}|${endDate}|${NARRATIVE_OVERLAY_LIMIT}`;
+}
+
+function fitCompositeOverlayLabel(ctx, label, maxWidth){
+  const raw = String(label || '').trim();
+  if (!raw || !Number.isFinite(maxWidth) || maxWidth <= 8) return '';
+  if (ctx.measureText(raw).width <= maxWidth) return raw;
+  let trimmed = raw;
+  while (trimmed.length > 1 && ctx.measureText(`${trimmed}...`).width > maxWidth){
+    trimmed = trimmed.slice(0, -1).trimEnd();
+  }
+  return trimmed.length > 1 ? `${trimmed}...` : '';
+}
+
+function drawRoundedRect(ctx, x, y, width, height, radius){
+  const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function'){
+    ctx.roundRect(x, y, width, height, r);
+    return;
+  }
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+
+function layoutCompositeNarrativeWindows(windows){
+  const sorted = [...windows].sort((a, b) =>
+    String(a.start_date || '').localeCompare(String(b.start_date || '')) ||
+    String(a.end_date || '').localeCompare(String(b.end_date || '')) ||
+    String(a.display_tag || '').localeCompare(String(b.display_tag || ''), undefined, { sensitivity: 'base' })
+  );
+  const laneEnds = [];
+  const laidOut = [];
+  sorted.forEach(win => {
+    let lane = laneEnds.findIndex(endDate => String(win.start_date || '') > String(endDate || ''));
+    if (lane === -1){
+      lane = laneEnds.length;
+      laneEnds.push('');
+    }
+    laneEnds[lane] = String(win.end_date || '');
+    laidOut.push({ ...win, lane });
+  });
+  return laidOut;
+}
+
+function getCompositeNarrativeOverlayLaneCount(windows){
+  return windows.reduce((maxLane, win) => Math.max(maxLane, Number(win?.lane) || 0), -1) + 1;
+}
+
+function getCompositeNarrativeOverlayReservedHeight(windows, style = COMPOSITE_TAG_OVERLAY_STYLE){
+  const laneCount = getCompositeNarrativeOverlayLaneCount(windows);
+  if (!laneCount || style === 'mid-band') return 0;
+  const laneHeight = 26;
+  const laneGap = 6;
+  return 16 + (laneCount * laneHeight) + ((laneCount - 1) * laneGap);
+}
+
+function getCompositeNarrativeOverlayHit(chart, event){
+  const regions = Array.isArray(chart?.$compositeNarrativeOverlayRegions) ? chart.$compositeNarrativeOverlayRegions : [];
+  if (!regions.length) return null;
+  const x = typeof event?.x === 'number' ? event.x : event?.native?.offsetX;
+  const y = typeof event?.y === 'number' ? event.y : event?.native?.offsetY;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return regions.find(region => x >= region.left && x <= region.right && y >= region.top && y <= region.bottom) || null;
+}
+
+function getCompositeNarrativeOverlay(entityName, visibleDates){
+  const key = getCompositeNarrativeOverlayKey(entityName, visibleDates);
+  return key ? (_narrativeOverlayCache.get(key) || []) : [];
+}
+
+async function prefetchCompositeNarrativeOverlay(entityName, visibleDates){
+  const key = getCompositeNarrativeOverlayKey(entityName, visibleDates);
+  if (!key) return [];
+  if (_narrativeOverlayCache.has(key)) return _narrativeOverlayCache.get(key);
+  if (_narrativeOverlayPending.has(key)) return _narrativeOverlayPending.get(key);
+  const startDate = String(visibleDates[0] || '').trim();
+  const endDate = String(visibleDates[visibleDates.length - 1] || '').trim();
+  const promise = (async () => {
+    try{
+      const payload = await fetchCsv(NARRATIVE_OVERLAY_PATH(entityName, startDate, endDate));
+      const rawWindows = Array.isArray(payload?.windows) ? payload.windows : [];
+      const windows = rawWindows
+        .map(row => {
+          const windowStart = String(row.start_date || '').trim();
+          const windowEnd = String(row.end_date || '').trim();
+          if (!isISODate(windowStart) || !isISODate(windowEnd) || windowStart > windowEnd) return null;
+          if (windowStart > endDate || windowEnd < startDate) return null;
+          return {
+            tag: String(row.tag || '').trim(),
+            display_tag: String(row.display_tag || row.tag || '').trim() || 'Crisis tag',
+            group: String(row.group || '').trim().toLowerCase() || 'crisis',
+            is_crisis: !!row.is_crisis,
+            is_non_crisis: !!row.is_non_crisis,
+            start_date: windowStart,
+            end_date: windowEnd,
+            duration_days: Number(row.duration_days || 0) || 0,
+            negative_item_count: Number(row.negative_item_count || 0) || 0,
+            active_on_end_date: !!row.active_on_end_date,
+          };
+        })
+        .filter(Boolean);
+      const laidOut = layoutCompositeNarrativeWindows(windows);
+      _narrativeOverlayCache.set(key, laidOut);
+      return laidOut;
+    }catch{
+      _narrativeOverlayCache.set(key, []);
+      return [];
+    } finally {
+      _narrativeOverlayPending.delete(key);
+    }
+  })();
+  _narrativeOverlayPending.set(key, promise);
+  return promise;
+}
+
 /********************** UI bootstrap ***********************/
 async function init(){
   initChartOrderPreference();
@@ -2704,6 +2853,8 @@ async function init(){
   dataReady = false;
   bindLookbackControls();
   _narrativeCache.clear();
+  _narrativeOverlayCache.clear();
+  _narrativeOverlayPending.clear();
   updateChartSkeletons();
   const sel = document.getElementById('dateSelect');
   document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll().then(() => {
@@ -2935,6 +3086,9 @@ async function renderAll(){
   if (selectedCompany) {
     await loadSerpFeaturesForEntity(selectedCompany);
   }
+  if (selectedCompany) {
+    await prefetchCompositeNarrativeOverlay(selectedCompany, getVisibleCompositeDateWindow());
+  }
   renderTable();
   if (chartsDataReady()) renderCharts();
   if (selectedCompany) updateEntityUrlParam('company', selectedCompany);
@@ -2996,9 +3150,12 @@ function renderTable(){
     const favStar = `<button class="fav-inline ${favActive ? 'active' : ''}" data-company="${esc(r.company)}" title="Toggle favorite">★</button>`;
     const narrativeTag = String(r.narrative_tag || '').trim();
     const narrativeIsNonCrisis = /\(non-crisis\)$/i.test(narrativeTag);
-    const narrativeHtml = narrativeTag
-      ? `<button type="button" class="pill narrative-pill-btn ${narrativeIsNonCrisis ? 'low' : 'high'}" data-action="narrative-timeline" data-company="${esc(r.company)}" title="${esc((r.narrative_tags || []).join(', ') || 'View narrative timeline')}">${esc(narrativeTag)}</button>`
-      : '<span class="muted">N/A</span>';
+    const narrativeButtonClass = narrativeTag
+      ? `${narrativeIsNonCrisis ? 'low' : 'high'}`
+      : 'na';
+    const narrativeButtonLabel = narrativeTag || 'N/A';
+    const narrativeButtonTitle = (r.narrative_tags || []).join(', ') || 'View narrative timeline';
+    const narrativeHtml = `<button type="button" class="pill narrative-pill-btn ${narrativeButtonClass}" data-action="narrative-timeline" data-company="${esc(r.company)}" title="${esc(narrativeButtonTitle)}">${esc(narrativeButtonLabel)}</button>`;
 
     return `<tr data-company="${esc(r.company)}">
       <td>
@@ -3085,6 +3242,7 @@ function renderTable(){
       updateEntityUrlParam('company', selectedCompany);
       if (selectedCompany) {
         await loadSerpFeaturesForEntity(selectedCompany);
+        await prefetchCompositeNarrativeOverlay(selectedCompany, getVisibleCompositeDateWindow());
       }
       if (chartsDataReady()) renderCharts();
     });
@@ -3349,6 +3507,102 @@ function renderCharts(){
       ctx.restore();
     }
   };
+  const compositeNarrativeWindows = getCompositeNarrativeOverlay(selectedCompany, d);
+  const compositeNarrativeReservedHeight = getCompositeNarrativeOverlayReservedHeight(compositeNarrativeWindows);
+  const compositeCardEl = document.querySelector('.chart-card[data-chart="composite"]');
+  if (compositeCardEl) {
+    compositeCardEl.style.minHeight = `${Math.max(460, 300 + compositeNarrativeReservedHeight)}px`;
+  }
+  const compositeNarrativeOverlayPlugin = {
+    id: 'compositeNarrativeOverlay',
+    afterDatasetsDraw(chart, _args, pluginOpts){
+      const windows = Array.isArray(pluginOpts?.windows) ? pluginOpts.windows : [];
+      chart.$compositeNarrativeOverlayRegions = [];
+      if (!windows.length) return;
+      const {ctx, chartArea, scales} = chart;
+      const labels = Array.isArray(chart.data?.labels) ? chart.data.labels.map(v => String(v || '').trim()) : [];
+      if (!ctx || !chartArea || !scales?.x || !scales?.y || !labels.length) return;
+      const xScale = scales.x;
+      const yScale = scales.y;
+      const style = pluginOpts?.style === 'mid-band' ? 'mid-band' : 'top-band';
+      const laneHeight = style === 'mid-band' ? 24 : 26;
+      const laneGap = 6;
+      const zeroY = yScale.getPixelForValue(0);
+      const reservedHeight = Number(pluginOpts?.reservedHeight || 0) || 0;
+      const fontFamily = getComputedStyle(document.body).fontFamily || 'sans-serif';
+      const getLeftEdge = (idx) => {
+        if (idx <= 0) return chartArea.left;
+        return (xScale.getPixelForValue(idx - 1) + xScale.getPixelForValue(idx)) / 2;
+      };
+      const getRightEdge = (idx) => {
+        if (idx >= labels.length - 1) return chartArea.right;
+        return (xScale.getPixelForValue(idx) + xScale.getPixelForValue(idx + 1)) / 2;
+      };
+
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `600 10px ${fontFamily}`;
+
+      windows.forEach(window => {
+        const startIdx = labels.indexOf(String(window.start_date || '').trim());
+        const endIdx = labels.indexOf(String(window.end_date || '').trim());
+        if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return;
+        const boxLeft = Math.max(chartArea.left + 2, getLeftEdge(startIdx) + 3);
+        const boxRight = Math.min(chartArea.right - 2, getRightEdge(endIdx) - 3);
+        const boxWidth = boxRight - boxLeft;
+        if (boxWidth < 12) return;
+
+        const lane = Number.isFinite(window.lane) ? window.lane : 0;
+        const boxYBase = style === 'mid-band' ? (zeroY + 10) : Math.max(8, chartArea.top - reservedHeight + 8);
+        const boxY = Math.min(chartArea.bottom - laneHeight - 6, boxYBase + lane * (laneHeight + laneGap));
+        const isActive = !!window.active_on_end_date;
+        const isNonCrisis = !!window.is_non_crisis;
+        const borderColor = isNonCrisis ? 'rgba(210,221,224,0.8)' : (isActive ? '#ff6b6b' : 'rgba(255,107,107,0.72)');
+        const fillColor = isNonCrisis ? 'rgba(170,188,191,0.18)' : (isActive ? 'rgba(255,107,107,0.24)' : 'rgba(255,107,107,0.12)');
+        const textColor = isActive ? '#fff1f1' : 'rgba(255,241,241,0.86)';
+
+        drawRoundedRect(ctx, boxLeft, boxY, boxWidth, laneHeight, 10);
+        ctx.fillStyle = fillColor;
+        ctx.fill();
+        ctx.lineWidth = isActive ? 2.5 : 2;
+        ctx.strokeStyle = borderColor;
+        ctx.setLineDash(isActive ? [] : [8, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const fitted = fitCompositeOverlayLabel(ctx, window.display_tag || window.tag || '', boxWidth - 20);
+        if (fitted){
+          if (style === 'mid-band'){
+            const chipWidth = Math.min(boxWidth - 12, Math.max(86, ctx.measureText(fitted).width + 24));
+            const chipX = boxLeft + ((boxWidth - chipWidth) / 2);
+            drawRoundedRect(ctx, chipX, boxY + 6, chipWidth, laneHeight - 12, 7);
+            ctx.fillStyle = isNonCrisis ? 'rgba(120,139,144,0.88)' : 'rgba(130,24,24,0.74)';
+            ctx.fill();
+          }
+          ctx.fillStyle = textColor;
+          ctx.fillText(fitted, boxLeft + (boxWidth / 2), boxY + (laneHeight / 2) + 0.5);
+        }
+        chart.$compositeNarrativeOverlayRegions.push({
+          left: boxLeft,
+          right: boxRight,
+          top: boxY,
+          bottom: boxY + laneHeight,
+          window
+        });
+      });
+      ctx.restore();
+    },
+    afterEvent(chart, args){
+      const hit = getCompositeNarrativeOverlayHit(chart, args?.event);
+      if (chart?.canvas) {
+        chart.canvas.style.cursor = hit ? 'pointer' : '';
+        chart.canvas.title = hit
+          ? `${String(hit.window?.display_tag || hit.window?.tag || '').trim()}`
+          : '';
+      }
+    }
+  };
   const compositeCtx = document.getElementById('negativeCompositeChart')?.getContext('2d');
   if (negativeCompositeChart) negativeCompositeChart.destroy();
   if (compositeCtx) {
@@ -3372,6 +3626,12 @@ function renderCharts(){
       },
       options: {
         ...commonOpts,
+        layout: {
+          padding: {
+            ...commonOpts.layout.padding,
+            top: compositeNarrativeReservedHeight
+          }
+        },
         scales: {
           ...commonOpts.scales,
           x: { ...commonOpts.scales.x, stacked: true },
@@ -3397,6 +3657,13 @@ function renderCharts(){
         interaction: { mode: 'index', intersect: false },
         onClick: (event, _elements, chart) => {
           const date = getClickedDate(event, chart);
+          const overlayHit = getCompositeNarrativeOverlayHit(chart, event);
+          if (overlayHit && selectedCompany) {
+            return void showNarrativeTimeline(
+              { company: selectedCompany },
+              isISODate(date) ? date : String(overlayHit.window?.end_date || '').trim()
+            );
+          }
           const points = chart.getElementsAtEventForMode(event, 'nearest', { intersect: true }, false);
           const datasetIdx = points && points.length ? points[0].datasetIndex : -1;
           if (datasetIdx === featureOrder.length) return void openChartDetailAt('news', date);
@@ -3404,6 +3671,11 @@ function renderCharts(){
         },
         plugins: {
           ...commonOpts.plugins,
+          compositeNarrativeOverlay: {
+            windows: compositeNarrativeWindows,
+            style: COMPOSITE_TAG_OVERLAY_STYLE,
+            reservedHeight: compositeNarrativeReservedHeight
+          },
           title: { ...commonOpts.plugins.title, text: `${who} • Negative Signal Composite` },
           tooltip: {
             ...commonOpts.plugins.tooltip,
@@ -3435,7 +3707,7 @@ function renderCharts(){
           }
         }
       },
-      plugins: [splitFillPlugin]
+      plugins: [splitFillPlugin, compositeNarrativeOverlayPlugin]
     });
   }
 

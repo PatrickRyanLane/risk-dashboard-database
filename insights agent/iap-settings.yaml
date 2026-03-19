@@ -1,0 +1,7 @@
+name: projects/168007850529/iap_web/cloud_run-us-west1/services/risk-dashboard
+
+access_settings:
+  oauth_settings:
+    programmatic_clients:
+      - 168007850529-s8kof2e0ekjkdtt9ihr41m4amipmr29e.apps.googleusercontent.com
+

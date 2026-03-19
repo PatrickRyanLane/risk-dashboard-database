@@ -6,6 +6,7 @@ REGION="${REGION:-us-west1}"
 INTERNAL_SERVICE="${INTERNAL_SERVICE:-risk-dashboard}"
 EXTERNAL_SERVICE="${EXTERNAL_SERVICE:-risk-dashboard-external}"
 MEMORY="${MEMORY:-1Gi}"
+IMAGE_PLATFORM="${IMAGE_PLATFORM:-linux/amd64}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_DIR="${APP_DIR:-${ROOT_DIR}/dashboard_app}"
@@ -22,14 +23,15 @@ fi
 echo "Project: ${PROJECT_ID}"
 echo "Region: ${REGION}"
 echo "Image: ${IMAGE_NAME}"
+echo "Image platform: ${IMAGE_PLATFORM}"
 echo "App dir: ${APP_DIR}"
 
 gcloud auth configure-docker --quiet
 
 if [[ "${NO_CACHE:-0}" == "1" ]]; then
-  docker build --no-cache -t "${IMAGE_NAME}" "${APP_DIR}"
+  docker build --platform "${IMAGE_PLATFORM}" --no-cache -t "${IMAGE_NAME}" "${APP_DIR}"
 else
-  docker build -t "${IMAGE_NAME}" "${APP_DIR}"
+  docker build --platform "${IMAGE_PLATFORM}" -t "${IMAGE_NAME}" "${APP_DIR}"
 fi
 docker push "${IMAGE_NAME}"
 

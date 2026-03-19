@@ -14,16 +14,21 @@ import re
 import threading
 from decimal import Decimal
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
+from statistics import median
 from typing import Dict, Iterable, List, Tuple
 from uuid import UUID
 
 import psycopg2
 from psycopg2 import extensions as pg_ext
 from psycopg2.pool import PoolError, ThreadedConnectionPool
+from psycopg2.extras import Json
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory, abort
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
+from crisis_event_rollups import recompute_entity_crisis_event_window
+from narrative_runtime import NARRATIVE_MIN_NEG_TOP_STORIES, rollup_entity_day_narrative
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 logging.basicConfig(level=logging.INFO)
@@ -104,6 +109,49 @@ NON_CRISIS_NARRATIVE_TAGS = {
     'Rebranding',
     'Mergers and acquisitions',
     'Planned Executive Turnover',
+}
+COMPANY_SUFFIX_TOKENS = {
+    'inc', 'incorporated', 'corp', 'corporation', 'co', 'company', 'companies',
+    'group', 'holding', 'holdings', 'llc', 'ltd', 'limited', 'plc', 'sa',
+    'ag', 'nv', 'lp', 'llp', 'the',
+}
+EXACT_LOOKUP_MATCH_TYPES = {
+    'ticker_exact',
+    'name_exact',
+    'alias_exact',
+    'name_normalized',
+    'alias_normalized',
+}
+EXACT_SECTOR_MATCH_TYPES = {
+    'sector_exact',
+    'sector_normalized',
+    'sector_singular',
+}
+SCREENABLE_METRICS = {
+    'article_negative_count': {
+        'column': 'article_negative_count',
+        'label': 'negative articles',
+    },
+    'serp_negative_count': {
+        'column': 'serp_negative_count',
+        'label': 'negative SERP results',
+    },
+    'serp_uncontrolled_count': {
+        'column': 'serp_uncontrolled_count',
+        'label': 'uncontrolled SERP results',
+    },
+    'top_stories_negative_count': {
+        'column': 'top_stories_negative_count',
+        'label': 'negative Top Stories',
+    },
+    'top_stories_uncontrolled_count': {
+        'column': 'top_stories_uncontrolled_count',
+        'label': 'uncontrolled Top Stories',
+    },
+    'crisis_risk_count': {
+        'column': 'crisis_risk_count',
+        'label': 'crisis-risk article labels',
+    },
 }
 
 
@@ -192,6 +240,373 @@ def narrative_display_tag(tag: str, group: str | None = None) -> str:
     if g == 'non_crisis' or txt in NON_CRISIS_NARRATIVE_TAGS:
         return f"{txt} (non-crisis)"
     return txt
+
+
+def narrative_group_for_tag(
+    tag: str,
+    fallback_group: str | None = None,
+    fallback_is_crisis: bool | None = None,
+) -> str | None:
+    txt = (tag or '').strip()
+    group = (fallback_group or '').strip().lower()
+    if group in {'crisis', 'non_crisis'}:
+        return group
+    if txt in NON_CRISIS_NARRATIVE_TAGS:
+        return 'non_crisis'
+    if fallback_is_crisis is True:
+        return 'crisis'
+    if fallback_is_crisis is False:
+        return 'non_crisis'
+    if txt:
+        return 'crisis'
+    return None
+
+
+def narrative_tag_count_map(raw_counts) -> Dict[str, int]:
+    if not isinstance(raw_counts, dict):
+        return {}
+    counts: Dict[str, int] = {}
+    for raw_tag, raw_value in raw_counts.items():
+        tag = (str(raw_tag) or '').strip()
+        if not tag:
+            continue
+        try:
+            count = int(raw_value or 0)
+        except (TypeError, ValueError):
+            count = 0
+        counts[tag] = max(count, 0)
+    return counts
+
+
+def expand_rollup_narrative_rows(rows: List[Dict]) -> List[Dict]:
+    expanded: List[Dict] = []
+    for row in rows:
+        primary_tag = (row.get('narrative_primary_tag') or '').strip()
+        primary_group = (row.get('narrative_primary_group') or '').strip().lower() or None
+        primary_norm = primary_tag.casefold() if primary_tag else ''
+        tag_counts = narrative_tag_count_map(row.get('tag_counts'))
+        count_lookup = {tag.casefold(): count for tag, count in tag_counts.items()}
+        ordered_tags: List[str] = []
+        seen = set()
+
+        for tag in tag_counts.keys():
+            norm = tag.casefold()
+            if norm not in seen:
+                ordered_tags.append(tag)
+                seen.add(norm)
+
+        raw_tags = row.get('narrative_tags') or []
+        if isinstance(raw_tags, str):
+            raw_tags = [raw_tags]
+        for raw_tag in raw_tags:
+            tag = (str(raw_tag) or '').strip()
+            if not tag:
+                continue
+            norm = tag.casefold()
+            if norm not in seen:
+                ordered_tags.append(tag)
+                seen.add(norm)
+
+        if primary_tag and primary_norm not in seen:
+            ordered_tags.insert(0, primary_tag)
+            seen.add(primary_norm)
+
+        for tag in ordered_tags:
+            norm = tag.casefold()
+            group = narrative_group_for_tag(
+                tag,
+                primary_group if norm == primary_norm else None,
+                row.get('narrative_is_crisis') if norm == primary_norm else None,
+            )
+            count = count_lookup.get(norm)
+            if count is None:
+                if norm == primary_norm:
+                    try:
+                        count = int(
+                            row.get('negative_item_count')
+                            or row.get('supporting_negative_items')
+                            or 0
+                        )
+                    except (TypeError, ValueError):
+                        count = 0
+                else:
+                    count = 1
+            expanded.append({
+                **row,
+                'narrative_primary_tag': tag,
+                'narrative_primary_group': group,
+                'narrative_is_crisis': group == 'crisis' if group is not None else None,
+                'negative_item_count': max(int(count or 0), 0),
+            })
+    return expanded
+
+
+def ensure_entity_crisis_tag_daily_table(cur) -> None:
+    cur.execute(
+        """
+        create table if not exists entity_crisis_tag_daily (
+          date date not null,
+          entity_type text not null,
+          entity_id uuid,
+          entity_name text not null,
+          primary_tag text,
+          primary_group text,
+          tags text[],
+          is_crisis boolean,
+          negative_top_stories_count int not null default 0,
+          tagged_item_count int not null default 0,
+          unmatched_negative_items int not null default 0,
+          supporting_negative_items int not null default 0,
+          tag_counts jsonb not null default '{}'::jsonb,
+          narrative_rule_version text,
+          tagged_at timestamptz,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now()
+        )
+        """
+    )
+    cur.execute(
+        """
+        create unique index if not exists entity_crisis_tag_daily_unique_idx
+          on entity_crisis_tag_daily (date, entity_type, entity_name)
+        """
+    )
+
+
+def clear_narrative_api_caches() -> None:
+    clear_api_cache_prefix("narrative_tags:")
+    clear_api_cache_prefix("narrative_timeline:")
+    clear_api_cache_prefix("narrative_overlay:")
+    clear_api_cache_prefix("insights_aggregate_crisis_patterns:")
+    clear_api_cache_prefix("insights_aggregate_industry_durations:")
+    clear_api_cache_prefix("insights_find_storylines:")
+
+
+def load_serp_feature_item_narrative_context(cur, serp_feature_item_id: str) -> Dict | None:
+    cur.execute(
+        """
+        select sfi.date,
+               sfi.entity_type,
+               sfi.entity_id,
+               sfi.entity_name,
+               sfi.feature_type
+        from serp_feature_items sfi
+        where sfi.id = %s
+        """,
+        (serp_feature_item_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        'date': row[0],
+        'entity_type': row[1],
+        'entity_id': row[2],
+        'entity_name': row[3],
+        'feature_type': row[4],
+    }
+
+
+def load_company_article_crisis_event_context(cur, mention_id: str) -> Dict | None:
+    cur.execute(
+        """
+        select cam.company_id,
+               c.name,
+               min(cad.date) as first_date
+        from company_article_mentions cam
+        join companies c on c.id = cam.company_id
+        left join company_article_mentions_daily cad
+          on cad.company_id = cam.company_id
+         and cad.article_id = cam.article_id
+        where cam.id = %s
+        group by cam.company_id, c.name
+        """,
+        (mention_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    start_date = row[2] or datetime.utcnow().date()
+    return {
+        'entity_types': ['brand'],
+        'entity_id': row[0],
+        'entity_name': row[1] or '',
+        'start_date': start_date,
+        'end_date': datetime.utcnow().date(),
+    }
+
+
+def load_ceo_article_crisis_event_context(cur, mention_id: str) -> Dict | None:
+    cur.execute(
+        """
+        select cem.ceo_id,
+               ceo.name,
+               min(cad.date) as first_date
+        from ceo_article_mentions cem
+        join ceos ceo on ceo.id = cem.ceo_id
+        left join ceo_article_mentions_daily cad
+          on cad.ceo_id = cem.ceo_id
+         and cad.article_id = cem.article_id
+        where cem.id = %s
+        group by cem.ceo_id, ceo.name
+        """,
+        (mention_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    start_date = row[2] or datetime.utcnow().date()
+    return {
+        'entity_types': ['ceo'],
+        'entity_id': row[0],
+        'entity_name': row[1] or '',
+        'start_date': start_date,
+        'end_date': datetime.utcnow().date(),
+    }
+
+
+def recompute_entity_day_narrative_rollup(
+    cur,
+    *,
+    row_date,
+    entity_type: str,
+    entity_id,
+    entity_name: str,
+) -> Dict:
+    ensure_entity_crisis_tag_daily_table(cur)
+    cur.execute(
+        """
+        select sfi.id,
+               sfi.title,
+               sfi.snippet,
+               sfi.url,
+               sfi.source,
+               coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
+               coalesce(sfi.finance_routine, false) as finance_routine
+        from serp_feature_items sfi
+        left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+        where sfi.date = %s
+          and sfi.entity_type = %s
+          and sfi.entity_name = %s
+          and sfi.feature_type = 'top_stories_items'
+        order by sfi.position nulls last, sfi.id
+        """,
+        (row_date, entity_type, entity_name),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        cur.execute(
+            """
+            delete from entity_crisis_tag_daily
+            where date = %s
+              and entity_type = %s
+              and entity_name = %s
+            """,
+            (row_date, entity_type, entity_name),
+        )
+        return {'primary_tag': None, 'updated_items': 0}
+
+    items = []
+    item_ids = []
+    for item_id, title, snippet, url, source, sentiment_label, finance_routine in rows:
+        item_ids.append(item_id)
+        items.append({
+            'title': title or '',
+            'snippet': snippet or '',
+            'url': url or '',
+            'source': source or '',
+            'sentiment_label': sentiment_label,
+            'finance_routine': bool(finance_routine),
+        })
+
+    rollup = rollup_entity_day_narrative(
+        items,
+        min_negative_top_stories=NARRATIVE_MIN_NEG_TOP_STORIES,
+    )
+    now = datetime.utcnow()
+
+    update_sql = """
+        update serp_feature_items
+           set narrative_primary_tag = %s,
+               narrative_primary_group = %s,
+               narrative_tags = %s,
+               narrative_is_crisis = %s,
+               narrative_rule_version = %s,
+               narrative_tagged_at = %s,
+               updated_at = now()
+         where id = %s
+    """
+    update_rows = []
+    for item_id, tag in zip(item_ids, rollup.get('item_results') or []):
+        update_rows.append((
+            tag.get('primary_tag') or None,
+            tag.get('primary_group') or None,
+            tag.get('tags') or None,
+            tag.get('is_crisis'),
+            tag.get('rule_version') or None,
+            now if tag.get('primary_tag') else None,
+            item_id,
+        ))
+    if update_rows:
+        cur.executemany(update_sql, update_rows)
+
+    cur.execute(
+        """
+        insert into entity_crisis_tag_daily (
+          date,
+          entity_type,
+          entity_id,
+          entity_name,
+          primary_tag,
+          primary_group,
+          tags,
+          is_crisis,
+          negative_top_stories_count,
+          tagged_item_count,
+          unmatched_negative_items,
+          supporting_negative_items,
+          tag_counts,
+          narrative_rule_version,
+          tagged_at
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (date, entity_type, entity_name) do update set
+          entity_id = excluded.entity_id,
+          primary_tag = excluded.primary_tag,
+          primary_group = excluded.primary_group,
+          tags = excluded.tags,
+          is_crisis = excluded.is_crisis,
+          negative_top_stories_count = excluded.negative_top_stories_count,
+          tagged_item_count = excluded.tagged_item_count,
+          unmatched_negative_items = excluded.unmatched_negative_items,
+          supporting_negative_items = excluded.supporting_negative_items,
+          tag_counts = excluded.tag_counts,
+          narrative_rule_version = excluded.narrative_rule_version,
+          tagged_at = excluded.tagged_at,
+          updated_at = now()
+        """,
+        (
+            row_date,
+            entity_type,
+            entity_id,
+            entity_name,
+            rollup.get('primary_tag') or None,
+            rollup.get('primary_group') or None,
+            rollup.get('tags') or None,
+            rollup.get('is_crisis'),
+            int(rollup.get('negative_item_count') or 0),
+            int(rollup.get('tagged_item_count') or 0),
+            int(rollup.get('unmatched_negative_items') or 0),
+            int(rollup.get('supporting_negative_items') or 0),
+            Json(rollup.get('tag_counts') or {}),
+            rollup.get('rule_version') or None,
+            now if rollup.get('primary_tag') else None,
+        ),
+    )
+    return {
+        'primary_tag': rollup.get('primary_tag'),
+        'updated_items': len(update_rows),
+    }
 
 
 def call_llm_text(prompt: Dict[str, str]) -> Tuple[str, str, str]:
@@ -447,6 +862,295 @@ def analytics_entity_type(entity: str) -> str:
     return 'brand' if canonical_entity_type(entity) == 'company' else 'ceo'
 
 
+def normalize_lookup_text(text: str, strip_company_suffixes: bool = False) -> str:
+    value = (text or '').strip().casefold()
+    if not value:
+        return ''
+    value = value.replace('&', ' and ')
+    value = re.sub(r'[^a-z0-9]+', ' ', value)
+    tokens = [token for token in value.split() if token]
+    if strip_company_suffixes:
+        while tokens and tokens[-1] in COMPANY_SUFFIX_TOKENS:
+            tokens.pop()
+    return ' '.join(tokens)
+
+
+def singularize_lookup_token(token: str) -> str:
+    if not token:
+        return token
+    if token.endswith('ies') and len(token) > 3:
+        return token[:-3] + 'y'
+    if token.endswith('ses') and len(token) > 3:
+        return token[:-2]
+    if token.endswith('s') and len(token) > 3 and not token.endswith(('ss', 'us', 'is')):
+        return token[:-1]
+    return token
+
+
+def normalized_sector_keys(text: str) -> List[str]:
+    normalized = normalize_lookup_text(text)
+    if not normalized:
+        return []
+    tokens = normalized.split()
+    singular = ' '.join(singularize_lookup_token(token) for token in tokens)
+    keys = []
+    for candidate in (normalized, singular):
+        if candidate and candidate not in keys:
+            keys.append(candidate)
+    return keys
+
+
+def _score_lookup_candidate(
+    entity: str,
+    query: str,
+    row: Dict,
+) -> Tuple[float, str]:
+    query_raw = (query or '').strip()
+    query_lower = query_raw.casefold()
+    query_full = normalize_lookup_text(query_raw)
+    query_base = normalize_lookup_text(query_raw, strip_company_suffixes=(canonical_entity_type(entity) == 'company'))
+    if not query_raw or not query_full:
+        return 0.0, ''
+
+    entity_name = (row.get('entity_name') or '').strip()
+    alias = (row.get('alias') or '').strip()
+    ticker = (row.get('ticker') or '').strip()
+    name_full = normalize_lookup_text(entity_name)
+    name_base = normalize_lookup_text(entity_name, strip_company_suffixes=(canonical_entity_type(entity) == 'company'))
+    alias_full = normalize_lookup_text(alias)
+    alias_base = normalize_lookup_text(alias, strip_company_suffixes=(canonical_entity_type(entity) == 'company'))
+
+    if canonical_entity_type(entity) == 'company' and ticker and query_lower == ticker.casefold():
+        return 1.0, 'ticker_exact'
+    if query_lower == entity_name.casefold():
+        return 0.995, 'name_exact'
+    if alias and query_lower == alias.casefold():
+        return 0.992, 'alias_exact'
+    if query_full == name_full:
+        return 0.99, 'name_normalized'
+    if alias and query_full == alias_full:
+        return 0.988, 'alias_normalized'
+    if query_base and query_base == name_base:
+        return 0.985, 'name_base'
+    if alias_base and query_base and query_base == alias_base:
+        return 0.982, 'alias_base'
+
+    if len(query_base) >= 4 and name_base.startswith(query_base):
+        return 0.955, 'name_prefix'
+    if alias_base and len(query_base) >= 4 and alias_base.startswith(query_base):
+        return 0.95, 'alias_prefix'
+    if len(query_base) >= 4 and query_base in name_base:
+        return 0.935, 'name_contains'
+    if alias_base and len(query_base) >= 4 and query_base in alias_base:
+        return 0.93, 'alias_contains'
+
+    scores = []
+    if name_base:
+        scores.append((SequenceMatcher(None, query_base, name_base).ratio(), 'name_fuzzy'))
+        scores.append((SequenceMatcher(None, query_full, name_full).ratio(), 'name_fuzzy'))
+    if alias_base:
+        scores.append((SequenceMatcher(None, query_base, alias_base).ratio(), 'alias_fuzzy'))
+        scores.append((SequenceMatcher(None, query_full, alias_full).ratio(), 'alias_fuzzy'))
+
+    if canonical_entity_type(entity) == 'company' and ticker:
+        ticker_score = SequenceMatcher(None, query_lower, ticker.casefold()).ratio()
+        scores.append((ticker_score, 'ticker_fuzzy'))
+
+    if not scores:
+        return 0.0, ''
+    return max(scores, key=lambda item: item[0])
+
+
+def _score_sector_candidate(query: str, sector: str) -> Tuple[float, str]:
+    query_raw = (query or '').strip()
+    sector_raw = (sector or '').strip()
+    if not query_raw or not sector_raw:
+        return 0.0, ''
+
+    query_lower = query_raw.casefold()
+    sector_lower = sector_raw.casefold()
+    if query_lower == sector_lower:
+        return 1.0, 'sector_exact'
+
+    query_keys = normalized_sector_keys(query_raw)
+    sector_keys = normalized_sector_keys(sector_raw)
+    if not query_keys or not sector_keys:
+        return 0.0, ''
+
+    if query_keys[0] == sector_keys[0]:
+        return 0.99, 'sector_normalized'
+    if len(query_keys) > 1 and query_keys[1] == sector_keys[-1]:
+        return 0.985, 'sector_singular'
+
+    best = (0.0, '')
+    for query_key in query_keys:
+        for sector_key in sector_keys:
+            if len(query_key) >= 4 and sector_key.startswith(query_key):
+                best = max(best, (0.955, 'sector_prefix'), key=lambda item: item[0])
+            if len(query_key) >= 4 and query_key in sector_key:
+                best = max(best, (0.94, 'sector_contains'), key=lambda item: item[0])
+            ratio = SequenceMatcher(None, query_key, sector_key).ratio()
+            if ratio > best[0]:
+                best = (ratio, 'sector_fuzzy')
+    return best
+
+
+def entity_lookup_suggestions(entity: str, entity_name: str, limit: int = 5) -> List[Dict]:
+    entity_name = (entity_name or '').strip()
+    if not entity_name:
+        return []
+
+    if canonical_entity_type(entity) == 'company':
+        params: List = []
+        scope_sql, params = scope_clause("c.id", params)
+        rows = query_dict(
+            f"""
+            select c.id as entity_id,
+                   c.id as company_id,
+                   null::uuid as ceo_id,
+                   c.name as entity_name,
+                   c.name as company,
+                   ''::text as ceo,
+                   c.ticker as ticker,
+                   null::text as alias,
+                   'brand'::text as analytics_entity_type
+            from companies c
+            where 1=1 {scope_sql}
+            order by c.name
+            """,
+            tuple(params),
+        )
+    else:
+        params = []
+        scope_sql, params = scope_clause("c.id", params)
+        rows = query_dict(
+            f"""
+            select ceo.id as entity_id,
+                   c.id as company_id,
+                   ceo.id as ceo_id,
+                   ceo.name as entity_name,
+                   c.name as company,
+                   ceo.name as ceo,
+                   null::text as ticker,
+                   ceo.alias as alias,
+                   'ceo'::text as analytics_entity_type
+            from ceos ceo
+            join companies c on c.id = ceo.company_id
+            where 1=1 {scope_sql}
+            order by ceo.name, c.name
+            """,
+            tuple(params),
+        )
+
+    scored: List[Dict] = []
+    for row in rows:
+        score, match_type = _score_lookup_candidate(entity, entity_name, row)
+        if score < 0.72:
+            continue
+        candidate = dict(row)
+        candidate['match_score'] = round(float(score), 4)
+        candidate['match_type'] = match_type
+        scored.append(candidate)
+
+    scored.sort(
+        key=lambda row: (
+            -(row.get('match_score') or 0),
+            str(row.get('entity_name') or '').casefold(),
+            str(row.get('company') or '').casefold(),
+        )
+    )
+    return scored[:limit]
+
+
+def sector_lookup_suggestions(sector_name: str, limit: int = 5) -> List[Dict]:
+    sector_name = (sector_name or '').strip()
+    if not sector_name:
+        return []
+
+    params: List = []
+    scope_sql, params = scope_clause("c.id", params)
+    rows = query_dict(
+        f"""
+        select c.sector as sector,
+               count(*) as company_count
+        from companies c
+        where coalesce(c.sector, '') <> ''
+          {scope_sql}
+        group by c.sector
+        order by c.sector
+        """,
+        tuple(params),
+    )
+
+    scored: List[Dict] = []
+    for row in rows:
+        score, match_type = _score_sector_candidate(sector_name, row.get('sector') or '')
+        if score < 0.72:
+            continue
+        candidate = dict(row)
+        candidate['match_score'] = round(float(score), 4)
+        candidate['match_type'] = match_type
+        scored.append(candidate)
+
+    scored.sort(
+        key=lambda row: (
+            -(row.get('match_score') or 0),
+            -int(row.get('company_count') or 0),
+            str(row.get('sector') or '').casefold(),
+        )
+    )
+    return scored[:limit]
+
+
+def resolve_sector_lookup(sector_name: str) -> Dict | None:
+    suggestions = sector_lookup_suggestions(sector_name, limit=2)
+    if not suggestions:
+        return None
+    top = suggestions[0]
+    runner_up = suggestions[1] if len(suggestions) > 1 else None
+    if (top.get('match_score') or 0) < 0.82:
+        return None
+    if runner_up and (top.get('match_score') or 0) < 0.99:
+        if (runner_up.get('match_score') or 0) >= (top.get('match_score') or 0) - 0.02:
+            return None
+    resolved = dict(top)
+    resolved['requested_sector_name'] = (sector_name or '').strip()
+    return resolved
+
+
+def sector_payload(resolved: Dict) -> Dict:
+    return {
+        'sector': resolved.get('sector') or '',
+        'company_count': int(resolved.get('company_count') or 0),
+        'requested_sector_name': resolved.get('requested_sector_name') or resolved.get('sector') or '',
+        'match_type': resolved.get('match_type') or 'sector_exact',
+        'match_score': float(resolved.get('match_score') or 1.0),
+    }
+
+
+def sector_lookup_resolution_status(resolved: Dict | None) -> str:
+    if not resolved:
+        return 'not_found'
+    match_type = (resolved.get('match_type') or '').strip()
+    score = float(resolved.get('match_score') or 0.0)
+    if match_type in EXACT_SECTOR_MATCH_TYPES or score >= 0.99:
+        return 'exact'
+    return 'fuzzy'
+
+
+def dedupe_sector_payloads(rows: List[Dict]) -> List[Dict]:
+    out: List[Dict] = []
+    seen = set()
+    for row in rows:
+        payload = sector_payload(row)
+        key = str(payload.get('sector') or '').casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(payload)
+    return out
+
+
 def resolve_entity_lookup(entity: str, entity_name: str) -> Dict | None:
     entity_name = (entity_name or '').strip()
     if not entity_name:
@@ -471,7 +1175,25 @@ def resolve_entity_lookup(entity: str, entity_name: str) -> Dict | None:
             """,
             tuple(params),
         )
-        return rows[0] if rows else None
+        if rows:
+            row = dict(rows[0])
+            row['match_type'] = 'name_exact'
+            row['match_score'] = 1.0
+            row['requested_entity_name'] = entity_name
+            return row
+
+        suggestions = entity_lookup_suggestions(entity, entity_name, limit=2)
+        if not suggestions:
+            return None
+        top = suggestions[0]
+        runner_up = suggestions[1] if len(suggestions) > 1 else None
+        if (top.get('match_score') or 0) < 0.84:
+            return None
+        if runner_up and (top.get('match_score') or 0) < 0.98:
+            if (runner_up.get('match_score') or 0) >= (top.get('match_score') or 0) - 0.015:
+                return None
+        top['requested_entity_name'] = entity_name
+        return top
 
     params = [entity_name]
     scope_sql, params = scope_clause("c.id", params)
@@ -492,7 +1214,25 @@ def resolve_entity_lookup(entity: str, entity_name: str) -> Dict | None:
         """,
         tuple(params),
     )
-    return rows[0] if rows else None
+    if rows:
+        row = dict(rows[0])
+        row['match_type'] = 'name_exact'
+        row['match_score'] = 1.0
+        row['requested_entity_name'] = entity_name
+        return row
+
+    suggestions = entity_lookup_suggestions(entity, entity_name, limit=2)
+    if not suggestions:
+        return None
+    top = suggestions[0]
+    runner_up = suggestions[1] if len(suggestions) > 1 else None
+    if (top.get('match_score') or 0) < 0.88:
+        return None
+    if runner_up and (top.get('match_score') or 0) < 0.985:
+        if (runner_up.get('match_score') or 0) >= (top.get('match_score') or 0) - 0.01:
+            return None
+    top['requested_entity_name'] = entity_name
+    return top
 
 
 def coerce_date(value):
@@ -524,6 +1264,20 @@ def sum_metric(rows: List[Dict], key: str) -> int:
     return total
 
 
+def avg_metric(rows: List[Dict], key: str) -> float:
+    total = 0.0
+    count = 0
+    for row in rows:
+        value = row.get(key)
+        if value is None:
+            continue
+        total += float(value)
+        count += 1
+    if count == 0:
+        return 0.0
+    return round(total / count, 6)
+
+
 def top_stories_streak_days(rows: List[Dict], threshold: int = 4) -> int:
     streak = 0
     for row in reversed(rows):
@@ -532,6 +1286,180 @@ def top_stories_streak_days(rows: List[Dict], threshold: int = 4) -> int:
         else:
             break
     return streak
+
+
+def rolling_window_anchor_dates(rows: List[Dict], max_windows: int) -> List:
+    dates = []
+    for row in rows:
+        row_date = coerce_date(row.get('date'))
+        if row_date is not None:
+            dates.append(row_date)
+    if not dates:
+        return []
+
+    distinct_dates = sorted(set(dates))
+    anchors = []
+    used = set()
+    target = distinct_dates[-1]
+    while len(anchors) < max_windows:
+        candidate = next((d for d in reversed(distinct_dates) if d <= target and d not in used), None)
+        if candidate is None:
+            break
+        anchors.append(candidate)
+        used.add(candidate)
+        target = candidate - timedelta(days=7)
+    anchors.sort()
+    return anchors
+
+
+def build_trailing_window_rollups(rows: List[Dict], max_windows: int) -> List[Dict]:
+    rollups = []
+    for anchor in rolling_window_anchor_dates(rows, max_windows):
+        window_rows = rows_within_dates(rows, anchor - timedelta(days=6), anchor)
+        if not window_rows:
+            continue
+        start_dates = [coerce_date(row.get('date')) for row in window_rows if coerce_date(row.get('date')) is not None]
+        rollups.append({
+            'window_start': min(start_dates).isoformat() if start_dates else anchor.isoformat(),
+            'window_end': anchor.isoformat(),
+            'article_negative_7d': sum_metric(window_rows, 'article_negative_count'),
+            'article_total_7d': sum_metric(window_rows, 'article_total_count'),
+            'article_negative_pct_avg_7d': avg_metric(window_rows, 'article_negative_pct'),
+            'serp_negative_7d': sum_metric(window_rows, 'serp_negative_count'),
+            'serp_total_7d': sum_metric(window_rows, 'serp_total_count'),
+            'serp_controlled_7d': sum_metric(window_rows, 'serp_controlled_count'),
+            'serp_uncontrolled_7d': sum_metric(window_rows, 'serp_uncontrolled_count'),
+            'top_stories_total_7d': sum_metric(window_rows, 'top_stories_total_count'),
+            'top_stories_negative_7d': sum_metric(window_rows, 'top_stories_negative_count'),
+            'top_stories_controlled_7d': sum_metric(window_rows, 'top_stories_controlled_count'),
+            'top_stories_uncontrolled_7d': sum_metric(window_rows, 'top_stories_uncontrolled_count'),
+            'top_stories_crisis_days_7d': sum(
+                1 for row in window_rows if int(row.get('top_stories_negative_count') or 0) >= 4
+            ),
+            'crisis_risk_7d': sum_metric(window_rows, 'crisis_risk_count'),
+        })
+    return rollups
+
+
+def classify_search_impact(current_window: Dict[str, int]) -> str:
+    news_signal = current_window.get('article_negative_count', 0) >= 7
+    negative_search_signal = (
+        current_window.get('serp_negative_count', 0) >= 3
+        or current_window.get('top_stories_negative_count', 0) >= 4
+    )
+    uncontrolled_search_signal = (
+        current_window.get('serp_uncontrolled_count', 0) >= 5
+        or current_window.get('top_stories_uncontrolled_count', 0) >= 4
+    )
+    if negative_search_signal and news_signal:
+        return 'news_and_search_negative'
+    if negative_search_signal:
+        return 'search_negative'
+    if uncontrolled_search_signal and news_signal:
+        return 'news_and_search_uncontrolled'
+    if uncontrolled_search_signal:
+        return 'search_uncontrolled'
+    if news_signal:
+        return 'news_only'
+    return 'muted'
+
+
+def build_search_nuance(current_window: Dict[str, int]) -> Dict:
+    negative_search_signal = (
+        current_window.get('serp_negative_count', 0) >= 3
+        or current_window.get('top_stories_negative_count', 0) >= 4
+    )
+    control_gap_signal = (
+        current_window.get('serp_uncontrolled_count', 0) >= 5
+        or current_window.get('top_stories_uncontrolled_count', 0) >= 4
+    )
+    negative_search_items = (
+        current_window.get('serp_negative_count', 0)
+        + current_window.get('top_stories_negative_count', 0)
+    )
+    uncontrolled_search_items = (
+        current_window.get('serp_uncontrolled_count', 0)
+        + current_window.get('top_stories_uncontrolled_count', 0)
+    )
+
+    if negative_search_signal and control_gap_signal:
+        label = 'negative_visibility_and_control_gap'
+        interpretation = (
+            'Negative search visibility is present and the search results are weakly controlled. '
+            'Treat this as both reputational spillover and a SERP control opportunity.'
+        )
+    elif negative_search_signal:
+        label = 'negative_visibility'
+        interpretation = (
+            'Negative search visibility is present, but weak control is not the dominant issue in the current window.'
+        )
+    elif control_gap_signal:
+        label = 'control_gap_without_negative_visibility'
+        interpretation = (
+            'Search control is weak, but the current search signal is mostly neutral or non-negative. '
+            'Treat this as a control opportunity rather than confirmed negative spillover.'
+        )
+    else:
+        label = 'low_or_controlled_search_signal'
+        interpretation = 'Search does not currently show a strong negative visibility or control-gap signal.'
+
+    return {
+        'label': label,
+        'negative_search_signal': negative_search_signal,
+        'control_gap_signal': control_gap_signal,
+        'negative_search_items_7d': negative_search_items,
+        'uncontrolled_search_items_7d': uncontrolled_search_items,
+        'interpretation': interpretation,
+    }
+
+
+def summarize_evidence_rows(rows: List[Dict]) -> Dict:
+    summary = {
+        'total_rows': len(rows),
+        'by_evidence_type': {},
+        'by_included_reason': {},
+        'search_rows_by_included_reason': {},
+        'search_rows_by_sentiment': {},
+        'neutral_uncontrolled_search_rows': 0,
+        'negative_search_rows': 0,
+        'search_interpretation': '',
+    }
+
+    for row in rows:
+        evidence_type = (row.get('evidence_type') or '').strip() or 'unknown'
+        included_reason = (row.get('included_reason') or '').strip() or 'unspecified'
+        sentiment = ((row.get('sentiment_label') or '').strip() or 'unspecified').lower()
+
+        summary['by_evidence_type'][evidence_type] = summary['by_evidence_type'].get(evidence_type, 0) + 1
+        summary['by_included_reason'][included_reason] = summary['by_included_reason'].get(included_reason, 0) + 1
+
+        if evidence_type not in {'serp', 'top_stories'}:
+            continue
+
+        summary['search_rows_by_included_reason'][included_reason] = (
+            summary['search_rows_by_included_reason'].get(included_reason, 0) + 1
+        )
+        summary['search_rows_by_sentiment'][sentiment] = summary['search_rows_by_sentiment'].get(sentiment, 0) + 1
+
+        if included_reason in {'negative', 'negative_and_uncontrolled'}:
+            summary['negative_search_rows'] += 1
+        if included_reason == 'uncontrolled' and sentiment in {'neutral', 'positive', 'unspecified'}:
+            summary['neutral_uncontrolled_search_rows'] += 1
+
+    if summary['negative_search_rows'] > 0 and summary['neutral_uncontrolled_search_rows'] > 0:
+        summary['search_interpretation'] = (
+            'Search evidence is mixed: some results are negatively coded, while others are neutral but weakly controlled.'
+        )
+    elif summary['negative_search_rows'] > 0:
+        summary['search_interpretation'] = 'Search evidence is predominantly negative in the selected window.'
+    elif summary['neutral_uncontrolled_search_rows'] > 0:
+        summary['search_interpretation'] = (
+            'Search evidence is mostly neutral but weakly controlled, which suggests a SERP control issue more than direct negative spillover.'
+        )
+    else:
+        summary['search_interpretation'] = 'Search evidence is limited or not strongly directional in the selected window.'
+
+    return summary
 
 
 def entity_payload(resolved: Dict) -> Dict:
@@ -543,7 +1471,641 @@ def entity_payload(resolved: Dict) -> Dict:
         'entity_name': resolved.get('entity_name') or '',
         'company': resolved.get('company') or '',
         'ceo': resolved.get('ceo') or '',
+        'requested_entity_name': resolved.get('requested_entity_name') or resolved.get('entity_name') or '',
+        'match_type': resolved.get('match_type') or 'name_exact',
+        'match_score': float(resolved.get('match_score') or 1.0),
     }
+
+
+def lookup_resolution_status(resolved: Dict | None) -> str:
+    if not resolved:
+        return 'not_found'
+    match_type = (resolved.get('match_type') or '').strip()
+    score = float(resolved.get('match_score') or 0.0)
+    if match_type in EXACT_LOOKUP_MATCH_TYPES or score >= 0.99:
+        return 'exact'
+    return 'fuzzy'
+
+
+def dedupe_entity_payloads(rows: List[Dict]) -> List[Dict]:
+    out: List[Dict] = []
+    seen = set()
+    for row in rows:
+        payload = entity_payload(row)
+        key = (payload.get('entity_type'), payload.get('entity_id'))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(payload)
+    return out
+
+
+def consecutive_day_durations(days: List) -> List[int]:
+    clean_days = sorted({day for day in days if day is not None})
+    if not clean_days:
+        return []
+    durations: List[int] = []
+    streak = 1
+    previous = clean_days[0]
+    for day in clean_days[1:]:
+        if day == previous + timedelta(days=1):
+            streak += 1
+        else:
+            durations.append(streak)
+            streak = 1
+        previous = day
+    durations.append(streak)
+    return durations
+
+
+def consecutive_day_windows(days: List) -> List[Tuple]:
+    clean_days = sorted({day for day in days if day is not None})
+    if not clean_days:
+        return []
+    windows: List[Tuple] = []
+    start = clean_days[0]
+    previous = clean_days[0]
+    for day in clean_days[1:]:
+        if day == previous + timedelta(days=1):
+            previous = day
+            continue
+        windows.append((start, previous, (previous - start).days + 1))
+        start = day
+        previous = day
+    windows.append((start, previous, (previous - start).days + 1))
+    return windows
+
+
+def latest_negative_top_stories_narrative_date(entity: str, sector: str = ''):
+    entity_type = canonical_entity_type(entity)
+    try:
+        if entity_type == 'company':
+            latest_params: List = [compatible_entity_types(entity)]
+            sector_sql = ""
+            if sector:
+                latest_params.append(f"%{sector}%")
+                sector_sql = " and coalesce(c.sector, '') ilike %s"
+            latest_scope_sql, latest_params = scope_clause("c.id", latest_params)
+            latest_rows = query_rows(
+                f"""
+                select max(ecd.date)
+                from entity_crisis_event_daily ecd
+                join companies c on c.id = ecd.entity_id
+                where ecd.entity_type = any(%s)
+                  and ecd.primary_tag is not null
+                  {sector_sql}
+                  {latest_scope_sql}
+                """,
+                tuple(latest_params),
+            )
+            latest_date = latest_rows[0][0] if latest_rows and latest_rows[0] else None
+            if latest_date is not None:
+                return latest_date
+
+        latest_params = [entity_type]
+        sector_sql = ""
+        if sector:
+            latest_params.append(f"%{sector}%")
+            sector_sql = " and coalesce(c.sector, '') ilike %s"
+        latest_scope_sql, latest_params = scope_clause("c.id", latest_params)
+        latest_rows = query_rows(
+            f"""
+            select max(ecd.date)
+            from entity_crisis_event_daily ecd
+            join ceos ceo on ceo.id = ecd.entity_id
+            join companies c on c.id = ceo.company_id
+            where ecd.entity_type = %s
+              and ecd.primary_tag is not null
+              {sector_sql}
+              {latest_scope_sql}
+            """,
+            tuple(latest_params),
+        )
+        latest_date = latest_rows[0][0] if latest_rows and latest_rows[0] else None
+        if latest_date is not None:
+            return latest_date
+    except Exception as exc:
+        app.logger.warning("entity_crisis_event_daily latest lookup fallback: %s", exc)
+
+    if entity_type == 'company':
+        latest_params: List = [compatible_entity_types(entity)]
+        sector_sql = ""
+        if sector:
+            latest_params.append(f"%{sector}%")
+            sector_sql = " and coalesce(c.sector, '') ilike %s"
+        latest_scope_sql, latest_params = scope_clause("c.id", latest_params)
+        latest_rows = query_rows(
+            f"""
+            select max(sfi.date)
+            from serp_feature_items sfi
+            join companies c on c.id = sfi.entity_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.entity_type = any(%s)
+              and sfi.feature_type = 'top_stories_items'
+              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(sfi.finance_routine, false) = false
+              and sfi.narrative_primary_tag is not null
+              {sector_sql}
+              {latest_scope_sql}
+            """,
+            tuple(latest_params),
+        )
+        return latest_rows[0][0] if latest_rows and latest_rows[0] else None
+
+    latest_params = [entity_type]
+    sector_sql = ""
+    if sector:
+        latest_params.append(f"%{sector}%")
+        sector_sql = " and coalesce(c.sector, '') ilike %s"
+    latest_scope_sql, latest_params = scope_clause("c.id", latest_params)
+    latest_rows = query_rows(
+        f"""
+        select max(sfi.date)
+        from serp_feature_items sfi
+        join ceos ceo on ceo.id = sfi.entity_id
+        join companies c on c.id = ceo.company_id
+        left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+        where sfi.entity_type = %s
+          and sfi.feature_type = 'top_stories_items'
+          and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+          and coalesce(sfi.finance_routine, false) = false
+          and sfi.narrative_primary_tag is not null
+          {sector_sql}
+          {latest_scope_sql}
+        """,
+        tuple(latest_params),
+    )
+    return latest_rows[0][0] if latest_rows and latest_rows[0] else None
+
+
+def fetch_negative_top_stories_narrative_rows(entity: str, start_date, end_date, sector: str = '') -> Tuple[str, List[Dict]]:
+    entity_type = canonical_entity_type(entity)
+    try:
+        if entity_type == 'company':
+            params = [start_date, end_date, compatible_entity_types(entity)]
+            sector_sql = ""
+            if sector:
+                params.append(f"%{sector}%")
+                sector_sql = " and coalesce(c.sector, '') ilike %s"
+            scope_sql, params = scope_clause("c.id", params)
+            rows = query_dict(
+                f"""
+                select ecd.date,
+                       c.id as company_id,
+                       c.id as entity_id,
+                       c.name as company,
+                       ''::text as ceo,
+                       c.name as entity_name,
+                       coalesce(c.sector, '') as sector,
+                       ecd.primary_tag as narrative_primary_tag,
+                       ecd.primary_group as narrative_primary_group,
+                       ecd.is_crisis as narrative_is_crisis,
+                       ecd.tags as narrative_tags,
+                       ecd.tag_counts,
+                       ecd.supporting_negative_items as negative_item_count
+                from entity_crisis_event_daily ecd
+                join companies c on c.id = ecd.entity_id
+                where ecd.date between %s and %s
+                  and ecd.entity_type = any(%s)
+                  and ecd.primary_tag is not null
+                  {sector_sql}
+                  {scope_sql}
+                order by ecd.date, c.name, ecd.primary_tag
+                """,
+                tuple(params),
+            )
+            if rows:
+                return 'brand', expand_rollup_narrative_rows(rows)
+
+        params = [start_date, end_date, entity_type]
+        sector_sql = ""
+        if sector:
+            params.append(f"%{sector}%")
+            sector_sql = " and coalesce(c.sector, '') ilike %s"
+        scope_sql, params = scope_clause("c.id", params)
+        rows = query_dict(
+            f"""
+            select ecd.date,
+                   c.id as company_id,
+                   ceo.id as entity_id,
+                   c.name as company,
+                   ceo.name as ceo,
+                   ceo.name as entity_name,
+                   coalesce(c.sector, '') as sector,
+                   ecd.primary_tag as narrative_primary_tag,
+                   ecd.primary_group as narrative_primary_group,
+                   ecd.is_crisis as narrative_is_crisis,
+                   ecd.tags as narrative_tags,
+                   ecd.tag_counts,
+                   ecd.supporting_negative_items as negative_item_count
+            from entity_crisis_event_daily ecd
+            join ceos ceo on ceo.id = ecd.entity_id
+            join companies c on c.id = ceo.company_id
+            where ecd.date between %s and %s
+              and ecd.entity_type = %s
+              and ecd.primary_tag is not null
+              {sector_sql}
+              {scope_sql}
+            order by ecd.date, ceo.name, ecd.primary_tag
+            """,
+            tuple(params),
+        )
+        if rows:
+            return 'ceo', expand_rollup_narrative_rows(rows)
+    except Exception as exc:
+        app.logger.warning("entity_crisis_event_daily narrative fetch fallback: %s", exc)
+
+    if entity_type == 'company':
+        params = [start_date, end_date, compatible_entity_types(entity)]
+        sector_sql = ""
+        if sector:
+            params.append(f"%{sector}%")
+            sector_sql = " and coalesce(c.sector, '') ilike %s"
+        scope_sql, params = scope_clause("c.id", params)
+        rows = query_dict(
+            f"""
+            select sfi.date,
+                   c.id as company_id,
+                   c.id as entity_id,
+                   c.name as company,
+                   ''::text as ceo,
+                   c.name as entity_name,
+                   coalesce(c.sector, '') as sector,
+                   sfi.narrative_primary_tag,
+                   sfi.narrative_primary_group,
+                   sfi.narrative_is_crisis,
+                   count(*) as negative_item_count
+            from serp_feature_items sfi
+            join companies c on c.id = sfi.entity_id
+            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            where sfi.date between %s and %s
+              and sfi.entity_type = any(%s)
+              and sfi.feature_type = 'top_stories_items'
+              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(sfi.finance_routine, false) = false
+              and sfi.narrative_primary_tag is not null
+              {sector_sql}
+              {scope_sql}
+            group by sfi.date, c.id, c.name, c.sector, sfi.narrative_primary_tag, sfi.narrative_primary_group, sfi.narrative_is_crisis
+            order by sfi.date, c.name, sfi.narrative_primary_tag
+            """,
+            tuple(params),
+        )
+        return 'brand', rows
+
+    params = [start_date, end_date, entity_type]
+    sector_sql = ""
+    if sector:
+        params.append(f"%{sector}%")
+        sector_sql = " and coalesce(c.sector, '') ilike %s"
+    scope_sql, params = scope_clause("c.id", params)
+    rows = query_dict(
+        f"""
+        select sfi.date,
+               c.id as company_id,
+               ceo.id as entity_id,
+               c.name as company,
+               ceo.name as ceo,
+               ceo.name as entity_name,
+               coalesce(c.sector, '') as sector,
+               sfi.narrative_primary_tag,
+               sfi.narrative_primary_group,
+               sfi.narrative_is_crisis,
+               count(*) as negative_item_count
+        from serp_feature_items sfi
+        join ceos ceo on ceo.id = sfi.entity_id
+        join companies c on c.id = ceo.company_id
+        left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+        where sfi.date between %s and %s
+          and sfi.entity_type = %s
+          and sfi.feature_type = 'top_stories_items'
+          and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+          and coalesce(sfi.finance_routine, false) = false
+          and sfi.narrative_primary_tag is not null
+          {sector_sql}
+          {scope_sql}
+        group by sfi.date, c.id, ceo.id, c.name, ceo.name, c.sector, sfi.narrative_primary_tag, sfi.narrative_primary_group, sfi.narrative_is_crisis
+        order by sfi.date, ceo.name, sfi.narrative_primary_tag
+        """,
+        tuple(params),
+    )
+    return 'ceo', rows
+
+
+def normalized_narrative_group(tag: str, primary_group: str | None, is_crisis) -> str | None:
+    group = (primary_group or '').strip().lower()
+    if group in {'crisis', 'non_crisis'}:
+        return group
+    if tag in NON_CRISIS_NARRATIVE_TAGS:
+        return 'non_crisis'
+    if is_crisis is True:
+        return 'crisis'
+    if is_crisis is False:
+        return 'non_crisis'
+    return None
+
+
+def resolve_insights_window(
+    entity: str,
+    sector: str = '',
+    default_days: int = 90,
+    min_days: int = 1,
+    max_days: int = 365,
+) -> Tuple:
+    latest_available_date = latest_negative_top_stories_narrative_date(entity, sector)
+    if latest_available_date is None:
+        raise LookupError('no_data')
+
+    requested_start_str = (request.args.get('start_date') or '').strip()
+    requested_end_str = (request.args.get('end_date') or '').strip()
+
+    if requested_start_str or requested_end_str:
+        if not requested_start_str or not requested_end_str:
+            raise ValueError('start_date and end_date are both required when using an explicit calendar window')
+        try:
+            requested_start_date = datetime.strptime(requested_start_str, '%Y-%m-%d').date()
+            requested_end_date = datetime.strptime(requested_end_str, '%Y-%m-%d').date()
+        except ValueError:
+            raise ValueError('invalid date format (YYYY-MM-DD)')
+        if requested_start_date > requested_end_date:
+            raise ValueError('start_date must be on or before end_date')
+        if requested_start_date > latest_available_date:
+            raise LookupError('no_data')
+        actual_end_date = min(requested_end_date, latest_available_date)
+        if requested_start_date > actual_end_date:
+            raise LookupError('no_data')
+        return (
+            requested_start_date,
+            actual_end_date,
+            latest_available_date,
+            (actual_end_date - requested_start_date).days + 1,
+            'calendar',
+            requested_start_date.isoformat(),
+            requested_end_date.isoformat(),
+        )
+
+    try:
+        days = int(request.args.get('days', str(default_days)) or default_days)
+    except ValueError:
+        days = default_days
+    days = min(max(days, min_days), max_days)
+    end_date = latest_available_date
+    start_date = end_date - timedelta(days=days - 1)
+    return (
+        start_date,
+        end_date,
+        latest_available_date,
+        days,
+        'rolling',
+        None,
+        None,
+    )
+
+
+def build_storyline_candidates(analytics_type: str, rows: List[Dict]) -> List[Dict]:
+    affected_key = 'brands_affected' if analytics_type == 'brand' else 'ceos_affected'
+    entity_label_plural = 'brands' if analytics_type == 'brand' else 'CEOs'
+    by_sector_tag: Dict[Tuple[str, str], Dict] = {}
+    by_tag: Dict[str, Dict] = {}
+    by_sector: Dict[str, Dict] = {}
+
+    for row in rows:
+        tag = (row.get('narrative_primary_tag') or '').strip()
+        if not tag:
+            continue
+        day = coerce_date(row.get('date'))
+        if day is None:
+            continue
+        sector = (row.get('sector') or '').strip() or 'Unspecified'
+        entity_id = str(row.get('entity_id') or '')
+        entity_name = (row.get('entity_name') or '').strip()
+        negative_item_count = int(row.get('negative_item_count') or 0)
+        primary_group = normalized_narrative_group(
+            tag,
+            row.get('narrative_primary_group'),
+            row.get('narrative_is_crisis'),
+        )
+        tag_key = f"{tag.casefold()}::{primary_group or ''}"
+        display_tag = narrative_display_tag(tag, primary_group)
+
+        sector_tag_bucket = by_sector_tag.setdefault((sector, tag_key), {
+            'sector': sector,
+            'tag': tag,
+            'group': primary_group,
+            'display_tag': display_tag,
+            'entity_days': {},
+            'entity_names': {},
+            'entity_totals': {},
+            'entity_negative_item_totals': {},
+            'days': set(),
+            'total_negative_items': 0,
+        })
+        sector_tag_bucket['entity_days'].setdefault(entity_id, set()).add(day)
+        sector_tag_bucket['entity_names'][entity_id] = entity_name
+        sector_tag_bucket['entity_totals'][entity_id] = sector_tag_bucket['entity_totals'].get(entity_id, 0) + 1
+        sector_tag_bucket['entity_negative_item_totals'][entity_id] = (
+            sector_tag_bucket['entity_negative_item_totals'].get(entity_id, 0) + negative_item_count
+        )
+        sector_tag_bucket['days'].add(day)
+        sector_tag_bucket['total_negative_items'] += negative_item_count
+
+        tag_bucket = by_tag.setdefault(tag_key, {
+            'tag': tag,
+            'group': primary_group,
+            'display_tag': display_tag,
+            'sectors': set(),
+            'entity_days': {},
+            'entity_names': {},
+            'entity_negative_item_totals': {},
+            'sector_negative_item_totals': {},
+            'days': set(),
+            'total_negative_items': 0,
+        })
+        tag_bucket['sectors'].add(sector)
+        tag_bucket['entity_days'].setdefault(entity_id, set()).add(day)
+        tag_bucket['entity_names'][entity_id] = entity_name
+        tag_bucket['entity_negative_item_totals'][entity_id] = (
+            tag_bucket['entity_negative_item_totals'].get(entity_id, 0) + negative_item_count
+        )
+        tag_bucket['sector_negative_item_totals'][sector] = (
+            tag_bucket['sector_negative_item_totals'].get(sector, 0) + negative_item_count
+        )
+        tag_bucket['days'].add(day)
+        tag_bucket['total_negative_items'] += negative_item_count
+
+        sector_bucket = by_sector.setdefault(sector, {
+            'sector': sector,
+            'entity_days': {},
+            'entity_names': {},
+            'entity_negative_item_totals': {},
+            'tag_negative_item_totals': {},
+            'days': set(),
+            'total_negative_items': 0,
+        })
+        sector_bucket['entity_days'].setdefault(entity_id, set()).add(day)
+        sector_bucket['entity_names'][entity_id] = entity_name
+        sector_bucket['entity_negative_item_totals'][entity_id] = (
+            sector_bucket['entity_negative_item_totals'].get(entity_id, 0) + negative_item_count
+        )
+        sector_bucket['tag_negative_item_totals'][display_tag] = (
+            sector_bucket['tag_negative_item_totals'].get(display_tag, 0) + negative_item_count
+        )
+        sector_bucket['days'].add(day)
+        sector_bucket['total_negative_items'] += negative_item_count
+
+    candidates: List[Dict] = []
+
+    for bucket in by_sector_tag.values():
+        durations: List[int] = []
+        for days_set in bucket['entity_days'].values():
+            durations.extend(consecutive_day_durations(list(days_set)))
+        if not durations:
+            continue
+        affected_count = len(bucket['entity_days'])
+        avg_duration_days = round(sum(durations) / len(durations), 2)
+        max_duration_days = max(durations)
+        top_examples = sorted(
+            bucket['entity_negative_item_totals'].items(),
+            key=lambda item: (-item[1], bucket['entity_names'].get(item[0], '').casefold()),
+        )[:3]
+        score = round(
+            affected_count * 6
+            + bucket['total_negative_items'] * 0.35
+            + avg_duration_days * 2
+            + len(bucket['days']) * 0.4,
+            2,
+        )
+        candidates.append({
+            'storyline_key': f"sector_tag:{bucket['sector']}:{bucket['tag'].casefold()}",
+            'storyline_type': 'sector_tag_pattern',
+            'headline': f"{bucket['sector']} saw concentrated {bucket['display_tag'].lower()} pressure",
+            'angle': (
+                f"{affected_count} {entity_label_plural} in {bucket['sector']} showed "
+                f"{bucket['display_tag']} in negative search/news coverage during the selected window."
+            ),
+            'why_interesting': (
+                f"Average duration was {avg_duration_days} days, with a maximum streak of {max_duration_days} days "
+                f"and {bucket['total_negative_items']} tagged negative evidence items."
+            ),
+            'score': score,
+            'supporting_metrics': {
+                affected_key: affected_count,
+                'avg_duration_days': avg_duration_days,
+                'max_duration_days': max_duration_days,
+                'episode_count': len(durations),
+                'total_negative_items': bucket['total_negative_items'],
+                'active_days': len(bucket['days']),
+                'sector': bucket['sector'],
+                'display_tag': bucket['display_tag'],
+            },
+            'sample_entities': [bucket['entity_names'].get(entity_id, entity_id) for entity_id, _ in top_examples],
+            'sample_sectors': [bucket['sector']],
+        })
+
+    for bucket in by_tag.values():
+        if len(bucket['sectors']) < 2:
+            continue
+        durations = []
+        for days_set in bucket['entity_days'].values():
+            durations.extend(consecutive_day_durations(list(days_set)))
+        if not durations:
+            continue
+        affected_count = len(bucket['entity_days'])
+        avg_duration_days = round(sum(durations) / len(durations), 2)
+        max_duration_days = max(durations)
+        top_sectors = sorted(
+            bucket['sector_negative_item_totals'].items(),
+            key=lambda item: (-item[1], item[0].casefold()),
+        )[:3]
+        top_examples = sorted(
+            bucket['entity_negative_item_totals'].items(),
+            key=lambda item: (-item[1], bucket['entity_names'].get(item[0], '').casefold()),
+        )[:3]
+        score = round(
+            len(bucket['sectors']) * 7
+            + affected_count * 4
+            + avg_duration_days * 1.6
+            + bucket['total_negative_items'] * 0.25,
+            2,
+        )
+        candidates.append({
+            'storyline_key': f"cross_sector:{bucket['tag'].casefold()}",
+            'storyline_type': 'cross_sector_narrative',
+            'headline': f"{bucket['display_tag']} crossed sector lines",
+            'angle': (
+                f"The {bucket['display_tag']} narrative appeared across {len(bucket['sectors'])} sectors and "
+                f"{affected_count} {entity_label_plural} in the selected window."
+            ),
+            'why_interesting': (
+                f"It persisted for {avg_duration_days} days on average, peaked at {max_duration_days} days, "
+                f"and generated {bucket['total_negative_items']} tagged negative evidence items."
+            ),
+            'score': score,
+            'supporting_metrics': {
+                affected_key: affected_count,
+                'sectors_affected': len(bucket['sectors']),
+                'avg_duration_days': avg_duration_days,
+                'max_duration_days': max_duration_days,
+                'episode_count': len(durations),
+                'total_negative_items': bucket['total_negative_items'],
+                'display_tag': bucket['display_tag'],
+            },
+            'sample_entities': [bucket['entity_names'].get(entity_id, entity_id) for entity_id, _ in top_examples],
+            'sample_sectors': [sector for sector, _ in top_sectors],
+        })
+
+    for bucket in by_sector.values():
+        durations = []
+        for days_set in bucket['entity_days'].values():
+            durations.extend(consecutive_day_durations(list(days_set)))
+        if not durations:
+            continue
+        affected_count = len(bucket['entity_days'])
+        avg_duration_days = round(sum(durations) / len(durations), 2)
+        median_duration_days = float(median(durations))
+        max_duration_days = max(durations)
+        top_tags = sorted(
+            bucket['tag_negative_item_totals'].items(),
+            key=lambda item: (-item[1], item[0].casefold()),
+        )[:3]
+        top_examples = sorted(
+            bucket['entity_negative_item_totals'].items(),
+            key=lambda item: (-item[1], bucket['entity_names'].get(item[0], '').casefold()),
+        )[:3]
+        score = round(
+            avg_duration_days * 3
+            + affected_count * 3
+            + bucket['total_negative_items'] * 0.18,
+            2,
+        )
+        candidates.append({
+            'storyline_key': f"sector_duration:{bucket['sector']}",
+            'storyline_type': 'sector_duration_outlier',
+            'headline': f"{bucket['sector']} crises lingered in search",
+            'angle': (
+                f"{bucket['sector']} showed one of the more persistent search-visible crisis patterns "
+                f"for {affected_count} {entity_label_plural} in the selected window."
+            ),
+            'why_interesting': (
+                f"Average duration was {avg_duration_days} days, the median episode lasted {median_duration_days} days, "
+                f"and the strongest themes were {', '.join(tag for tag, _ in top_tags[:2]) or 'mixed'}."
+            ),
+            'score': score,
+            'supporting_metrics': {
+                affected_key: affected_count,
+                'avg_duration_days': avg_duration_days,
+                'median_duration_days': median_duration_days,
+                'max_duration_days': max_duration_days,
+                'episode_count': len(durations),
+                'total_negative_items': bucket['total_negative_items'],
+                'sector': bucket['sector'],
+                'dominant_tags': [tag for tag, _ in top_tags],
+            },
+            'sample_entities': [bucket['entity_names'].get(entity_id, entity_id) for entity_id, _ in top_examples],
+            'sample_sectors': [bucket['sector']],
+        })
+
+    return candidates
 
 
 # --------------------------- Static routes ---------------------------
@@ -1361,58 +2923,99 @@ def narrative_tags_json():
         return jsonify(cached)
 
     entity_type = canonical_entity_type(entity)
-    if entity_type == 'company':
-        entity_types = compatible_entity_types(entity)
-        params = [date_str, entity_types]
-        scope_sql, params = scope_clause("c.id", params)
-        join_sql = "join companies c on c.id = sfi.entity_id" if scope_sql else ""
-        sql = f"""
-            select sfi.entity_name,
-                   sfi.narrative_primary_tag,
-                   sfi.narrative_primary_group,
-                   sfi.narrative_tags,
-                   sfi.narrative_is_crisis
-            from serp_feature_items sfi
-            {join_sql}
-            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
-            where sfi.date = %s
-              and sfi.entity_type = any(%s)
-              and sfi.feature_type = 'top_stories_items'
-              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
-              and coalesce(sfi.finance_routine, false) = false
-              and sfi.narrative_primary_tag is not null
-              {scope_sql}
-        """
-    else:
-        params = [date_str, entity_type]
-        scope_sql, params = scope_clause("c.id", params)
-        join_sql = "join ceos ceo on ceo.id = sfi.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
-        sql = f"""
-            select sfi.entity_name,
-                   sfi.narrative_primary_tag,
-                   sfi.narrative_primary_group,
-                   sfi.narrative_tags,
-                   sfi.narrative_is_crisis
-            from serp_feature_items sfi
-            {join_sql}
-            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
-            where sfi.date = %s
-              and sfi.entity_type = %s
-              and sfi.feature_type = 'top_stories_items'
-              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
-              and coalesce(sfi.finance_routine, false) = false
-              and sfi.narrative_primary_tag is not null
-              {scope_sql}
-        """
-
     try:
+        if entity_type == 'company':
+            entity_types = compatible_entity_types(entity)
+            params = [date_str, entity_types]
+            scope_sql, params = scope_clause("c.id", params)
+            join_sql = "join companies c on c.id = ecd.entity_id" if scope_sql else ""
+            sql = f"""
+                select ecd.entity_name,
+                       ecd.primary_tag as narrative_primary_tag,
+                       ecd.primary_group as narrative_primary_group,
+                       ecd.tags as narrative_tags,
+                       ecd.tag_counts,
+                       ecd.is_crisis as narrative_is_crisis
+                from entity_crisis_event_daily ecd
+                {join_sql}
+                where ecd.date = %s
+                  and ecd.entity_type = any(%s)
+                  and ecd.primary_tag is not null
+                  {scope_sql}
+            """
+        else:
+            params = [date_str, entity_type]
+            scope_sql, params = scope_clause("c.id", params)
+            join_sql = "join ceos ceo on ceo.id = ecd.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
+            sql = f"""
+                select ecd.entity_name,
+                       ecd.primary_tag as narrative_primary_tag,
+                       ecd.primary_group as narrative_primary_group,
+                       ecd.tags as narrative_tags,
+                       ecd.tag_counts,
+                       ecd.is_crisis as narrative_is_crisis
+                from entity_crisis_event_daily ecd
+                {join_sql}
+                where ecd.date = %s
+                  and ecd.entity_type = %s
+                  and ecd.primary_tag is not null
+                  {scope_sql}
+            """
         rows = query_dict(sql, tuple(params))
+        if not rows:
+            raise LookupError("no_crisis_event_rows")
     except Exception as exc:
-        app.logger.exception("narrative_tags failed")
-        if debug:
-            return jsonify({'error': 'narrative_tags_failed', 'detail': str(exc)}), 500
-        # Graceful fallback while schema/ingest rollout catches up.
-        return jsonify([])
+        app.logger.warning("narrative_tags rollup fallback: %s", exc)
+        try:
+            if entity_type == 'company':
+                entity_types = compatible_entity_types(entity)
+                params = [date_str, entity_types]
+                scope_sql, params = scope_clause("c.id", params)
+                join_sql = "join companies c on c.id = sfi.entity_id" if scope_sql else ""
+                sql = f"""
+                    select sfi.entity_name,
+                           sfi.narrative_primary_tag,
+                           sfi.narrative_primary_group,
+                           sfi.narrative_tags,
+                           sfi.narrative_is_crisis
+                    from serp_feature_items sfi
+                    {join_sql}
+                    left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                    where sfi.date = %s
+                      and sfi.entity_type = any(%s)
+                      and sfi.feature_type = 'top_stories_items'
+                      and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      and coalesce(sfi.finance_routine, false) = false
+                      and sfi.narrative_primary_tag is not null
+                      {scope_sql}
+                """
+            else:
+                params = [date_str, entity_type]
+                scope_sql, params = scope_clause("c.id", params)
+                join_sql = "join ceos ceo on ceo.id = sfi.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
+                sql = f"""
+                    select sfi.entity_name,
+                           sfi.narrative_primary_tag,
+                           sfi.narrative_primary_group,
+                           sfi.narrative_tags,
+                           sfi.narrative_is_crisis
+                    from serp_feature_items sfi
+                    {join_sql}
+                    left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                    where sfi.date = %s
+                      and sfi.entity_type = %s
+                      and sfi.feature_type = 'top_stories_items'
+                      and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      and coalesce(sfi.finance_routine, false) = false
+                      and sfi.narrative_primary_tag is not null
+                      {scope_sql}
+                """
+            rows = query_dict(sql, tuple(params))
+        except Exception:
+            app.logger.exception("narrative_tags failed")
+            if debug:
+                return jsonify({'error': 'narrative_tags_failed', 'detail': str(exc)}), 500
+            return jsonify([])
 
     by_entity: Dict[str, Dict] = {}
     for r in rows:
@@ -1443,11 +3046,15 @@ def narrative_tags_json():
         raw_tags = r.get('narrative_tags') or []
         if isinstance(raw_tags, str):
             raw_tags = [raw_tags]
+        raw_tag_counts = narrative_tag_count_map(r.get('tag_counts'))
         for tag in raw_tags:
             tag_txt = (str(tag) or '').strip()
             if not tag_txt:
                 continue
-            bucket['tag_counts'][tag_txt] = bucket['tag_counts'].get(tag_txt, 0) + 1
+            bucket['tag_counts'][tag_txt] = bucket['tag_counts'].get(tag_txt, 0) + max(
+                raw_tag_counts.get(tag_txt, 1),
+                1,
+            )
             if tag_txt in NON_CRISIS_NARRATIVE_TAGS:
                 bucket['has_non_crisis'] = True
 
@@ -1517,53 +3124,97 @@ def narrative_timeline_json():
         return jsonify(cached)
 
     entity_type = canonical_entity_type(entity)
-    if entity_type == 'company':
-        entity_types = compatible_entity_types(entity)
-        params = [start_date, target_date, entity_types, entity_name]
-        scope_sql, params = scope_clause("c.id", params)
-        join_sql = "join companies c on c.id = sfi.entity_id" if scope_sql else ""
-        sql = f"""
-            select sfi.date,
-                   sfi.narrative_primary_tag,
-                   sfi.narrative_primary_group,
-                   sfi.narrative_tags,
-                   sfi.narrative_is_crisis
-            from serp_feature_items sfi
-            {join_sql}
-            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
-            where sfi.date between %s and %s
-              and sfi.entity_type = any(%s)
-              and sfi.entity_name = %s
-              and sfi.feature_type = 'top_stories_items'
-              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
-              and coalesce(sfi.finance_routine, false) = false
-              and sfi.narrative_primary_tag is not null
-              {scope_sql}
-        """
-    else:
-        params = [start_date, target_date, entity_type, entity_name]
-        scope_sql, params = scope_clause("c.id", params)
-        join_sql = "join ceos ceo on ceo.id = sfi.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
-        sql = f"""
-            select sfi.date,
-                   sfi.narrative_primary_tag,
-                   sfi.narrative_primary_group,
-                   sfi.narrative_tags,
-                   sfi.narrative_is_crisis
-            from serp_feature_items sfi
-            {join_sql}
-            left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
-            where sfi.date between %s and %s
-              and sfi.entity_type = %s
-              and sfi.entity_name = %s
-              and sfi.feature_type = 'top_stories_items'
-              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
-              and coalesce(sfi.finance_routine, false) = false
-              and sfi.narrative_primary_tag is not null
-              {scope_sql}
-        """
-
-    rows = query_dict(sql, tuple(params))
+    try:
+        if entity_type == 'company':
+            entity_types = compatible_entity_types(entity)
+            params = [start_date, target_date, entity_types, entity_name]
+            scope_sql, params = scope_clause("c.id", params)
+            join_sql = "join companies c on c.id = ecd.entity_id" if scope_sql else ""
+            sql = f"""
+                select ecd.date,
+                       ecd.primary_tag as narrative_primary_tag,
+                       ecd.primary_group as narrative_primary_group,
+                       ecd.tags as narrative_tags,
+                       ecd.tag_counts,
+                       ecd.is_crisis as narrative_is_crisis
+                from entity_crisis_event_daily ecd
+                {join_sql}
+                where ecd.date between %s and %s
+                  and ecd.entity_type = any(%s)
+                  and ecd.entity_name = %s
+                  and ecd.primary_tag is not null
+                  {scope_sql}
+            """
+        else:
+            params = [start_date, target_date, entity_type, entity_name]
+            scope_sql, params = scope_clause("c.id", params)
+            join_sql = "join ceos ceo on ceo.id = ecd.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
+            sql = f"""
+                select ecd.date,
+                       ecd.primary_tag as narrative_primary_tag,
+                       ecd.primary_group as narrative_primary_group,
+                       ecd.tags as narrative_tags,
+                       ecd.tag_counts,
+                       ecd.is_crisis as narrative_is_crisis
+                from entity_crisis_event_daily ecd
+                {join_sql}
+                where ecd.date between %s and %s
+                  and ecd.entity_type = %s
+                  and ecd.entity_name = %s
+                  and ecd.primary_tag is not null
+                  {scope_sql}
+            """
+        rows = query_dict(sql, tuple(params))
+        if not rows:
+            raise LookupError("no_crisis_event_rows")
+    except Exception as exc:
+        app.logger.warning("narrative_timeline rollup fallback: %s", exc)
+        if entity_type == 'company':
+            entity_types = compatible_entity_types(entity)
+            params = [start_date, target_date, entity_types, entity_name]
+            scope_sql, params = scope_clause("c.id", params)
+            join_sql = "join companies c on c.id = sfi.entity_id" if scope_sql else ""
+            sql = f"""
+                select sfi.date,
+                       sfi.narrative_primary_tag,
+                       sfi.narrative_primary_group,
+                       sfi.narrative_tags,
+                       sfi.narrative_is_crisis
+                from serp_feature_items sfi
+                {join_sql}
+                left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                where sfi.date between %s and %s
+                  and sfi.entity_type = any(%s)
+                  and sfi.entity_name = %s
+                  and sfi.feature_type = 'top_stories_items'
+                  and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                  and coalesce(sfi.finance_routine, false) = false
+                  and sfi.narrative_primary_tag is not null
+                  {scope_sql}
+            """
+        else:
+            params = [start_date, target_date, entity_type, entity_name]
+            scope_sql, params = scope_clause("c.id", params)
+            join_sql = "join ceos ceo on ceo.id = sfi.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
+            sql = f"""
+                select sfi.date,
+                       sfi.narrative_primary_tag,
+                       sfi.narrative_primary_group,
+                       sfi.narrative_tags,
+                       sfi.narrative_is_crisis
+                from serp_feature_items sfi
+                {join_sql}
+                left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                where sfi.date between %s and %s
+                  and sfi.entity_type = %s
+                  and sfi.entity_name = %s
+                  and sfi.feature_type = 'top_stories_items'
+                  and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                  and coalesce(sfi.finance_routine, false) = false
+                  and sfi.narrative_primary_tag is not null
+                  {scope_sql}
+            """
+        rows = query_dict(sql, tuple(params))
 
     target_iso = target_date.isoformat()
     by_tag: Dict[str, Dict] = {}
@@ -1595,6 +3246,7 @@ def narrative_timeline_json():
         raw_tags = r.get('narrative_tags') or []
         if isinstance(raw_tags, str):
             raw_tags = [raw_tags]
+        raw_tag_counts = narrative_tag_count_map(r.get('tag_counts'))
         row_tags = []
         seen = set()
         for tag in raw_tags:
@@ -1623,9 +3275,10 @@ def narrative_timeline_json():
                 'mentions_by_date': {},
                 'group_counts': {'crisis': 0, 'non_crisis': 0},
             })
-            bucket['mentions_total'] += 1
+            weight = max(raw_tag_counts.get(tag, 1), 1)
+            bucket['mentions_total'] += weight
             bucket['days'].add(day)
-            bucket['mentions_by_date'][day_iso] = bucket['mentions_by_date'].get(day_iso, 0) + 1
+            bucket['mentions_by_date'][day_iso] = bucket['mentions_by_date'].get(day_iso, 0) + weight
 
             vote = None
             if primary_norm and norm == primary_norm and primary_group in {'crisis', 'non_crisis'}:
@@ -1700,6 +3353,237 @@ def narrative_timeline_json():
         'date': target_iso,
         'lookback_days': days,
         'tags': tags_out,
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/narrative_overlay')
+def narrative_overlay_json():
+    if PUBLIC_MODE:
+        return jsonify([])
+    entity = (request.args.get('entity') or 'brand').strip().lower()
+    entity_name = (request.args.get('entity_name') or '').strip()
+    start_str = (request.args.get('start_date') or '').strip()
+    end_str = (request.args.get('end_date') or '').strip()
+    include_non_crisis = (request.args.get('include_non_crisis') or '').strip().lower() in {'1', 'true', 'yes'}
+    try:
+        limit = int(request.args.get('limit', '0') or 0)
+    except ValueError:
+        limit = 0
+    limit = min(max(limit, 0), 200)
+
+    if entity not in {'brand', 'ceo'}:
+        return jsonify({'error': 'entity must be brand or ceo'}), 400
+    if not entity_name:
+        return jsonify({'error': 'entity_name is required'}), 400
+    if not start_str or not end_str:
+        return jsonify({'error': 'start_date and end_date are required (YYYY-MM-DD)'}), 400
+
+    try:
+        start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(end_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'invalid date format (YYYY-MM-DD)'}), 400
+
+    if start_date > end_date:
+        return jsonify({'error': 'start_date must be on or before end_date'}), 400
+
+    cache_key = f"narrative_overlay:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    entity_type = canonical_entity_type(entity)
+    try:
+        if entity_type == 'company':
+            entity_types = compatible_entity_types(entity)
+            params = [start_date, end_date, entity_types, entity_name]
+            scope_sql, params = scope_clause("c.id", params)
+            join_sql = "join companies c on c.id = ecd.entity_id" if scope_sql else ""
+            sql = f"""
+                select ecd.date,
+                       ecd.primary_tag as narrative_primary_tag,
+                       ecd.primary_group as narrative_primary_group,
+                       ecd.is_crisis as narrative_is_crisis,
+                       ecd.tags as narrative_tags,
+                       ecd.tag_counts,
+                       ecd.supporting_negative_items as negative_item_count
+                from entity_crisis_event_daily ecd
+                {join_sql}
+                where ecd.date between %s and %s
+                  and ecd.entity_type = any(%s)
+                  and ecd.entity_name = %s
+                  and ecd.primary_tag is not null
+                  {scope_sql}
+                order by ecd.date, ecd.primary_tag
+            """
+        else:
+            params = [start_date, end_date, entity_type, entity_name]
+            scope_sql, params = scope_clause("c.id", params)
+            join_sql = "join ceos ceo on ceo.id = ecd.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
+            sql = f"""
+                select ecd.date,
+                       ecd.primary_tag as narrative_primary_tag,
+                       ecd.primary_group as narrative_primary_group,
+                       ecd.is_crisis as narrative_is_crisis,
+                       ecd.tags as narrative_tags,
+                       ecd.tag_counts,
+                       ecd.supporting_negative_items as negative_item_count
+                from entity_crisis_event_daily ecd
+                {join_sql}
+                where ecd.date between %s and %s
+                  and ecd.entity_type = %s
+                  and ecd.entity_name = %s
+                  and ecd.primary_tag is not null
+                  {scope_sql}
+                order by ecd.date, ecd.primary_tag
+            """
+        rows = query_dict(sql, tuple(params))
+        if not rows:
+            raise LookupError("no_crisis_event_rows")
+        rows = expand_rollup_narrative_rows(rows)
+    except Exception as exc:
+        app.logger.warning("narrative_overlay rollup fallback: %s", exc)
+        try:
+            if entity_type == 'company':
+                entity_types = compatible_entity_types(entity)
+                params = [start_date, end_date, entity_types, entity_name]
+                scope_sql, params = scope_clause("c.id", params)
+                join_sql = "join companies c on c.id = sfi.entity_id" if scope_sql else ""
+                sql = f"""
+                    select sfi.date,
+                           sfi.narrative_primary_tag,
+                           sfi.narrative_primary_group,
+                           sfi.narrative_is_crisis,
+                           count(*) as negative_item_count
+                    from serp_feature_items sfi
+                    {join_sql}
+                    left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                    where sfi.date between %s and %s
+                      and sfi.entity_type = any(%s)
+                      and sfi.entity_name = %s
+                      and sfi.feature_type = 'top_stories_items'
+                      and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      and coalesce(sfi.finance_routine, false) = false
+                      and sfi.narrative_primary_tag is not null
+                      {scope_sql}
+                    group by sfi.date, sfi.narrative_primary_tag, sfi.narrative_primary_group, sfi.narrative_is_crisis
+                    order by sfi.date, sfi.narrative_primary_tag
+                """
+            else:
+                params = [start_date, end_date, entity_type, entity_name]
+                scope_sql, params = scope_clause("c.id", params)
+                join_sql = "join ceos ceo on ceo.id = sfi.entity_id join companies c on c.id = ceo.company_id" if scope_sql else ""
+                sql = f"""
+                    select sfi.date,
+                           sfi.narrative_primary_tag,
+                           sfi.narrative_primary_group,
+                           sfi.narrative_is_crisis,
+                           count(*) as negative_item_count
+                    from serp_feature_items sfi
+                    {join_sql}
+                    left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                    where sfi.date between %s and %s
+                      and sfi.entity_type = %s
+                      and sfi.entity_name = %s
+                      and sfi.feature_type = 'top_stories_items'
+                      and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      and coalesce(sfi.finance_routine, false) = false
+                      and sfi.narrative_primary_tag is not null
+                      {scope_sql}
+                    group by sfi.date, sfi.narrative_primary_tag, sfi.narrative_primary_group, sfi.narrative_is_crisis
+                    order by sfi.date, sfi.narrative_primary_tag
+                """
+            rows = query_dict(sql, tuple(params))
+        except Exception:
+            app.logger.exception("narrative_overlay failed")
+            return jsonify({
+                'entity': entity,
+                'entity_name': entity_name,
+                'start_date': start_date.isoformat(),
+                'end_date': end_date.isoformat(),
+                'include_non_crisis': include_non_crisis,
+                'windows': [],
+            })
+
+    by_tag: Dict[str, Dict] = {}
+    for row in rows:
+        day = coerce_date(row.get('date'))
+        if day is None:
+            continue
+        tag = (row.get('narrative_primary_tag') or '').strip()
+        if not tag:
+            continue
+        primary_group = (row.get('narrative_primary_group') or '').strip().lower()
+        if primary_group not in {'crisis', 'non_crisis'}:
+            if tag in NON_CRISIS_NARRATIVE_TAGS:
+                primary_group = 'non_crisis'
+            elif row.get('narrative_is_crisis') is True:
+                primary_group = 'crisis'
+            elif row.get('narrative_is_crisis') is False:
+                primary_group = 'non_crisis'
+        if not include_non_crisis and primary_group == 'non_crisis':
+            continue
+        tag_key = f"{tag.casefold()}::{primary_group or ''}"
+        bucket = by_tag.setdefault(tag_key, {
+            'tag': tag,
+            'group': primary_group or None,
+            'display_tag': narrative_display_tag(tag, primary_group or None),
+            'days': {},
+        })
+        day_iso = day.isoformat()
+        bucket['days'][day_iso] = bucket['days'].get(day_iso, 0) + int(row.get('negative_item_count') or 0)
+
+    windows_out: List[Dict] = []
+    for bucket in by_tag.values():
+        day_counts = bucket.get('days') or {}
+        day_values = sorted(
+            ((coerce_date(day_iso), int(count or 0)) for day_iso, count in day_counts.items()),
+            key=lambda item: item[0],
+        )
+        if not day_values:
+            continue
+        count_by_day = {day: count for day, count in day_values if day is not None}
+        for window_start, window_end, duration_days in consecutive_day_windows(list(count_by_day.keys())):
+            negative_item_count = sum(
+                count_by_day.get(day, 0)
+                for day in count_by_day.keys()
+                if window_start <= day <= window_end
+            )
+            windows_out.append({
+                'tag': bucket['tag'],
+                'display_tag': bucket['display_tag'],
+                'group': bucket['group'],
+                'is_crisis': bucket['group'] == 'crisis',
+                'is_non_crisis': bucket['group'] == 'non_crisis',
+                'start_date': window_start.isoformat(),
+                'end_date': window_end.isoformat(),
+                'duration_days': duration_days,
+                'negative_item_count': negative_item_count,
+                'active_on_end_date': window_start <= end_date <= window_end,
+            })
+
+    windows_out.sort(key=lambda row: str(row.get('display_tag') or '').casefold())
+    windows_out.sort(key=lambda row: row.get('negative_item_count') or 0, reverse=True)
+    windows_out.sort(key=lambda row: str(row.get('end_date') or ''), reverse=True)
+    windows_out.sort(key=lambda row: row.get('duration_days') or 0, reverse=True)
+    windows_out.sort(key=lambda row: 0 if row.get('active_on_end_date') else 1)
+    selected_windows = windows_out if limit == 0 else windows_out[:limit]
+    selected_windows.sort(
+        key=lambda row: (
+            str(row.get('start_date') or ''),
+            str(row.get('end_date') or ''),
+            str(row.get('display_tag') or '').casefold(),
+        )
+    )
+    payload = {
+        'entity': entity,
+        'entity_name': entity_name,
+        'start_date': start_date.isoformat(),
+        'end_date': end_date.isoformat(),
+        'include_non_crisis': include_non_crisis,
+        'windows': selected_windows,
     }
     set_cached_json(cache_key, payload)
     return jsonify(payload)
@@ -1818,6 +3702,772 @@ def negative_summary_json():
         raise
 
 
+@app.route('/api/v1/insights/resolve_entity')
+def insights_resolve_entity_json():
+    entity = request.args.get('entity', 'brand')
+    entity_name = (request.args.get('entity_name') or '').strip()
+    if not entity_name:
+        return jsonify({'error': 'entity_name is required'}), 400
+    try:
+        limit = int(request.args.get('limit', '5') or 5)
+    except ValueError:
+        limit = 5
+    limit = min(max(limit, 1), 10)
+
+    cache_key = f"insights_resolve_entity:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    resolved = resolve_entity_lookup(entity, entity_name)
+    suggestion_rows: List[Dict] = []
+    if resolved:
+        suggestion_rows.append(resolved)
+    suggestion_rows.extend(entity_lookup_suggestions(entity, entity_name, limit=limit))
+    suggestions = dedupe_entity_payloads(suggestion_rows)[:limit]
+
+    payload = {
+        'query': {
+            'entity': analytics_entity_type(entity),
+            'entity_name': entity_name,
+        },
+        'resolution_status': (
+            'suggestions_only'
+            if resolved is None and suggestions
+            else lookup_resolution_status(resolved)
+        ),
+        'resolved': entity_payload(resolved) if resolved else None,
+        'suggestions': suggestions,
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/insights/resolve_sector')
+def insights_resolve_sector_json():
+    sector_name = (request.args.get('sector_name') or '').strip()
+    if not sector_name:
+        return jsonify({'error': 'sector_name is required'}), 400
+    try:
+        limit = int(request.args.get('limit', '5') or 5)
+    except ValueError:
+        limit = 5
+    limit = min(max(limit, 1), 10)
+
+    cache_key = f"insights_resolve_sector:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    resolved = resolve_sector_lookup(sector_name)
+    suggestion_rows: List[Dict] = []
+    if resolved:
+        suggestion_rows.append(resolved)
+    suggestion_rows.extend(sector_lookup_suggestions(sector_name, limit=limit))
+    suggestions = dedupe_sector_payloads(suggestion_rows)[:limit]
+
+    payload = {
+        'query': {
+            'sector_name': sector_name,
+        },
+        'resolution_status': (
+            'suggestions_only'
+            if resolved is None and suggestions
+            else sector_lookup_resolution_status(resolved)
+        ),
+        'resolved': sector_payload(resolved) if resolved else None,
+        'suggestions': suggestions,
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/insights/screen_entities')
+def insights_screen_entities_json():
+    entity = request.args.get('entity', 'brand')
+    metric = (request.args.get('metric') or 'top_stories_negative_count').strip()
+    sector = (request.args.get('sector') or '').strip()
+    if metric not in SCREENABLE_METRICS:
+        return jsonify({
+            'error': 'unsupported metric',
+            'supported_metrics': sorted(SCREENABLE_METRICS.keys()),
+        }), 400
+
+    try:
+        days = int(request.args.get('days', '1') or 1)
+    except ValueError:
+        days = 1
+    try:
+        limit = int(request.args.get('limit', '20') or 20)
+    except ValueError:
+        limit = 20
+    try:
+        min_value = float(request.args.get('min_value', '1') or 1)
+    except ValueError:
+        min_value = 1.0
+
+    days = min(max(days, 1), 90)
+    limit = min(max(limit, 1), 100)
+    min_value = max(min_value, 0.0)
+
+    cache_key = f"insights_screen_entities:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    analytics_type = analytics_entity_type(entity)
+    latest_params: List = [analytics_type]
+    sector_sql = ""
+    if sector:
+        latest_params.append(f"%{sector}%")
+        sector_sql = " and coalesce(c.sector, '') ilike %s"
+    latest_scope_sql, latest_params = scope_clause("edm.company_id", latest_params)
+    latest_rows = query_rows(
+        f"""
+        select max(edm.date)
+        from entity_daily_metrics_v edm
+        join companies c on c.id = edm.company_id
+        where edm.entity_type = %s
+          {sector_sql}
+          {latest_scope_sql}
+        """,
+        tuple(latest_params),
+    )
+    end_date = latest_rows[0][0] if latest_rows and latest_rows[0] else None
+    if end_date is None:
+        return jsonify({'error': 'no_data'}), 404
+
+    start_date = end_date - timedelta(days=days - 1)
+    metric_sql = SCREENABLE_METRICS[metric]['column']
+    params = [end_date, analytics_type, start_date, end_date]
+    sector_sql = ""
+    if sector:
+        params.append(f"%{sector}%")
+        sector_sql = " and coalesce(c.sector, '') ilike %s"
+    scope_sql, params = scope_clause("edm.company_id", params)
+    params.extend([min_value, limit])
+    rows = query_dict(
+        f"""
+        select edm.entity_type,
+               edm.entity_id,
+               edm.company_id,
+               edm.ceo_id,
+               max(edm.entity_name) as entity_name,
+               max(edm.company) as company,
+               max(edm.ceo) as ceo,
+               max(coalesce(c.sector, '')) as sector,
+               sum(edm.{metric_sql})::numeric as window_value,
+               max(case when edm.date = %s then edm.{metric_sql} end)::numeric as latest_value,
+               max(edm.{metric_sql})::numeric as peak_value,
+               count(*) filter (where edm.{metric_sql} > 0) as signal_days
+        from entity_daily_metrics_v edm
+        join companies c on c.id = edm.company_id
+        where edm.entity_type = %s
+          and edm.date between %s and %s
+          {sector_sql}
+          {scope_sql}
+        group by edm.entity_type, edm.entity_id, edm.company_id, edm.ceo_id
+        having sum(edm.{metric_sql}) >= %s
+        order by window_value desc, latest_value desc, entity_name
+        limit %s
+        """,
+        tuple(params),
+    )
+
+    payload_rows = []
+    for row in rows:
+        payload_rows.append(
+            {
+                **entity_payload({
+                    'analytics_entity_type': row.get('entity_type'),
+                    'entity_id': row.get('entity_id'),
+                    'company_id': row.get('company_id'),
+                    'ceo_id': row.get('ceo_id'),
+                    'entity_name': row.get('entity_name'),
+                    'company': row.get('company'),
+                    'ceo': row.get('ceo'),
+                }),
+                'window_value': row.get('window_value'),
+                'latest_value': row.get('latest_value'),
+                'peak_value': row.get('peak_value'),
+                'signal_days': row.get('signal_days'),
+                'sector': row.get('sector') or '',
+            }
+        )
+
+    payload = {
+        'entity': analytics_type,
+        'metric': metric,
+        'metric_label': SCREENABLE_METRICS[metric]['label'],
+        'window_start': start_date.isoformat(),
+        'window_end': end_date.isoformat(),
+        'latest_available_date': end_date.isoformat(),
+        'days': days,
+        'limit': limit,
+        'min_value': min_value,
+        'sector': sector,
+        'rows': serialize_rows(payload_rows),
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/insights/sector_baseline')
+def insights_sector_baseline_json():
+    entity = request.args.get('entity', 'brand')
+    sector_name = (request.args.get('sector') or '').strip()
+    metric = (request.args.get('metric') or 'top_stories_negative_count').strip()
+    entity_name = (request.args.get('entity_name') or '').strip()
+
+    if not sector_name:
+        return jsonify({'error': 'sector is required'}), 400
+    if metric not in SCREENABLE_METRICS:
+        return jsonify({
+            'error': 'unsupported metric',
+            'supported_metrics': sorted(SCREENABLE_METRICS.keys()),
+        }), 400
+
+    try:
+        days = int(request.args.get('days', '30') or 30)
+    except ValueError:
+        days = 30
+    try:
+        limit = int(request.args.get('limit', '10') or 10)
+    except ValueError:
+        limit = 10
+
+    days = min(max(days, 1), 180)
+    limit = min(max(limit, 1), 100)
+
+    cache_key = f"insights_sector_baseline:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    resolved_sector = resolve_sector_lookup(sector_name)
+    sector_suggestion_rows: List[Dict] = []
+    if resolved_sector:
+        sector_suggestion_rows.append(resolved_sector)
+    sector_suggestion_rows.extend(sector_lookup_suggestions(sector_name, limit=5))
+    sector_suggestions = dedupe_sector_payloads(sector_suggestion_rows)[:5]
+    if resolved_sector is None:
+        payload = {
+            'query': {
+                'entity': analytics_entity_type(entity),
+                'sector': sector_name,
+                'metric': metric,
+                'entity_name': entity_name,
+            },
+            'resolution_status': (
+                'suggestions_only' if sector_suggestions else 'not_found'
+            ),
+            'resolved_sector': None,
+            'sector_suggestions': sector_suggestions,
+            'rows': [],
+        }
+        return jsonify(payload), 404
+
+    analytics_type = analytics_entity_type(entity)
+    latest_params: List = [analytics_type, resolved_sector['sector']]
+    latest_scope_sql, latest_params = scope_clause("edm.company_id", latest_params)
+    latest_rows = query_rows(
+        f"""
+        select max(edm.date)
+        from entity_daily_metrics_v edm
+        join companies c on c.id = edm.company_id
+        where edm.entity_type = %s
+          and c.sector = %s
+          {latest_scope_sql}
+        """,
+        tuple(latest_params),
+    )
+    end_date = latest_rows[0][0] if latest_rows and latest_rows[0] else None
+    if end_date is None:
+        return jsonify({'error': 'no_data'}), 404
+
+    start_date = end_date - timedelta(days=days - 1)
+    metric_sql = SCREENABLE_METRICS[metric]['column']
+    params = [end_date, analytics_type, resolved_sector['sector'], start_date, end_date]
+    scope_sql, params = scope_clause("edm.company_id", params)
+    rows = query_dict(
+        f"""
+        select edm.entity_type,
+               edm.entity_id,
+               edm.company_id,
+               edm.ceo_id,
+               max(edm.entity_name) as entity_name,
+               max(edm.company) as company,
+               max(edm.ceo) as ceo,
+               max(coalesce(c.sector, '')) as sector,
+               sum(edm.{metric_sql})::numeric as window_value,
+               avg(edm.{metric_sql})::numeric as avg_daily_value,
+               max(case when edm.date = %s then edm.{metric_sql} end)::numeric as latest_value,
+               max(edm.{metric_sql})::numeric as peak_value,
+               count(*) filter (where edm.{metric_sql} > 0) as signal_days
+        from entity_daily_metrics_v edm
+        join companies c on c.id = edm.company_id
+        where edm.entity_type = %s
+          and c.sector = %s
+          and edm.date between %s and %s
+          {scope_sql}
+        group by edm.entity_type, edm.entity_id, edm.company_id, edm.ceo_id
+        order by window_value desc, latest_value desc, entity_name
+        """,
+        tuple(params),
+    )
+
+    payload_rows = []
+    for row in rows:
+        payload_rows.append(
+            {
+                **entity_payload({
+                    'analytics_entity_type': row.get('entity_type'),
+                    'entity_id': row.get('entity_id'),
+                    'company_id': row.get('company_id'),
+                    'ceo_id': row.get('ceo_id'),
+                    'entity_name': row.get('entity_name'),
+                    'company': row.get('company'),
+                    'ceo': row.get('ceo'),
+                }),
+                'window_value': row.get('window_value'),
+                'avg_daily_value': row.get('avg_daily_value'),
+                'latest_value': row.get('latest_value'),
+                'peak_value': row.get('peak_value'),
+                'signal_days': row.get('signal_days'),
+                'sector': row.get('sector') or '',
+            }
+        )
+
+    window_values = [float(row.get('window_value') or 0) for row in payload_rows]
+    avg_window_value = round(sum(window_values) / len(window_values), 4) if window_values else 0.0
+    median_window_value = round(float(median(window_values)), 4) if window_values else 0.0
+    active_entity_count = sum(1 for row in payload_rows if float(row.get('window_value') or 0) > 0)
+
+    peer_payload = None
+    peer_resolution = None
+    peer_suggestions: List[Dict] = []
+    if entity_name:
+        resolved_entity = resolve_entity_lookup(entity, entity_name)
+        peer_resolution = entity_payload(resolved_entity) if resolved_entity else None
+        if resolved_entity is None:
+            peer_suggestions = dedupe_entity_payloads(
+                entity_lookup_suggestions(entity, entity_name, limit=5)
+            )[:5]
+        else:
+            row_index = next(
+                (
+                    idx for idx, row in enumerate(payload_rows)
+                    if row.get('entity_type') == peer_resolution.get('entity_type')
+                    and row.get('entity_id') == peer_resolution.get('entity_id')
+                ),
+                None,
+            )
+            if row_index is not None:
+                peer_row = dict(payload_rows[row_index])
+                rank = row_index + 1
+                peer_count = len(payload_rows)
+                percentile = 100.0
+                if peer_count > 1:
+                    percentile = round(100.0 * ((peer_count - rank) / (peer_count - 1)), 1)
+                peer_payload = {
+                    **peer_row,
+                    'rank': rank,
+                    'peer_count': peer_count,
+                    'percentile': percentile,
+                    'vs_sector_avg': round(float(peer_row.get('window_value') or 0) - avg_window_value, 4),
+                    'vs_sector_median': round(float(peer_row.get('window_value') or 0) - median_window_value, 4),
+                    'in_sector': True,
+                }
+            else:
+                peer_payload = {
+                    **peer_resolution,
+                    'in_sector': False,
+                    'reason': 'entity_not_in_sector_or_no_metric_data_for_window',
+                }
+
+    payload = {
+        'entity': analytics_type,
+        'metric': metric,
+        'metric_label': SCREENABLE_METRICS[metric]['label'],
+        'days': days,
+        'window_start': start_date.isoformat(),
+        'window_end': end_date.isoformat(),
+        'latest_available_date': end_date.isoformat(),
+        'resolution_status': sector_lookup_resolution_status(resolved_sector),
+        'resolved_sector': sector_payload(resolved_sector),
+        'sector_suggestions': sector_suggestions,
+        'sector_summary': {
+            'entity_count': len(payload_rows),
+            'active_entity_count': active_entity_count,
+            'avg_window_value': avg_window_value,
+            'median_window_value': median_window_value,
+            'max_window_value': max(window_values) if window_values else 0,
+        },
+        'peer_entity_resolution': peer_resolution,
+        'peer_entity': serialize_rows([peer_payload])[0] if peer_payload else None,
+        'peer_entity_suggestions': peer_suggestions,
+        'rows': serialize_rows(payload_rows[:limit]),
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/insights/aggregate_crisis_patterns')
+def insights_aggregate_crisis_patterns_json():
+    entity = request.args.get('entity', 'brand')
+    sector = (request.args.get('sector') or '').strip()
+    try:
+        limit = int(request.args.get('limit', '10') or 10)
+    except ValueError:
+        limit = 10
+    include_non_crisis = (request.args.get('include_non_crisis') or '').strip().lower() in {'1', 'true', 'yes'}
+    limit = min(max(limit, 1), 50)
+
+    cache_key = f"insights_aggregate_crisis_patterns:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    try:
+        start_date, end_date, latest_available_date, days, window_mode, requested_start_date, requested_end_date = resolve_insights_window(
+            entity,
+            sector=sector,
+            default_days=90,
+            min_days=7,
+            max_days=365,
+        )
+    except LookupError:
+        return jsonify({'error': 'no_data'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    analytics_type, rows = fetch_negative_top_stories_narrative_rows(entity, start_date, end_date, sector)
+
+    by_pattern: Dict[Tuple[str, str], Dict] = {}
+    for row in rows:
+        tag = (row.get('narrative_primary_tag') or '').strip()
+        if not tag:
+            continue
+        primary_group = (row.get('narrative_primary_group') or '').strip().lower()
+        if primary_group not in {'crisis', 'non_crisis'}:
+            if tag in NON_CRISIS_NARRATIVE_TAGS:
+                primary_group = 'non_crisis'
+            elif row.get('narrative_is_crisis') is True:
+                primary_group = 'crisis'
+            elif row.get('narrative_is_crisis') is False:
+                primary_group = 'non_crisis'
+        if not include_non_crisis and primary_group == 'non_crisis':
+            continue
+
+        day = coerce_date(row.get('date'))
+        entity_id = str(row.get('entity_id') or '')
+        company = (row.get('company') or '').strip()
+        entity_name = (row.get('entity_name') or '').strip()
+        key = (tag.casefold(), primary_group or '')
+        bucket = by_pattern.setdefault(key, {
+            'tag': tag,
+            'group': primary_group or None,
+            'display_tag': narrative_display_tag(tag, primary_group or None),
+            'entity_days': {},
+            'entity_names': {},
+            'entity_totals': {},
+            'total_negative_items': 0,
+            'active_entity_ids': set(),
+            'sector_values': set(),
+        })
+        bucket['entity_days'].setdefault(entity_id, set()).add(day)
+        bucket['entity_names'][entity_id] = entity_name
+        bucket['entity_totals'][entity_id] = bucket['entity_totals'].get(entity_id, 0) + int(row.get('negative_item_count') or 0)
+        bucket['total_negative_items'] += int(row.get('negative_item_count') or 0)
+        bucket['sector_values'].add((row.get('sector') or '').strip())
+        if day == end_date:
+            bucket['active_entity_ids'].add(entity_id)
+
+    pattern_rows = []
+    for bucket in by_pattern.values():
+        durations: List[int] = []
+        for entity_id, days_set in bucket['entity_days'].items():
+            durations.extend(consecutive_day_durations(list(days_set)))
+        if not durations:
+            continue
+
+        top_examples = sorted(
+            bucket['entity_totals'].items(),
+            key=lambda item: (-item[1], bucket['entity_names'].get(item[0], '').casefold()),
+        )[:3]
+        pattern_rows.append({
+            'tag': bucket['tag'],
+            'display_tag': bucket['display_tag'],
+            'group': bucket['group'],
+            'is_crisis': bucket['group'] == 'crisis',
+            'entity_type': analytics_type,
+            'brands_affected' if analytics_type == 'brand' else 'ceos_affected': len(bucket['entity_days']),
+            'episode_count': len(durations),
+            'avg_duration_days': round(sum(durations) / len(durations), 2),
+            'median_duration_days': float(median(durations)),
+            'max_duration_days': max(durations),
+            'active_entities_latest': len(bucket['active_entity_ids']),
+            'total_negative_items': bucket['total_negative_items'],
+            'sample_entities': [bucket['entity_names'].get(entity_id, entity_id) for entity_id, _ in top_examples],
+        })
+
+    affected_key = 'brands_affected' if analytics_type == 'brand' else 'ceos_affected'
+    pattern_rows.sort(
+        key=lambda row: (
+            -(row.get(affected_key) or 0),
+            -(row.get('episode_count') or 0),
+            -(row.get('total_negative_items') or 0),
+            str(row.get('tag') or '').casefold(),
+        )
+    )
+
+    payload = {
+        'entity': analytics_type,
+        'sector': sector,
+        'days': days,
+        'limit': limit,
+        'window_mode': window_mode,
+        'requested_start_date': requested_start_date,
+        'requested_end_date': requested_end_date,
+        'include_non_crisis': include_non_crisis,
+        'latest_available_date': latest_available_date.isoformat(),
+        'window_start': start_date.isoformat(),
+        'window_end': end_date.isoformat(),
+        'duration_definition': (
+            'Duration is measured as consecutive days with at least one tagged negative crisis event for the same entity, '
+            'using Top Stories and recent negative newsfeed coverage.'
+        ),
+        'rows': serialize_rows(pattern_rows[:limit]),
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/insights/aggregate_industry_durations')
+def insights_aggregate_industry_durations_json():
+    entity = request.args.get('entity', 'brand')
+    try:
+        limit = int(request.args.get('limit', '25') or 25)
+    except ValueError:
+        limit = 25
+    include_non_crisis = (request.args.get('include_non_crisis') or '').strip().lower() in {'1', 'true', 'yes'}
+    limit = min(max(limit, 1), 100)
+
+    cache_key = f"insights_aggregate_industry_durations:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    try:
+        start_date, end_date, latest_available_date, days, window_mode, requested_start_date, requested_end_date = resolve_insights_window(
+            entity,
+            default_days=90,
+            min_days=7,
+            max_days=365,
+        )
+    except LookupError:
+        return jsonify({'error': 'no_data'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    analytics_type, rows = fetch_negative_top_stories_narrative_rows(entity, start_date, end_date)
+
+    by_sector: Dict[str, Dict] = {}
+    for row in rows:
+        tag = (row.get('narrative_primary_tag') or '').strip()
+        if not tag:
+            continue
+        primary_group = (row.get('narrative_primary_group') or '').strip().lower()
+        if primary_group not in {'crisis', 'non_crisis'}:
+            if tag in NON_CRISIS_NARRATIVE_TAGS:
+                primary_group = 'non_crisis'
+            elif row.get('narrative_is_crisis') is True:
+                primary_group = 'crisis'
+            elif row.get('narrative_is_crisis') is False:
+                primary_group = 'non_crisis'
+        if not include_non_crisis and primary_group == 'non_crisis':
+            continue
+
+        day = coerce_date(row.get('date'))
+        entity_id = str(row.get('entity_id') or '')
+        sector = (row.get('sector') or '').strip() or 'Unspecified'
+        tag_key = f"{tag.casefold()}::{primary_group or ''}"
+        bucket = by_sector.setdefault(sector, {
+            'sector': sector,
+            'entity_ids': set(),
+            'active_entity_ids': set(),
+            'tag_entity_days': {},
+            'tag_display': {},
+            'tag_totals': {},
+            'total_negative_items': 0,
+        })
+        bucket['entity_ids'].add(entity_id)
+        if day == end_date:
+            bucket['active_entity_ids'].add(entity_id)
+        bucket['tag_entity_days'].setdefault((entity_id, tag_key), set()).add(day)
+        bucket['tag_display'][tag_key] = narrative_display_tag(tag, primary_group or None)
+        bucket['tag_totals'][tag_key] = bucket['tag_totals'].get(tag_key, 0) + int(row.get('negative_item_count') or 0)
+        bucket['total_negative_items'] += int(row.get('negative_item_count') or 0)
+
+    sector_rows = []
+    affected_key = 'brands_affected' if analytics_type == 'brand' else 'ceos_affected'
+    for bucket in by_sector.values():
+        durations: List[int] = []
+        for days_set in bucket['tag_entity_days'].values():
+            durations.extend(consecutive_day_durations(list(days_set)))
+        if not durations:
+            continue
+
+        top_tags = sorted(
+            bucket['tag_totals'].items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:3]
+        sector_rows.append({
+            'sector': bucket['sector'],
+            'entity_type': analytics_type,
+            affected_key: len(bucket['entity_ids']),
+            'episode_count': len(durations),
+            'avg_duration_days': round(sum(durations) / len(durations), 2),
+            'median_duration_days': float(median(durations)),
+            'max_duration_days': max(durations),
+            'active_entities_latest': len(bucket['active_entity_ids']),
+            'total_negative_items': bucket['total_negative_items'],
+            'most_common_tags': [bucket['tag_display'].get(tag_key, tag_key.split('::', 1)[0]) for tag_key, _ in top_tags],
+        })
+
+    sector_rows.sort(
+        key=lambda row: (
+            -(row.get('avg_duration_days') or 0),
+            -(row.get('episode_count') or 0),
+            -(row.get(affected_key) or 0),
+            str(row.get('sector') or '').casefold(),
+        )
+    )
+
+    payload = {
+        'entity': analytics_type,
+        'days': days,
+        'limit': limit,
+        'window_mode': window_mode,
+        'requested_start_date': requested_start_date,
+        'requested_end_date': requested_end_date,
+        'include_non_crisis': include_non_crisis,
+        'latest_available_date': latest_available_date.isoformat(),
+        'window_start': start_date.isoformat(),
+        'window_end': end_date.isoformat(),
+        'duration_definition': (
+            'Duration is measured per crisis episode as consecutive days with at least one tagged negative crisis event '
+            'for the same entity, then averaged within each sector.'
+        ),
+        'rows': serialize_rows(sector_rows[:limit]),
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/insights/find_storylines')
+def insights_find_storylines_json():
+    entity = request.args.get('entity', 'brand')
+    sector = (request.args.get('sector') or '').strip()
+    period_label = (request.args.get('period_label') or '').strip()
+    include_non_crisis = (request.args.get('include_non_crisis') or '').strip().lower() in {'1', 'true', 'yes'}
+    try:
+        limit = int(request.args.get('limit', '3') or 3)
+    except ValueError:
+        limit = 3
+    limit = min(max(limit, 1), 10)
+
+    cache_key = f"insights_find_storylines:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    try:
+        start_date, end_date, latest_available_date, days, window_mode, requested_start_date, requested_end_date = resolve_insights_window(
+            entity,
+            sector=sector,
+            default_days=90,
+            min_days=7,
+            max_days=365,
+        )
+    except LookupError:
+        return jsonify({'error': 'no_data'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    analytics_type, rows = fetch_negative_top_stories_narrative_rows(entity, start_date, end_date, sector)
+    filtered_rows = []
+    for row in rows:
+        tag = (row.get('narrative_primary_tag') or '').strip()
+        group = normalized_narrative_group(
+            tag,
+            row.get('narrative_primary_group'),
+            row.get('narrative_is_crisis'),
+        )
+        if not include_non_crisis and group == 'non_crisis':
+            continue
+        filtered_rows.append(row)
+
+    candidates = build_storyline_candidates(analytics_type, filtered_rows)
+    candidates.sort(
+        key=lambda row: (
+            0 if row.get('storyline_type') == 'cross_sector_narrative' else 1,
+            -(row.get('score') or 0),
+            str(row.get('headline') or '').casefold(),
+        )
+    )
+
+    selected: List[Dict] = []
+    selected_keys = set()
+    preferred_types = [
+        'cross_sector_narrative',
+        'sector_duration_outlier',
+        'sector_tag_pattern',
+    ]
+    for storyline_type in preferred_types:
+        match = next(
+            (
+                row for row in candidates
+                if row.get('storyline_type') == storyline_type
+                and row.get('storyline_key') not in selected_keys
+            ),
+            None,
+        )
+        if match:
+            selected.append(match)
+            selected_keys.add(match.get('storyline_key'))
+        if len(selected) >= limit:
+            break
+    if len(selected) < limit:
+        for row in sorted(candidates, key=lambda item: (-(item.get('score') or 0), str(item.get('headline') or '').casefold())):
+            if row.get('storyline_key') in selected_keys:
+                continue
+            selected.append(row)
+            selected_keys.add(row.get('storyline_key'))
+            if len(selected) >= limit:
+                break
+
+    payload = {
+        'entity': analytics_type,
+        'sector': sector,
+        'period_label': period_label,
+        'days': days,
+        'limit': limit,
+        'window_mode': window_mode,
+        'requested_start_date': requested_start_date,
+        'requested_end_date': requested_end_date,
+        'include_non_crisis': include_non_crisis,
+        'latest_available_date': latest_available_date.isoformat(),
+        'window_start': start_date.isoformat(),
+        'window_end': end_date.isoformat(),
+        'duration_definition': (
+            'Duration is measured from consecutive days with at least one tagged negative crisis event for the same entity, '
+            'using Top Stories and recent negative newsfeed coverage.'
+        ),
+        'storylines': serialize_rows(selected),
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
 @app.route('/api/v1/boards')
 def boards_json():
     cache_key = "boards"
@@ -1896,10 +4546,12 @@ def insights_trend_summary_json():
 
     resolved = resolve_entity_lookup(entity, entity_name)
     if not resolved:
-        return jsonify({'error': 'entity not found'}), 404
+        suggestions = [entity_payload(row) for row in entity_lookup_suggestions(entity, entity_name)]
+        return jsonify({'error': 'entity not found', 'suggestions': suggestions}), 404
 
     analytics_type = resolved['analytics_entity_type']
     entity_id = resolved['entity_id']
+    lookback_days = max(days, (weeks * 7) + 6)
     daily_rows = query_dict(
         """
         select date,
@@ -1925,35 +4577,11 @@ def insights_trend_summary_json():
           and date >= (current_date - (%s || ' days')::interval)
         order by date
         """,
-        (analytics_type, entity_id, days),
+        (analytics_type, entity_id, lookback_days),
     )
     if not daily_rows:
         return jsonify({'error': 'no_data'}), 404
 
-    weekly_rows = query_dict(
-        """
-        select week_start,
-               article_negative_7d,
-               article_total_7d,
-               article_negative_pct_avg_7d,
-               serp_negative_7d,
-               serp_total_7d,
-               serp_controlled_7d,
-               serp_uncontrolled_7d,
-               top_stories_total_7d,
-               top_stories_negative_7d,
-               top_stories_controlled_7d,
-               top_stories_uncontrolled_7d,
-               top_stories_crisis_days_7d,
-               crisis_risk_7d
-        from entity_weekly_rollup_v
-        where entity_type = %s
-          and entity_id = %s
-          and week_start >= date_trunc('week', current_date - (%s || ' days')::interval)::date
-        order by week_start
-        """,
-        (analytics_type, entity_id, weeks * 7),
-    )
     anomaly_rows = query_dict(
         """
         select date,
@@ -1977,14 +4605,17 @@ def insights_trend_summary_json():
 
     latest_row = daily_rows[-1]
     latest_date = coerce_date(latest_row.get('date'))
+    visible_daily_rows = rows_within_dates(daily_rows, latest_date - timedelta(days=days - 1), latest_date)
     current_rows = rows_within_dates(daily_rows, latest_date - timedelta(days=6), latest_date)
     prior_rows = rows_within_dates(daily_rows, latest_date - timedelta(days=13), latest_date - timedelta(days=7))
+    weekly_rollups = build_trailing_window_rollups(daily_rows, weeks)
 
     current_window = {
         'article_negative_count': sum_metric(current_rows, 'article_negative_count'),
         'serp_negative_count': sum_metric(current_rows, 'serp_negative_count'),
         'serp_uncontrolled_count': sum_metric(current_rows, 'serp_uncontrolled_count'),
         'top_stories_negative_count': sum_metric(current_rows, 'top_stories_negative_count'),
+        'top_stories_uncontrolled_count': sum_metric(current_rows, 'top_stories_uncontrolled_count'),
         'crisis_risk_count': sum_metric(current_rows, 'crisis_risk_count'),
     }
     prior_window = {
@@ -1992,24 +4623,14 @@ def insights_trend_summary_json():
         'serp_negative_count': sum_metric(prior_rows, 'serp_negative_count'),
         'serp_uncontrolled_count': sum_metric(prior_rows, 'serp_uncontrolled_count'),
         'top_stories_negative_count': sum_metric(prior_rows, 'top_stories_negative_count'),
+        'top_stories_uncontrolled_count': sum_metric(prior_rows, 'top_stories_uncontrolled_count'),
         'crisis_risk_count': sum_metric(prior_rows, 'crisis_risk_count'),
     }
     delta_window = {
         key: current_window[key] - prior_window.get(key, 0)
         for key in current_window.keys()
     }
-
-    current_articles = current_window['article_negative_count']
-    current_search = current_window['serp_uncontrolled_count']
-    current_top_stories = current_window['top_stories_negative_count']
-    if current_articles >= 7 and (current_search >= 5 or current_top_stories >= 8):
-        search_impact_label = 'news_and_search'
-    elif current_search >= 5 or current_top_stories >= 8:
-        search_impact_label = 'search_led'
-    elif current_articles >= 7:
-        search_impact_label = 'news_led'
-    else:
-        search_impact_label = 'muted'
+    search_nuance = build_search_nuance(current_window)
 
     payload = {
         'entity': entity_payload(resolved),
@@ -2019,14 +4640,17 @@ def insights_trend_summary_json():
         'prior_7d': prior_window,
         'delta_7d': delta_window,
         'search_impact': {
-            'label': search_impact_label,
-            'negative_top_stories_days': sum(1 for row in daily_rows if int(row.get('top_stories_negative_count') or 0) > 0),
-            'crisis_top_stories_streak_days': top_stories_streak_days(daily_rows),
+            'label': classify_search_impact(current_window),
+            'negative_top_stories_days': sum(1 for row in visible_daily_rows if int(row.get('top_stories_negative_count') or 0) > 0),
+            'crisis_top_stories_streak_days': top_stories_streak_days(visible_daily_rows),
             'latest_top_stories_negative_count': int(latest_row.get('top_stories_negative_count') or 0),
+            'latest_top_stories_uncontrolled_count': int(latest_row.get('top_stories_uncontrolled_count') or 0),
+            'latest_serp_negative_count': int(latest_row.get('serp_negative_count') or 0),
             'latest_serp_uncontrolled_count': int(latest_row.get('serp_uncontrolled_count') or 0),
         },
-        'daily_series': serialize_rows(daily_rows),
-        'weekly_rollups': serialize_rows(weekly_rows),
+        'search_nuance': search_nuance,
+        'daily_series': serialize_rows(visible_daily_rows),
+        'weekly_rollups': weekly_rollups,
         'recent_anomalies': serialize_rows(anomaly_rows),
     }
     set_cached_json(cache_key, payload)
@@ -2061,7 +4685,8 @@ def insights_anomalies_json():
     if entity_name:
         resolved = resolve_entity_lookup(entity or 'brand', entity_name)
         if not resolved:
-            return jsonify({'error': 'entity not found'}), 404
+            suggestions = [entity_payload(row) for row in entity_lookup_suggestions(entity or 'brand', entity_name)]
+            return jsonify({'error': 'entity not found', 'suggestions': suggestions}), 404
         payload_entity = entity_payload(resolved)
         params.extend([resolved['analytics_entity_type'], resolved['entity_id']])
         entity_sql = " and entity_type = %s and entity_id = %s"
@@ -2130,7 +4755,8 @@ def insights_evidence_json():
 
     resolved = resolve_entity_lookup(entity, entity_name)
     if not resolved:
-        return jsonify({'error': 'entity not found'}), 404
+        suggestions = [entity_payload(row) for row in entity_lookup_suggestions(entity, entity_name)]
+        return jsonify({'error': 'entity not found', 'suggestions': suggestions}), 404
 
     analytics_type = resolved['analytics_entity_type']
     entity_id = resolved['entity_id']
@@ -2168,6 +4794,7 @@ def insights_evidence_json():
                        coalesce(ov.override_control_class, cam.llm_control_class, cam.control_class, '') as control_class,
                        cam.llm_risk_label,
                        null::text as narrative_primary_tag,
+                       'negative'::text as included_reason,
                        2 as sort_weight
                 from company_article_mentions_daily cad
                 join articles a on a.id = cad.article_id
@@ -2191,6 +4818,14 @@ def insights_evidence_json():
                        coalesce(ov.override_control_class, r.llm_control_class, r.control_class, '') as control_class,
                        r.llm_risk_label,
                        null::text as narrative_primary_tag,
+                       case
+                           when coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) = 'negative'
+                                and coalesce(ov.override_control_class, r.llm_control_class, r.control_class) = 'uncontrolled'
+                               then 'negative_and_uncontrolled'
+                           when coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) = 'negative'
+                               then 'negative'
+                           else 'uncontrolled'
+                       end as included_reason,
                        case
                            when coalesce(ov.override_control_class, r.llm_control_class, r.control_class) = 'uncontrolled' then 3
                            else 1
@@ -2218,6 +4853,14 @@ def insights_evidence_json():
                        coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class, '') as control_class,
                        sfi.llm_risk_label,
                        sfi.narrative_primary_tag,
+                       case
+                           when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                                and coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
+                               then 'negative_and_uncontrolled'
+                           when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                               then 'negative'
+                           else 'uncontrolled'
+                       end as included_reason,
                        4 as sort_weight
                 from serp_feature_items sfi
                 left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
@@ -2225,7 +4868,10 @@ def insights_evidence_json():
                   and sfi.entity_id = %s
                   and sfi.feature_type = 'top_stories_items'
                   and sfi.date between %s and %s
-                  and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                  and (
+                      coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      or coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
+                  )
             ),
             deduped as (
                 select distinct on (date, evidence_type, coalesce(url, ''), coalesce(title, ''))
@@ -2239,6 +4885,7 @@ def insights_evidence_json():
                        control_class,
                        llm_risk_label,
                        narrative_primary_tag,
+                       included_reason,
                        sort_weight
                 from evidence
                 order by date desc,
@@ -2256,7 +4903,8 @@ def insights_evidence_json():
                    sentiment_label,
                    control_class,
                    llm_risk_label,
-                   narrative_primary_tag
+                   narrative_primary_tag,
+                   included_reason
             from deduped
             order by date desc, sort_weight desc, title
             limit %s
@@ -2289,6 +4937,7 @@ def insights_evidence_json():
                        coalesce(ov.override_control_class, cem.llm_control_class, cem.control_class, '') as control_class,
                        cem.llm_risk_label,
                        null::text as narrative_primary_tag,
+                       'negative'::text as included_reason,
                        2 as sort_weight
                 from ceo_article_mentions_daily cad
                 join articles a on a.id = cad.article_id
@@ -2312,6 +4961,14 @@ def insights_evidence_json():
                        coalesce(ov.override_control_class, r.llm_control_class, r.control_class, '') as control_class,
                        r.llm_risk_label,
                        null::text as narrative_primary_tag,
+                       case
+                           when coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) = 'negative'
+                                and coalesce(ov.override_control_class, r.llm_control_class, r.control_class) = 'uncontrolled'
+                               then 'negative_and_uncontrolled'
+                           when coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) = 'negative'
+                               then 'negative'
+                           else 'uncontrolled'
+                       end as included_reason,
                        case
                            when coalesce(ov.override_control_class, r.llm_control_class, r.control_class) = 'uncontrolled' then 3
                            else 1
@@ -2339,6 +4996,14 @@ def insights_evidence_json():
                        coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class, '') as control_class,
                        sfi.llm_risk_label,
                        sfi.narrative_primary_tag,
+                       case
+                           when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                                and coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
+                               then 'negative_and_uncontrolled'
+                           when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                               then 'negative'
+                           else 'uncontrolled'
+                       end as included_reason,
                        4 as sort_weight
                 from serp_feature_items sfi
                 left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
@@ -2346,7 +5011,10 @@ def insights_evidence_json():
                   and sfi.entity_id = %s
                   and sfi.feature_type = 'top_stories_items'
                   and sfi.date between %s and %s
-                  and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                  and (
+                      coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      or coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
+                  )
             ),
             deduped as (
                 select distinct on (date, evidence_type, coalesce(url, ''), coalesce(title, ''))
@@ -2360,6 +5028,7 @@ def insights_evidence_json():
                        control_class,
                        llm_risk_label,
                        narrative_primary_tag,
+                       included_reason,
                        sort_weight
                 from evidence
                 order by date desc,
@@ -2377,7 +5046,8 @@ def insights_evidence_json():
                    sentiment_label,
                    control_class,
                    llm_risk_label,
-                   narrative_primary_tag
+                   narrative_primary_tag,
+                   included_reason
             from deduped
             order by date desc, sort_weight desc, title
             limit %s
@@ -2400,6 +5070,7 @@ def insights_evidence_json():
         'entity': entity_payload(resolved),
         'start_date': start_date.isoformat(),
         'end_date': end_date.isoformat(),
+        'summary': summarize_evidence_rows(rows),
         'rows': serialize_rows(rows),
     }
     set_cached_json(cache_key, payload)
@@ -2609,8 +5280,7 @@ def refresh_aggregates():
             clear_api_cache_prefix("daily_counts:")
             clear_api_cache_prefix("serp_features:")
             clear_api_cache_prefix("serp_feature_controls:")
-            clear_api_cache_prefix("narrative_tags:")
-            clear_api_cache_prefix("narrative_timeline:")
+            clear_narrative_api_caches()
             finished = datetime.utcnow()
             duration_ms = int((finished - started).total_seconds() * 1000)
             with _refresh_lock:
@@ -2691,6 +5361,8 @@ def apply_override():
         return jsonify({'error': 'invalid control_override'}), 400
 
     conn = get_conn()
+    serp_feature_item_context = None
+    crisis_event_context = None
     try:
         with conn.cursor() as cur:
             if mention_type == 'company_article':
@@ -2766,6 +5438,24 @@ def apply_override():
             else:
                 return jsonify({'error': 'invalid mention_type'}), 400
             row = cur.fetchone()
+            if mention_type == 'company_article':
+                crisis_event_context = load_company_article_crisis_event_context(cur, mention_id)
+            elif mention_type == 'ceo_article':
+                crisis_event_context = load_ceo_article_crisis_event_context(cur, mention_id)
+            if mention_type == 'serp_feature_item':
+                serp_feature_item_context = load_serp_feature_item_narrative_context(cur, serp_feature_item_id)
+                if (
+                    serp_feature_item_context
+                    and (serp_feature_item_context.get('feature_type') or '').strip() == 'top_stories_items'
+                ):
+                    raw_entity_type = str(serp_feature_item_context.get('entity_type') or '').strip().lower()
+                    crisis_event_context = {
+                        'entity_types': ['brand'] if raw_entity_type in {'brand', 'company'} else ['ceo'],
+                        'entity_id': serp_feature_item_context.get('entity_id'),
+                        'entity_name': serp_feature_item_context.get('entity_name') or '',
+                        'start_date': serp_feature_item_context.get('date'),
+                        'end_date': datetime.utcnow().date(),
+                    }
         conn.commit()
     except Exception:
         try:
@@ -2788,19 +5478,62 @@ def apply_override():
                 put_conn(lock_conn)
                 return
             try:
+                if crisis_event_context:
+                    try:
+                        with lock_conn.cursor() as event_cur:
+                            rows = recompute_entity_crisis_event_window(
+                                event_cur,
+                                crisis_event_context.get('start_date'),
+                                crisis_event_context.get('end_date'),
+                                crisis_event_context.get('entity_types') or [],
+                                entity_id=crisis_event_context.get('entity_id'),
+                            )
+                        app.logger.info(
+                            "override_crisis_event_recomputed entity_types=%s entity_name=%s start_date=%s end_date=%s rows=%s",
+                            crisis_event_context.get('entity_types'),
+                            crisis_event_context.get('entity_name'),
+                            crisis_event_context.get('start_date'),
+                            crisis_event_context.get('end_date'),
+                            len(rows),
+                        )
+                    except Exception:
+                        app.logger.exception("override crisis event recompute failed")
                 if mention_type in {'company_article', 'ceo_article'}:
                     refresh_article_daily_counts_view(conn=lock_conn)
                     clear_api_cache_prefix("negative_summary:")
                     clear_api_cache_prefix("daily_counts:")
+                    clear_narrative_api_caches()
                 if mention_type == 'serp_feature_item':
+                    if (
+                        serp_feature_item_context
+                        and (serp_feature_item_context.get('feature_type') or '').strip() == 'top_stories_items'
+                    ):
+                        try:
+                            with lock_conn.cursor() as narrative_cur:
+                                result = recompute_entity_day_narrative_rollup(
+                                    narrative_cur,
+                                    row_date=serp_feature_item_context.get('date'),
+                                    entity_type=str(serp_feature_item_context.get('entity_type') or ''),
+                                    entity_id=serp_feature_item_context.get('entity_id'),
+                                    entity_name=str(serp_feature_item_context.get('entity_name') or ''),
+                                )
+                            app.logger.info(
+                                "override_narrative_rollup_recomputed date=%s entity_type=%s entity_name=%s primary_tag=%s updated_items=%s",
+                                serp_feature_item_context.get('date'),
+                                serp_feature_item_context.get('entity_type'),
+                                serp_feature_item_context.get('entity_name'),
+                                result.get('primary_tag'),
+                                result.get('updated_items'),
+                            )
+                        except Exception:
+                            app.logger.exception("override narrative rollup recompute failed")
                     refresh_serp_feature_daily_view(conn=lock_conn)
                     refresh_serp_feature_control_daily_view(conn=lock_conn)
                     refresh_serp_feature_daily_index_view(conn=lock_conn)
                     refresh_serp_feature_control_daily_index_view(conn=lock_conn)
                     clear_api_cache_prefix("serp_features:")
                     clear_api_cache_prefix("serp_feature_controls:")
-                    clear_api_cache_prefix("narrative_tags:")
-                    clear_api_cache_prefix("narrative_timeline:")
+                    clear_narrative_api_caches()
                 if mention_type == 'serp_result':
                     refresh_serp_daily_counts_view(conn=lock_conn)
                     clear_api_cache_prefix("daily_counts:")
