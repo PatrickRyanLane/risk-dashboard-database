@@ -2857,10 +2857,10 @@ function getCompositeNarrativeOverlayLaneCount(windows){
 
 function getCompositeNarrativeOverlayReservedHeight(windows, style = COMPOSITE_TAG_OVERLAY_STYLE){
   const laneCount = getCompositeNarrativeOverlayLaneCount(windows);
-  if (!laneCount || style === 'mid-band') return 0;
-  const laneHeight = 26;
-  const laneGap = 6;
-  return 16 + (laneCount * laneHeight) + ((laneCount - 1) * laneGap);
+  if (!laneCount) return 0;
+  const laneHeight = 16;
+  const laneGap = 4;
+  return 8 + (laneCount * laneHeight) + ((laneCount - 1) * laneGap);
 }
 
 function getCompositeNarrativeOverlayHit(chart, event){
@@ -3626,11 +3626,9 @@ function renderCharts(){
       const labels = Array.isArray(chart.data?.labels) ? chart.data.labels.map(v => String(v || '').trim()) : [];
       if (!ctx || !chartArea || !scales?.x || !scales?.y || !labels.length) return;
       const xScale = scales.x;
-      const yScale = scales.y;
       const style = pluginOpts?.style === 'mid-band' ? 'mid-band' : 'top-band';
-      const laneHeight = style === 'mid-band' ? 24 : 26;
-      const laneGap = 6;
-      const zeroY = yScale.getPixelForValue(0);
+      const laneHeight = 16;
+      const laneGap = 4;
       const reservedHeight = Number(pluginOpts?.reservedHeight || 0) || 0;
       const fontFamily = getComputedStyle(document.body).fontFamily || 'sans-serif';
       const getLeftEdge = (idx) => {
@@ -3645,7 +3643,7 @@ function renderCharts(){
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = `600 10px ${fontFamily}`;
+      ctx.font = `600 9px ${fontFamily}`;
 
       windows.forEach(window => {
         const startIdx = labels.indexOf(String(window.start_date || '').trim());
@@ -3657,29 +3655,29 @@ function renderCharts(){
         if (boxWidth < 12) return;
 
         const lane = Number.isFinite(window.lane) ? window.lane : 0;
-        const boxYBase = style === 'mid-band' ? (zeroY + 10) : Math.max(8, chartArea.top - reservedHeight + 8);
-        const boxY = Math.min(chartArea.bottom - laneHeight - 6, boxYBase + lane * (laneHeight + laneGap));
+        const boxYBase = Math.max(xScale.bottom + 2, chart.height - reservedHeight + 1);
+        const boxY = Math.min(chart.height - laneHeight - 6, boxYBase + lane * (laneHeight + laneGap));
         const isActive = !!window.active_on_end_date;
         const isNonCrisis = !!window.is_non_crisis;
         const borderColor = isNonCrisis ? 'rgba(210,221,224,0.8)' : (isActive ? '#ff6b6b' : 'rgba(255,107,107,0.72)');
         const fillColor = isNonCrisis ? 'rgba(170,188,191,0.18)' : (isActive ? 'rgba(255,107,107,0.24)' : 'rgba(255,107,107,0.12)');
         const textColor = isActive ? '#fff1f1' : 'rgba(255,241,241,0.86)';
 
-        drawRoundedRect(ctx, boxLeft, boxY, boxWidth, laneHeight, 10);
+        drawRoundedRect(ctx, boxLeft, boxY, boxWidth, laneHeight, 7);
         ctx.fillStyle = fillColor;
         ctx.fill();
-        ctx.lineWidth = isActive ? 2.5 : 2;
+        ctx.lineWidth = isActive ? 1.75 : 1.25;
         ctx.strokeStyle = borderColor;
-        ctx.setLineDash(isActive ? [] : [8, 4]);
+        ctx.setLineDash(isActive ? [] : [5, 3]);
         ctx.stroke();
         ctx.setLineDash([]);
 
-        const fitted = fitCompositeOverlayLabel(ctx, window.display_tag || window.tag || '', boxWidth - 20);
+        const fitted = fitCompositeOverlayLabel(ctx, window.display_tag || window.tag || '', boxWidth - 12);
         if (fitted){
           if (style === 'mid-band'){
-            const chipWidth = Math.min(boxWidth - 12, Math.max(86, ctx.measureText(fitted).width + 24));
+            const chipWidth = Math.min(boxWidth - 8, Math.max(54, ctx.measureText(fitted).width + 16));
             const chipX = boxLeft + ((boxWidth - chipWidth) / 2);
-            drawRoundedRect(ctx, chipX, boxY + 6, chipWidth, laneHeight - 12, 7);
+            drawRoundedRect(ctx, chipX, boxY + 3, chipWidth, laneHeight - 6, 5);
             ctx.fillStyle = isNonCrisis ? 'rgba(120,139,144,0.88)' : 'rgba(130,24,24,0.74)';
             ctx.fill();
           }
@@ -3732,7 +3730,7 @@ function renderCharts(){
         layout: {
           padding: {
             ...commonOpts.layout.padding,
-            top: compositeNarrativeReservedHeight
+            bottom: (commonOpts.layout?.padding?.bottom || 0) + compositeNarrativeReservedHeight
           }
         },
         scales: {
