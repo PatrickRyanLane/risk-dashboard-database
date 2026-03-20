@@ -2784,7 +2784,7 @@ function getCompositeNarrativeOverlayReservedHeight(windows, style = COMPOSITE_T
   if (!laneCount) return 0;
   const laneHeight = 16;
   const laneGap = 4;
-  return 8 + (laneCount * laneHeight) + ((laneCount - 1) * laneGap);
+  return 12 + (laneCount * laneHeight) + ((laneCount - 1) * laneGap);
 }
 
 function getCompositeNarrativeOverlayHit(chart, event){
@@ -3552,8 +3552,8 @@ function renderCharts(){
         if (boxWidth < 12) return;
 
         const lane = Number.isFinite(window.lane) ? window.lane : 0;
-        const boxYBase = Math.max(xScale.bottom + 2, chart.height - reservedHeight + 1);
-        const boxY = Math.min(chart.height - laneHeight - 6, boxYBase + lane * (laneHeight + laneGap));
+        const boxYBase = Math.max(xScale.bottom + 4, chart.height - reservedHeight + 4);
+        const boxY = Math.min(chart.height - laneHeight - 8, boxYBase + lane * (laneHeight + laneGap));
         const isActive = !!window.active_on_end_date;
         const isNonCrisis = !!window.is_non_crisis;
         const borderColor = isNonCrisis ? 'rgba(210,221,224,0.8)' : (isActive ? '#ff6b6b' : 'rgba(255,107,107,0.72)');
@@ -3598,6 +3598,14 @@ function renderCharts(){
         chart.canvas.title = hit
           ? `${String(hit.window?.display_tag || hit.window?.tag || '').trim()}`
           : '';
+      }
+      const eventType = String(args?.event?.type || '').trim().toLowerCase();
+      if (hit && eventType === 'click' && selectedCompany) {
+        const modalDate = String(hit.window?.end_date || '').trim();
+        showNarrativeTimeline(
+          { company: selectedCompany },
+          isISODate(modalDate) ? modalDate : null
+        );
       }
     }
   };
@@ -3654,14 +3662,8 @@ function renderCharts(){
         },
         interaction: { mode: 'index', intersect: false },
         onClick: (event, _elements, chart) => {
+          if (getCompositeNarrativeOverlayHit(chart, event)) return;
           const date = getClickedDate(event, chart);
-          const overlayHit = getCompositeNarrativeOverlayHit(chart, event);
-          if (overlayHit && selectedCompany) {
-            return void showNarrativeTimeline(
-              { company: selectedCompany },
-              isISODate(date) ? date : String(overlayHit.window?.end_date || '').trim()
-            );
-          }
           const points = chart.getElementsAtEventForMode(event, 'nearest', { intersect: true }, false);
           const datasetIdx = points && points.length ? points[0].datasetIndex : -1;
           if (datasetIdx === featureOrder.length) return void openChartDetailAt('news', date);
