@@ -62,6 +62,12 @@ def parse_datetime_value(value) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def ensure_serp_result_columns(conn) -> None:
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute("alter table if exists serp_results add column if not exists published_date text")
+
+
 def fetch_company_domains(conn) -> dict[str, set[str]]:
     with conn.cursor() as cur:
         cur.execute("select name, websites from companies")
@@ -447,6 +453,7 @@ def ingest_article_mentions(conn, file_obj, entity_type, date_str):
 def ingest_serp_results(conn, file_obj, entity_type, date_str):
     reader = csv.DictReader(file_obj)
     now = datetime.now(timezone.utc)
+    ensure_serp_result_columns(conn)
 
     company_map = fetch_company_map(conn)
     ceo_map = fetch_ceo_map(conn)
@@ -461,6 +468,7 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
         snippet = (row.get('snippet') or '').strip()
         source = (row.get('source') or '').strip()
         url = (row.get('url') or row.get('link') or '').strip()
+        published_date = str(row.get('published_date') or row.get('published_at') or row.get('date') or '').strip() or None
         if not title or not url:
             continue
 
@@ -521,7 +529,7 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
             }
 
         result_rows.append((
-            run_key, rank, url, url_hash(canonical), title, snippet, domain,
+            run_key, rank, url, url_hash(canonical), title, snippet, domain, published_date,
             sentiment, control_class, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason
         ))
 
@@ -572,13 +580,13 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
 
     if result_rows:
         insert_map = {}
-        for run_key, rank, url, uhash, title, snippet, domain, sentiment, control_class, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason in result_rows:
+        for run_key, rank, url, uhash, title, snippet, domain, published_date, sentiment, control_class, finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason in result_rows:
             run_id = run_id_map.get(run_key)
             if not run_id:
                 continue
             key = (run_id, rank, uhash)
             insert_map[key] = (
-                run_id, rank, url, uhash, title, snippet, domain, sentiment, control_class,
+                run_id, rank, url, uhash, title, snippet, domain, published_date, sentiment, control_class,
                 finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason
             )
 
@@ -586,7 +594,7 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
         if insert_rows:
             sql = """
                 insert into serp_results (
-                  serp_run_id, rank, url, url_hash, title, snippet, domain, sentiment_label, control_class,
+                  serp_run_id, rank, url, url_hash, title, snippet, domain, published_date, sentiment_label, control_class,
                   finance_routine, uncertain, uncertain_reason, llm_label, llm_severity, llm_reason
                 )
                 values %s
@@ -595,6 +603,7 @@ def ingest_serp_results(conn, file_obj, entity_type, date_str):
                   title = excluded.title,
                   snippet = excluded.snippet,
                   domain = excluded.domain,
+                  published_date = coalesce(excluded.published_date, serp_results.published_date),
                   sentiment_label = excluded.sentiment_label,
                   control_class = excluded.control_class,
                   finance_routine = excluded.finance_routine,

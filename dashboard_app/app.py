@@ -2471,6 +2471,7 @@ def processed_serps_json():
             rows = query_rows(
                 f"""
                 select c.name as company, r.title, r.url, r.rank as position, r.snippet,
+                       to_jsonb(r) ->> 'published_date' as published_date,
                        coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) as sentiment,
                        coalesce(ov.override_control_class, r.llm_control_class, r.control_class) as controlled,
                        ov.override_sentiment_label as sentiment_override,
@@ -2505,7 +2506,7 @@ def processed_serps_json():
                 tuple(total_params)
             )
             total = int(total_rows[0][0]) if total_rows else 0
-            headers = ['company','title','url','position','snippet','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
+            headers = ['company','title','url','position','snippet','published_date','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
         else:
             params = [dstr, dstr]
             scope_sql, params = scope_clause("c.id", params)
@@ -2518,6 +2519,7 @@ def processed_serps_json():
             rows = query_rows(
                 f"""
                 select ceo.name as ceo, c.name as company, r.title, r.url, r.rank as position, r.snippet,
+                       to_jsonb(r) ->> 'published_date' as published_date,
                        coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) as sentiment,
                        coalesce(ov.override_control_class, r.llm_control_class, r.control_class) as controlled,
                        ov.override_sentiment_label as sentiment_override,
@@ -2554,7 +2556,7 @@ def processed_serps_json():
                 tuple(total_params)
             )
             total = int(total_rows[0][0]) if total_rows else 0
-            headers = ['ceo','company','title','url','position','snippet','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
+            headers = ['ceo','company','title','url','position','snippet','published_date','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
         return jsonify({"rows": [dict(zip(headers, row)) for row in rows], "total": total})
     resp = processed_serps_csv(filename)
     if resp.status_code != 200:
@@ -2854,6 +2856,7 @@ def serp_feature_items_json():
         sql = f"""
             select sfi.id, sfi.date, sfi.entity_name, sfi.feature_type,
                    sfi.title, sfi.snippet, sfi.url, sfi.domain, sfi.position, sfi.source,
+                   to_jsonb(sfi) ->> 'published_date' as published_date,
                    coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment,
                    coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) as control_class,
                    ov.override_sentiment_label as sentiment_override,
@@ -2886,6 +2889,7 @@ def serp_feature_items_json():
         sql = f"""
             select sfi.id, sfi.date, sfi.entity_name, sfi.feature_type,
                    sfi.title, sfi.snippet, sfi.url, sfi.domain, sfi.position, sfi.source,
+                   to_jsonb(sfi) ->> 'published_date' as published_date,
                    coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment,
                    coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) as control_class,
                    ov.override_sentiment_label as sentiment_override,
@@ -5815,6 +5819,7 @@ def processed_serps_csv(filename: str):
             rows = query_rows(
                 f"""
                 select c.name as company, r.title, r.url, r.rank as position, r.snippet,
+                       to_jsonb(r) ->> 'published_date' as published_date,
                        coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) as sentiment,
                        coalesce(ov.override_control_class, r.llm_control_class, r.control_class) as controlled,
                        ov.override_sentiment_label as sentiment_override,
@@ -5830,13 +5835,14 @@ def processed_serps_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['company','title','url','position','snippet','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
+            headers = ['company','title','url','position','snippet','published_date','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
         else:
             params = [dstr]
             scope_sql, params = scope_clause("c.id", params)
             rows = query_rows(
                 f"""
                 select ceo.name as ceo, c.name as company, r.title, r.url, r.rank as position, r.snippet,
+                       to_jsonb(r) ->> 'published_date' as published_date,
                        coalesce(ov.override_sentiment_label, r.llm_sentiment_label, r.sentiment_label) as sentiment,
                        coalesce(ov.override_control_class, r.llm_control_class, r.control_class) as controlled,
                        ov.override_sentiment_label as sentiment_override,
@@ -5853,7 +5859,7 @@ def processed_serps_csv(filename: str):
                 """,
                 tuple(params)
             )
-            headers = ['ceo','company','title','url','position','snippet','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
+            headers = ['ceo','company','title','url','position','snippet','published_date','sentiment','controlled','sentiment_override','control_override','llm_label','serp_result_id']
         csv_text = rows_to_csv(headers, rows)
         return Response(csv_text, content_type='text/csv')
 

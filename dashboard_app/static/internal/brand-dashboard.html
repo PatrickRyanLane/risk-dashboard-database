@@ -1691,11 +1691,18 @@ const isISODate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s||'').trim());
 function articlePublishedMeta(row){
   const raw = String(row?.published_date || row?.published_at || '').trim();
   if (!raw) return '';
-  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})(?:[T ].*)?$/);
   if (match) return `Published ${match[1]}`;
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return '';
-  return `Published ${parsed.toISOString().slice(0, 10)}`;
+  if (/[tT]/.test(raw)) {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) return `Published ${parsed.toISOString().slice(0, 10)}`;
+  }
+  return `Published ${raw}`;
+}
+function buildSerpMetaLabel(row, fallbackSource = ''){
+  const source = String(row?.source || fallbackSource || '').trim();
+  const published = articlePublishedMeta(row);
+  return [source, published].filter(Boolean).join(' · ');
 }
 const esc = (s) => String(s ?? '').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[m]));
 const fmtPct = (v) => (v==null) ? 'N/A' : Math.round(v*100)+'%';
@@ -4484,6 +4491,7 @@ async function showSerp({company}, modalDate=null){
     const url=String(r.url||'').trim();
     const serpResultId=String(r.serp_result_id||'').trim();
     let domain=''; try{ domain=new URL(url).hostname.replace(/^www\./,''); }catch{}
+    const metaLabel = esc(buildSerpMetaLabel(r, domain));
     const title=esc(r.title||domain||'(no title)');
     const snippet=esc(r.snippet||'');
     const s=String(r.sentiment||'neutral').toLowerCase();
@@ -4491,7 +4499,7 @@ async function showSerp({company}, modalDate=null){
     const link=url?`<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>`:`<span class="muted">${title}</span>`;
     const flags = flagIcons(r);
     return `<div class="serp-card" data-serp-result-id="${esc(serpResultId)}" data-sentiment-override="${esc(r.sentiment_override||'')}" data-control-override="${esc(r.control_override||'')}" data-llm-label="${esc(r.llm_label||'')}" data-current-sentiment="${esc(s)}" data-current-control="${esc(ctrl)}">
-      ${domain?`<div class="serp-domain">${esc(domain)}</div>`:''}
+      ${metaLabel?`<div class="serp-domain">${metaLabel}</div>`:''}
       <div class="serp-title">${link}</div>
       ${snippet?`<div class="serp-snippet">${snippet}</div>`:''}
       ${serpResultId ? `<div class="edit-controls">
@@ -4691,8 +4699,7 @@ async function showSerpFeatures({company}, modalDate=null){
       const itemId = String(r.id||'').trim();
       let domain = String(r.domain||'').trim();
       if (!domain && url){ try{ domain=new URL(url).hostname.replace(/^www\./,''); }catch{} }
-      const source = esc(r.source||'');
-      const sourceLabel = source || domain;
+      const metaLabel = esc(buildSerpMetaLabel(r, domain));
       const title = esc(r.title||domain||'(no title)');
       const link = url ? `<a class="link" href="${esc(url)}" target="_blank" rel="noopener">${title}</a>` : `<span class="muted">${title}</span>`;
       const snippet = esc(r.snippet||'');
@@ -4717,7 +4724,7 @@ async function showSerpFeatures({company}, modalDate=null){
         data-current-control="${esc(ctrl)}">
         ${featureFlag}
         ${narrativeFlag}
-        <div class="serp-domain">${esc(sourceLabel || '')}</div>
+        ${metaLabel ? `<div class="serp-domain">${metaLabel}</div>` : ''}
         <div class="serp-title">${link}</div>
         ${snippet ? `<div class="serp-snippet">${snippet}</div>` : ''}
         ${flags ? `<div class="edit-flags">${flags}</div>` : ''}
