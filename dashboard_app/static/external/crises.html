@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="apple-touch-icon" sizes="180x180" href="images/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="images/favicon-16x16.png">
+<title>Fortune 1000 Crisis Explorer</title>
+<style>
+:root{
+  --bg:#044152;
+  --card:#092e37;
+  --cardAlt:#0d3944;
+  --muted:#a2ebf3;
+  --text:#ebf2f2;
+  --accent:#58dbed;
+  --accentSoft:rgba(88,219,237,.18);
+  --stroke:#0e2230;
+  --chip:#12343e;
+  --chipBorder:#174550;
+  --ink:#1f2121;
+  --danger:#ff8261;
+  --dangerBorder:#7b1d1d;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:1440px;margin:0 auto;padding:20px}
+h1,h2,h3{margin:0}
+p{margin:0}
+.muted{color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--stroke);border-radius:14px;padding:16px}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:16px}
+.page-head p{max-width:860px}
+.controls{display:flex;flex-direction:column;gap:12px;margin-bottom:16px}
+.controls-grid{display:grid;grid-template-columns:220px minmax(260px,420px) auto;gap:12px;align-items:end}
+.field-label{font-size:12px;padding-left:8px;color:var(--muted);display:block;margin-bottom:6px}
+select,button{height:36px;border-radius:10px;border:1px solid #23314d;background:var(--ink);color:var(--text);padding:8px 12px;font:inherit}
+button{cursor:pointer}
+button:hover{filter:brightness(1.08)}
+.lookback-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.lookback-btn{font-weight:600}
+.lookback-btn.active{border-color:var(--accent);box-shadow:0 0 0 1px rgba(88,219,237,.35);color:var(--accent)}
+.status-line{font-size:12px;min-height:18px}
+.status-line.error{color:var(--danger)}
+.stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.stat-card{background:var(--cardAlt);border:1px solid var(--stroke);border-radius:12px;padding:14px}
+.stat-card .label{display:block;font-size:12px;color:var(--muted);margin-bottom:8px}
+.stat-card strong{font-size:24px;line-height:1}
+.split-grid{display:grid;grid-template-columns:minmax(440px,1.02fr) minmax(520px,1.28fr);gap:16px;align-items:start}
+.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.section-head p{max-width:540px}
+.table-scroll{overflow:auto;-webkit-overflow-scrolling:touch}
+.table-scroll::-webkit-scrollbar{height:8px;width:8px}
+.table-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.05);border-radius:999px}
+.table-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:999px}
+table{width:100%;border-collapse:separate;border-spacing:0 8px}
+thead th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;padding:0 10px 4px;vertical-align:bottom}
+tbody td{background:var(--ink);border-top:1px solid #0f1831;border-bottom:1px solid #0f1831;padding:10px;vertical-align:top}
+tbody tr td:first-child{border-left:1px solid #0f1831;border-radius:12px 0 0 12px}
+tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 0}
+.table-empty td{text-align:center;color:var(--muted);padding:18px 12px}
+.row-select{min-width:72px}
+.row-select.active{border-color:var(--accent);background:var(--accentSoft);color:var(--accent)}
+.tag-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;border:1px solid var(--dangerBorder);background:rgba(255,130,97,.08);color:#ffd7cd;font-size:12px;font-weight:600}
+.chip-list{display:flex;flex-wrap:wrap;gap:6px;min-width:220px}
+.chip{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;background:var(--chip);border:1px solid var(--chipBorder);font-size:12px;line-height:1.2}
+.chip.subtle{background:rgba(255,255,255,.04)}
+.detail-shell{display:flex;flex-direction:column;gap:14px}
+.detail-empty{padding:28px 20px;border:1px dashed rgba(162,235,243,.28);border-radius:12px;color:var(--muted);text-align:center}
+.detail-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.detail-mini{background:var(--cardAlt);border:1px solid var(--stroke);border-radius:12px;padding:12px}
+.detail-mini .label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+.detail-mini strong{font-size:20px;line-height:1}
+.detail-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:14px}
+.table-block{display:flex;flex-direction:column;gap:10px}
+.table-block h3{font-size:15px}
+.brand-name{font-weight:600}
+.yes-pill,.no-pill{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid transparent}
+.yes-pill{background:rgba(88,219,237,.14);border-color:rgba(88,219,237,.35);color:var(--accent)}
+.no-pill{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.12);color:var(--muted)}
+.windows-cell{min-width:220px}
+@media (max-width: 1200px){
+  .split-grid{grid-template-columns:1fr}
+}
+@media (max-width: 900px){
+  .controls-grid{grid-template-columns:1fr}
+  .stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .detail-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .detail-grid{grid-template-columns:1fr}
+}
+@media (max-width: 620px){
+  .wrap{padding:16px}
+  .stats-grid{grid-template-columns:1fr}
+  .detail-summary{grid-template-columns:1fr}
+  .chip-list{min-width:0}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="page-head">
+    <div>
+      <h1>Fortune 1000 Crisis Explorer</h1>
+      <p class="muted">See which crisis themes were active in the selected window, which brands they touched, and the specific dates those brands were affected.</p>
+    </div>
+  </header>
+
+  <section class="card controls">
+    <div class="controls-grid">
+      <div>
+        <label class="field-label" for="dateSelect">Window End Date</label>
+        <select id="dateSelect"></select>
+      </div>
+      <div>
+        <span class="field-label">Lookback Window</span>
+        <div class="lookback-controls" role="group" aria-label="Lookback window">
+          <button type="button" class="lookback-btn" data-days="30">30d</button>
+          <button type="button" class="lookback-btn" data-days="45">45d</button>
+          <button type="button" class="lookback-btn" data-days="60">60d</button>
+          <button type="button" class="lookback-btn" data-days="90">90d</button>
+        </div>
+      </div>
+      <div class="muted">
+        Crisis rows come from tagged daily crisis events and recent negative coverage in the selected window.
+      </div>
+    </div>
+    <div id="statusLine" class="status-line muted"></div>
+  </section>
+
+  <section class="stats-grid">
+    <div class="stat-card">
+      <span class="label">Crises In Window</span>
+      <strong id="statCrisisCount">0</strong>
+    </div>
+    <div class="stat-card">
+      <span class="label">Distinct Brands Affected</span>
+      <strong id="statBrandCount">0</strong>
+    </div>
+    <div class="stat-card">
+      <span class="label">Brands Active On End Date</span>
+      <strong id="statActiveBrandCount">0</strong>
+    </div>
+    <div class="stat-card">
+      <span class="label">Brand-Days</span>
+      <strong id="statBrandDays">0</strong>
+    </div>
+  </section>
+
+  <section class="split-grid">
+    <div class="card">
+      <div class="section-head">
+        <div>
+          <h2>Crises In Window</h2>
+          <p class="muted">Select a crisis to inspect the brands affected and when they were active.</p>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Open</th>
+              <th>Crisis</th>
+              <th>Brands</th>
+              <th>Active End Date</th>
+              <th>First Seen</th>
+              <th>Last Seen</th>
+              <th>Affected Brands</th>
+            </tr>
+          </thead>
+          <tbody id="crisisBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-head">
+        <div>
+          <h2 id="detailHeading">Select a crisis</h2>
+          <p id="detailSubhead" class="muted">Choose a crisis from the table to see the affected brands and their activity windows.</p>
+        </div>
+      </div>
+
+      <div id="detailEmpty" class="detail-empty">No crisis is selected for this window yet.</div>
+
+      <div id="detailContent" class="detail-shell" hidden>
+        <div class="detail-summary">
+          <div class="detail-mini">
+            <span class="label">Brands Affected</span>
+            <strong id="detailBrandCount">0</strong>
+          </div>
+          <div class="detail-mini">
+            <span class="label">Active On End Date</span>
+            <strong id="detailActiveCount">0</strong>
+          </div>
+          <div class="detail-mini">
+            <span class="label">Brand-Days</span>
+            <strong id="detailBrandDays">0</strong>
+          </div>
+          <div class="detail-mini">
+            <span class="label">Negative Items</span>
+            <strong id="detailNegativeItems">0</strong>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="table-block">
+            <h3>Affected Brands</h3>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Brand</th>
+                    <th>Sector</th>
+                    <th>Days</th>
+                    <th>First Seen</th>
+                    <th>Last Seen</th>
+                    <th>Active End Date</th>
+                    <th>Affected Windows</th>
+                  </tr>
+                </thead>
+                <tbody id="brandBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="table-block">
+            <h3>Daily Activity</h3>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Brands</th>
+                    <th>Negative Items</th>
+                    <th>Brands Active</th>
+                  </tr>
+                </thead>
+                <tbody id="dailyBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const LOOKBACK_OPTIONS = [30, 45, 60, 90];
+const params = new URLSearchParams(window.location.search);
+const requestedDays = Number(params.get('days') || '');
+let currentDays = LOOKBACK_OPTIONS.includes(requestedDays) ? requestedDays : 30;
+let selectedCrisisTag = (params.get('crisis_tag') || '').trim();
+let availableDates = [];
+let activeRequestToken = 0;
+
+const esc = (value) => String(value ?? '').replace(/[&<>\"']/g, (match) => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}[match]));
+
+function setStatus(message, isError = false){
+  const node = document.getElementById('statusLine');
+  node.textContent = message || '';
+  node.classList.toggle('error', !!isError);
+}
+
+function syncLookbackButtons(){
+  document.querySelectorAll('.lookback-btn').forEach((button) => {
+    button.classList.toggle('active', Number(button.dataset.days) === currentDays);
+  });
+}
+
+function buildStartDate(endIso, days){
+  const end = new Date(`${endIso}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() - (days - 1));
+  return end.toISOString().slice(0, 10);
+}
+
+async function fetchJson(url){
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok){
+    let detail = `HTTP ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (payload && payload.error) detail = payload.error;
+    } catch (_err) {
+      // Ignore JSON parse failures for error bodies.
+    }
+    throw new Error(detail);
+  }
+  return await response.json();
+}
+
+function renderChipList(items){
+  if (!Array.isArray(items) || !items.length) return '<span class="muted">None</span>';
+  return `<div class="chip-list">${items.map((item) => `<span class="chip">${esc(item)}</span>`).join('')}</div>`;
+}
+
+function renderWindowList(windows){
+  if (!Array.isArray(windows) || !windows.length) return '<span class="muted">N/A</span>';
+  return `<div class="chip-list">${windows.map((windowRow) => {
+    const label = windowRow.start_date === windowRow.end_date
+      ? windowRow.start_date
+      : `${windowRow.start_date} to ${windowRow.end_date}`;
+    return `<span class="chip subtle">${esc(label)} (${windowRow.duration_days}d)</span>`;
+  }).join('')}</div>`;
+}
+
+function renderActivePill(isActive){
+  return isActive
+    ? '<span class="yes-pill">Active</span>'
+    : '<span class="no-pill">Inactive</span>';
+}
+
+function updateSummaryStats(payload){
+  document.getElementById('statCrisisCount').textContent = String(payload.crisis_count || 0);
+  document.getElementById('statBrandCount').textContent = String(payload.affected_brand_count || 0);
+  document.getElementById('statActiveBrandCount').textContent = String(payload.active_brand_count || 0);
+  document.getElementById('statBrandDays').textContent = String(payload.brand_day_count || 0);
+}
+
+function renderCrisisTable(payload){
+  const tbody = document.getElementById('crisisBody');
+  const rows = Array.isArray(payload.crises) ? payload.crises : [];
+  if (!rows.length){
+    tbody.innerHTML = '<tr class="table-empty"><td colspan="7">No crisis tags were active in this window.</td></tr>';
+    return;
+  }
+
+  const selectedKey = ((payload.selected_crisis && payload.selected_crisis.tag) || selectedCrisisTag || '').toLowerCase();
+  tbody.innerHTML = rows.map((row) => {
+    const isSelected = String(row.tag || '').toLowerCase() === selectedKey;
+    return `<tr>
+      <td><button type="button" class="row-select${isSelected ? ' active' : ''}" data-crisis-tag="${esc(row.tag)}">${isSelected ? 'Open' : 'View'}</button></td>
+      <td><span class="tag-pill">${esc(row.display_tag || row.tag || '')}</span></td>
+      <td>${row.brands_affected || 0}</td>
+      <td>${row.active_brands_latest || 0}</td>
+      <td>${esc(row.first_seen_date || '')}</td>
+      <td>${esc(row.last_seen_date || '')}</td>
+      <td>${renderChipList(row.affected_brands)}</td>
+    </tr>`;
+  }).join('');
+
+  tbody.querySelectorAll('[data-crisis-tag]').forEach((button) => {
+    button.addEventListener('click', () => {
+      selectedCrisisTag = String(button.getAttribute('data-crisis-tag') || '').trim();
+      loadCrisisWindow();
+    });
+  });
+}
+
+function renderSelectedCrisis(payload){
+  const detailHeading = document.getElementById('detailHeading');
+  const detailSubhead = document.getElementById('detailSubhead');
+  const detailEmpty = document.getElementById('detailEmpty');
+  const detailContent = document.getElementById('detailContent');
+  const selected = payload.selected_crisis;
+
+  if (!selected){
+    detailHeading.textContent = 'Select a crisis';
+    detailSubhead.textContent = 'Choose a crisis from the table to see the affected brands and their activity windows.';
+    detailEmpty.hidden = false;
+    detailContent.hidden = true;
+    document.getElementById('brandBody').innerHTML = '';
+    document.getElementById('dailyBody').innerHTML = '';
+    return;
+  }
+
+  detailEmpty.hidden = true;
+  detailContent.hidden = false;
+  detailHeading.textContent = selected.display_tag || selected.tag || 'Selected crisis';
+  detailSubhead.textContent = `Window ${payload.window_start} to ${payload.window_end}. ${selected.brands_affected || 0} brands were affected by this crisis in the selected range.`;
+  document.getElementById('detailBrandCount').textContent = String(selected.brands_affected || 0);
+  document.getElementById('detailActiveCount').textContent = String(selected.active_brands_latest || 0);
+  document.getElementById('detailBrandDays').textContent = String(selected.brand_days || 0);
+  document.getElementById('detailNegativeItems').textContent = String(selected.total_negative_items || 0);
+
+  const brandBody = document.getElementById('brandBody');
+  const brands = Array.isArray(selected.brands) ? selected.brands : [];
+  if (!brands.length){
+    brandBody.innerHTML = '<tr class="table-empty"><td colspan="7">No brands were attached to this crisis in the selected window.</td></tr>';
+  } else {
+    brandBody.innerHTML = brands.map((brand) => `<tr>
+      <td><span class="brand-name">${esc(brand.brand || '')}</span></td>
+      <td>${esc(brand.sector || 'Unassigned')}</td>
+      <td>${brand.days_affected || 0}</td>
+      <td>${esc(brand.first_seen_date || '')}</td>
+      <td>${esc(brand.last_seen_date || '')}</td>
+      <td>${renderActivePill(!!brand.active_on_window_end)}</td>
+      <td class="windows-cell">${renderWindowList(brand.windows)}</td>
+    </tr>`).join('');
+  }
+
+  const dailyBody = document.getElementById('dailyBody');
+  const dailyRows = Array.isArray(selected.daily_impact) ? selected.daily_impact : [];
+  if (!dailyRows.length){
+    dailyBody.innerHTML = '<tr class="table-empty"><td colspan="4">No daily activity rows were returned for this crisis.</td></tr>';
+  } else {
+    dailyBody.innerHTML = dailyRows.map((row) => `<tr>
+      <td>${esc(row.date || '')}</td>
+      <td>${row.brands_affected || 0}</td>
+      <td>${row.total_negative_items || 0}</td>
+      <td>${renderChipList(row.brands)}</td>
+    </tr>`).join('');
+  }
+}
+
+async function loadAvailableDates(){
+  const payload = await fetchJson('/api/dates');
+  availableDates = Array.isArray(payload.dates) ? payload.dates : [];
+  const select = document.getElementById('dateSelect');
+  const requestedDate = (params.get('date') || '').trim();
+  const initialDate = availableDates.includes(requestedDate) ? requestedDate : (availableDates[0] || '');
+  select.innerHTML = availableDates.map((dateValue) => (
+    `<option value="${esc(dateValue)}">${esc(dateValue)}</option>`
+  )).join('');
+  if (initialDate) select.value = initialDate;
+}
+
+async function loadCrisisWindow(){
+  const requestToken = ++activeRequestToken;
+  const endDate = (document.getElementById('dateSelect').value || '').trim();
+  if (!endDate){
+    updateSummaryStats({ crisis_count: 0, affected_brand_count: 0, active_brand_count: 0, brand_day_count: 0 });
+    renderCrisisTable({ crises: [], selected_crisis: null });
+    renderSelectedCrisis({ selected_crisis: null });
+    setStatus('No dates are available yet.');
+    return;
+  }
+
+  const startDate = buildStartDate(endDate, currentDays);
+  const query = new URLSearchParams({
+    start_date: startDate,
+    end_date: endDate,
+  });
+  if (selectedCrisisTag) query.set('crisis_tag', selectedCrisisTag);
+
+  setStatus(`Loading crisis activity for ${startDate} to ${endDate}...`);
+  try {
+    const payload = await fetchJson(`/api/v1/insights/crisis_brand_impact?${query.toString()}`);
+    if (requestToken !== activeRequestToken) return;
+    if (!payload.selected_crisis && selectedCrisisTag){
+      selectedCrisisTag = '';
+    } else if (payload.selected_crisis && payload.selected_crisis.tag){
+      selectedCrisisTag = payload.selected_crisis.tag;
+    }
+    updateSummaryStats(payload);
+    renderCrisisTable(payload);
+    renderSelectedCrisis(payload);
+    setStatus(`Showing crisis activity from ${payload.window_start} to ${payload.window_end}.`);
+  } catch (error) {
+    if (requestToken !== activeRequestToken) return;
+    updateSummaryStats({ crisis_count: 0, affected_brand_count: 0, active_brand_count: 0, brand_day_count: 0 });
+    renderCrisisTable({ crises: [], selected_crisis: null });
+    renderSelectedCrisis({ selected_crisis: null });
+    setStatus(`Unable to load crisis activity: ${error.message}`, true);
+  }
+}
+
+function bindControls(){
+  const dateSelect = document.getElementById('dateSelect');
+  dateSelect.addEventListener('change', () => {
+    loadCrisisWindow();
+  });
+
+  document.querySelectorAll('.lookback-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const nextDays = Number(button.dataset.days || 0);
+      if (!LOOKBACK_OPTIONS.includes(nextDays) || nextDays === currentDays) return;
+      currentDays = nextDays;
+      syncLookbackButtons();
+      loadCrisisWindow();
+    });
+  });
+}
+
+async function init(){
+  syncLookbackButtons();
+  bindControls();
+  try {
+    await loadAvailableDates();
+  } catch (error) {
+    setStatus(`Unable to load available dates: ${error.message}`, true);
+    return;
+  }
+  await loadCrisisWindow();
+}
+
+init();
+</script>
+</body>
+</html>

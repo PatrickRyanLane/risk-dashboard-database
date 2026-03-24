@@ -6,7 +6,7 @@
   <link rel="apple-touch-icon" sizes="180x180" href="images/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="images/favicon-16x16.png">
-  <title>Fortune 1000 Brand & CEO Risk Dashboard</title>
+  <title>Fortune 1000 Risk Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     /* Smooth-ish height updates for the iframe */
@@ -31,7 +31,7 @@
 <body class="bg-[#5e858e] text-slate-900">
   <div class="max-w-7xl mx-auto p-6">
     <header class="mb-4">
-      <h1 class="text-3xl font-bold">Fortune 1000 Brand & CEO Risk Dashboard</h1>
+      <h1 class="text-3xl font-bold">Fortune 1000 Risk Dashboard</h1>
     </header>
 
     <!-- Tabs -->
@@ -39,6 +39,7 @@
       <button id="tab-brands"  class="tab-btn active">Brands</button>
       <button id="tab-ceos"    class="tab-btn">CEOs</button>
       <button id="tab-sectors" class="tab-btn">Sectors</button>
+      <button id="tab-crises"  class="tab-btn">Crises</button>
 
       <div class="ml-auto text-sm">
         <a id="openTabLink" class="underline" target="_blank" rel="noopener">Open current tab in a new tab</a>
@@ -56,7 +57,8 @@
     const PATHS = {
       brands:  'brand-dashboard.html',
       ceos:    'ceo-dashboard.html',
-      sectors: 'sectors.html'
+      sectors: 'sectors.html',
+      crises:  'crises.html'
     };
 
     // Utility: build a URL relative to this file's directory
@@ -71,7 +73,8 @@
     const tabs = {
       brands: document.getElementById('tab-brands'),
       ceos: document.getElementById('tab-ceos'),
-      sectors: document.getElementById('tab-sectors')
+      sectors: document.getElementById('tab-sectors'),
+      crises: document.getElementById('tab-crises')
     };
 
     // Set active tab styling
@@ -135,10 +138,11 @@
     tabs.brands.addEventListener('click', () => loadDash('brands'));
     tabs.ceos.addEventListener('click', () => loadDash('ceos'));
     tabs.sectors.addEventListener('click', () => loadDash('sectors'));
+    tabs.crises.addEventListener('click', () => loadDash('crises'));
 
-    // Support ?tab=brands|ceos|sectors
+    // Support ?tab=brands|ceos|sectors|crises
     const params = new URLSearchParams(location.search);
-    const initial = ['brands','ceos','sectors'].includes(params.get('tab')) ? params.get('tab') : 'brands';
+    const initial = ['brands','ceos','sectors','crises'].includes(params.get('tab')) ? params.get('tab') : 'brands';
     loadDash(initial);
   </script>
 </body>

@@ -380,6 +380,7 @@ def clear_narrative_api_caches() -> None:
     clear_api_cache_prefix("insights_aggregate_crisis_patterns:")
     clear_api_cache_prefix("insights_aggregate_industry_durations:")
     clear_api_cache_prefix("insights_find_storylines:")
+    clear_api_cache_prefix("insights_crisis_brand_impact:")
 
 
 def load_serp_feature_item_narrative_context(cur, serp_feature_item_id: str) -> Dict | None:
@@ -2108,6 +2109,176 @@ def build_storyline_candidates(analytics_type: str, rows: List[Dict]) -> List[Di
     return candidates
 
 
+def build_crisis_brand_impact_summary(rows: List[Dict], end_date) -> Tuple[List[Dict], Dict[str, Dict], int, int, int]:
+    by_crisis: Dict[str, Dict] = {}
+    affected_brand_ids = set()
+    active_brand_ids = set()
+
+    for row in rows:
+        tag = (row.get('narrative_primary_tag') or '').strip()
+        if not tag:
+            continue
+        group = normalized_narrative_group(
+            tag,
+            row.get('narrative_primary_group'),
+            row.get('narrative_is_crisis'),
+        )
+        if group != 'crisis':
+            continue
+
+        row_date = coerce_date(row.get('date'))
+        brand_name = (row.get('company') or row.get('entity_name') or '').strip()
+        if row_date is None or not brand_name:
+            continue
+
+        brand_id = str(row.get('company_id') or row.get('entity_id') or brand_name.casefold())
+        sector_name = (row.get('sector') or '').strip()
+        negative_item_count = max(int(row.get('negative_item_count') or 0), 0)
+        crisis_key = tag.casefold()
+        day_iso = row_date.isoformat()
+
+        affected_brand_ids.add(brand_id)
+        if row_date == end_date:
+            active_brand_ids.add(brand_id)
+
+        crisis_bucket = by_crisis.setdefault(crisis_key, {
+            'tag': tag,
+            'display_tag': narrative_display_tag(tag, group),
+            'group': group,
+            'days': set(),
+            'brands': {},
+            'brands_by_day': {},
+            'negative_items_by_day': {},
+            'total_negative_items': 0,
+        })
+        crisis_bucket['days'].add(row_date)
+        crisis_bucket['total_negative_items'] += negative_item_count
+        crisis_bucket['brands_by_day'].setdefault(day_iso, set()).add(brand_name)
+        crisis_bucket['negative_items_by_day'][day_iso] = (
+            crisis_bucket['negative_items_by_day'].get(day_iso, 0) + negative_item_count
+        )
+
+        brand_bucket = crisis_bucket['brands'].setdefault(brand_id, {
+            'brand_id': brand_id,
+            'brand': brand_name,
+            'sector': sector_name,
+            'days': set(),
+            'total_negative_items': 0,
+        })
+        brand_bucket['days'].add(row_date)
+        brand_bucket['total_negative_items'] += negative_item_count
+        if sector_name and not brand_bucket.get('sector'):
+            brand_bucket['sector'] = sector_name
+
+    crisis_rows: List[Dict] = []
+    detail_lookup: Dict[str, Dict] = {}
+    total_brand_days = 0
+
+    for crisis_key, crisis_bucket in by_crisis.items():
+        brand_rows: List[Dict] = []
+        active_brands_latest = 0
+        brand_day_count = 0
+
+        for brand_bucket in crisis_bucket['brands'].values():
+            days_sorted = sorted(brand_bucket['days'])
+            if not days_sorted:
+                continue
+
+            windows = [
+                {
+                    'start_date': window_start.isoformat(),
+                    'end_date': window_end.isoformat(),
+                    'duration_days': duration_days,
+                }
+                for window_start, window_end, duration_days in consecutive_day_windows(days_sorted)
+            ]
+            days_affected = len(days_sorted)
+            active_on_window_end = end_date in brand_bucket['days']
+            if active_on_window_end:
+                active_brands_latest += 1
+            brand_day_count += days_affected
+
+            brand_rows.append({
+                'brand_id': brand_bucket['brand_id'],
+                'brand': brand_bucket['brand'],
+                'sector': brand_bucket.get('sector') or '',
+                'days_affected': days_affected,
+                'first_seen_date': days_sorted[0].isoformat(),
+                'last_seen_date': days_sorted[-1].isoformat(),
+                'active_on_window_end': active_on_window_end,
+                'episodes': len(windows),
+                'total_negative_items': int(brand_bucket.get('total_negative_items') or 0),
+                'windows': windows,
+            })
+
+        total_brand_days += brand_day_count
+        brand_rows.sort(
+            key=lambda item: (
+                0 if item.get('active_on_window_end') else 1,
+                -(item.get('days_affected') or 0),
+                -(item.get('total_negative_items') or 0),
+                str(item.get('brand') or '').casefold(),
+            )
+        )
+
+        affected_brands = sorted(
+            [item.get('brand') or '' for item in brand_rows if item.get('brand')],
+            key=lambda value: value.casefold(),
+        )
+        crisis_days = sorted(crisis_bucket['days'])
+        if not crisis_days:
+            continue
+
+        daily_impact = []
+        for day_iso in sorted(crisis_bucket['brands_by_day'].keys(), reverse=True):
+            daily_impact.append({
+                'date': day_iso,
+                'brands_affected': len(crisis_bucket['brands_by_day'][day_iso]),
+                'brands': sorted(
+                    crisis_bucket['brands_by_day'][day_iso],
+                    key=lambda value: value.casefold(),
+                ),
+                'total_negative_items': int(crisis_bucket['negative_items_by_day'].get(day_iso, 0) or 0),
+            })
+
+        summary = {
+            'tag': crisis_bucket['tag'],
+            'display_tag': crisis_bucket['display_tag'],
+            'group': crisis_bucket['group'],
+            'is_crisis': True,
+            'brands_affected': len(brand_rows),
+            'active_brands_latest': active_brands_latest,
+            'brand_days': brand_day_count,
+            'first_seen_date': crisis_days[0].isoformat(),
+            'last_seen_date': crisis_days[-1].isoformat(),
+            'total_negative_items': int(crisis_bucket['total_negative_items'] or 0),
+            'affected_brands': affected_brands,
+        }
+        crisis_rows.append(summary)
+        detail_lookup[crisis_key] = {
+            **summary,
+            'brands': brand_rows,
+            'daily_impact': daily_impact,
+        }
+
+    crisis_rows.sort(
+        key=lambda item: (
+            -(item.get('brands_affected') or 0),
+            -(item.get('active_brands_latest') or 0),
+            -(item.get('brand_days') or 0),
+            -(item.get('total_negative_items') or 0),
+            str(item.get('tag') or '').casefold(),
+        )
+    )
+    return (
+        crisis_rows,
+        detail_lookup,
+        len(affected_brand_ids),
+        len(active_brand_ids),
+        total_brand_days,
+    )
+
+
 # --------------------------- Static routes ---------------------------
 
 @app.route('/')
@@ -2121,6 +2292,7 @@ def root():
 @app.route('/brand-dashboard.html')
 @app.route('/ceo-dashboard.html')
 @app.route('/sectors.html')
+@app.route('/crises.html')
 def top_level_dashboards():
     view = current_view()
     if view == 'internal':
@@ -4241,6 +4413,64 @@ def insights_aggregate_crisis_patterns_json():
             'using Top Stories and recent negative newsfeed coverage.'
         ),
         'rows': serialize_rows(pattern_rows[:limit]),
+    }
+    set_cached_json(cache_key, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/v1/insights/crisis_brand_impact')
+def insights_crisis_brand_impact_json():
+    sector = (request.args.get('sector') or '').strip()
+    requested_crisis_tag = (request.args.get('crisis_tag') or '').strip()
+
+    cache_key = f"insights_crisis_brand_impact:{request.query_string.decode('utf-8')}"
+    cached = get_cached_json(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    try:
+        start_date, end_date, latest_available_date, days, window_mode, requested_start_date, requested_end_date = resolve_insights_window(
+            'brand',
+            sector=sector,
+            default_days=30,
+            min_days=7,
+            max_days=365,
+        )
+    except LookupError:
+        return jsonify({'error': 'no_data'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    analytics_type, rows = fetch_negative_top_stories_narrative_rows('brand', start_date, end_date, sector)
+    crisis_rows, detail_lookup, affected_brand_count, active_brand_count, brand_day_count = build_crisis_brand_impact_summary(
+        rows,
+        end_date,
+    )
+
+    selected_crisis = None
+    selected_lookup_key = requested_crisis_tag.casefold()
+    if selected_lookup_key:
+        selected_crisis = detail_lookup.get(selected_lookup_key)
+    if selected_crisis is None and crisis_rows:
+        selected_crisis = detail_lookup.get((crisis_rows[0].get('tag') or '').casefold())
+
+    payload = {
+        'entity': analytics_type,
+        'sector': sector,
+        'days': days,
+        'window_mode': window_mode,
+        'requested_start_date': requested_start_date,
+        'requested_end_date': requested_end_date,
+        'requested_crisis_tag': requested_crisis_tag or None,
+        'latest_available_date': latest_available_date.isoformat(),
+        'window_start': start_date.isoformat(),
+        'window_end': end_date.isoformat(),
+        'crisis_count': len(crisis_rows),
+        'affected_brand_count': affected_brand_count,
+        'active_brand_count': active_brand_count,
+        'brand_day_count': brand_day_count,
+        'crises': crisis_rows,
+        'selected_crisis': selected_crisis,
     }
     set_cached_json(cache_key, payload)
     return jsonify(payload)
