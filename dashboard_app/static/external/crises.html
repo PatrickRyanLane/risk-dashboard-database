@@ -50,6 +50,8 @@ button:hover{filter:brightness(1.08)}
 .split-grid{display:grid;grid-template-columns:minmax(440px,1.02fr) minmax(520px,1.28fr);gap:16px;align-items:start}
 .section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
 .section-head p{max-width:540px}
+.detail-controls{min-width:260px}
+.detail-controls select{width:100%}
 .table-scroll{overflow:auto;-webkit-overflow-scrolling:touch}
 .table-scroll::-webkit-scrollbar{height:8px;width:8px}
 .table-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.05);border-radius:999px}
@@ -60,12 +62,15 @@ tbody td{background:var(--ink);border-top:1px solid #0f1831;border-bottom:1px so
 tbody tr td:first-child{border-left:1px solid #0f1831;border-radius:12px 0 0 12px}
 tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 0}
 .table-empty td{text-align:center;color:var(--muted);padding:18px 12px}
-.row-select{min-width:72px}
-.row-select.active{border-color:var(--accent);background:var(--accentSoft);color:var(--accent)}
 .tag-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;border:1px solid var(--dangerBorder);background:rgba(255,130,97,.08);color:#ffd7cd;font-size:12px;font-weight:600}
 .chip-list{display:flex;flex-wrap:wrap;gap:6px;min-width:220px}
 .chip{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;background:var(--chip);border:1px solid var(--chipBorder);font-size:12px;line-height:1.2}
 .chip.subtle{background:rgba(255,255,255,.04)}
+.crisis-row{cursor:pointer}
+.crisis-row:hover td{background:#253640}
+.crisis-row.selected td{background:rgba(88,219,237,.12)}
+.crisis-row.selected td:first-child{border-left-color:var(--accent)}
+.crisis-row.selected td:last-child{border-right-color:var(--accent)}
 .detail-shell{display:flex;flex-direction:column;gap:14px}
 .detail-empty{padding:28px 20px;border:1px dashed rgba(162,235,243,.28);border-radius:12px;color:var(--muted);text-align:center}
 .detail-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
@@ -159,13 +164,12 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
         <table>
           <thead>
             <tr>
-              <th>Open</th>
-              <th>Crisis</th>
-              <th>Brands</th>
-              <th>Active End Date</th>
-              <th>First Seen</th>
-              <th>Last Seen</th>
-              <th>Affected Brands</th>
+                    <th>Crisis</th>
+                    <th>Brands Affected</th>
+                    <th>Brands Still Active</th>
+                    <th>First Seen</th>
+                    <th>Last Seen</th>
+                    <th>Affected Brands</th>
             </tr>
           </thead>
           <tbody id="crisisBody"></tbody>
@@ -179,6 +183,12 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
           <h2 id="detailHeading">Select a crisis</h2>
           <p id="detailSubhead" class="muted">Choose a crisis from the table to see the affected brands and their activity windows.</p>
         </div>
+        <div class="detail-controls">
+          <label class="field-label" for="crisisSelect">Selected Crisis</label>
+          <select id="crisisSelect" disabled>
+            <option value="">Select a crisis</option>
+          </select>
+        </div>
       </div>
 
       <div id="detailEmpty" class="detail-empty">No crisis is selected for this window yet.</div>
@@ -190,7 +200,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
             <strong id="detailBrandCount">0</strong>
           </div>
           <div class="detail-mini">
-            <span class="label">Active On End Date</span>
+            <span class="label">Brands Still Active</span>
             <strong id="detailActiveCount">0</strong>
           </div>
           <div class="detail-mini">
@@ -215,7 +225,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
                     <th>Days</th>
                     <th>First Seen</th>
                     <th>Last Seen</th>
-                    <th>Active End Date</th>
+                    <th>Still Active?</th>
                     <th>Affected Windows</th>
                   </tr>
                 </thead>
@@ -328,15 +338,14 @@ function renderCrisisTable(payload){
   const tbody = document.getElementById('crisisBody');
   const rows = Array.isArray(payload.crises) ? payload.crises : [];
   if (!rows.length){
-    tbody.innerHTML = '<tr class="table-empty"><td colspan="7">No crisis tags were active in this window.</td></tr>';
+    tbody.innerHTML = '<tr class="table-empty"><td colspan="6">No crisis tags were active in this window.</td></tr>';
     return;
   }
 
   const selectedKey = ((payload.selected_crisis && payload.selected_crisis.tag) || selectedCrisisTag || '').toLowerCase();
   tbody.innerHTML = rows.map((row) => {
     const isSelected = String(row.tag || '').toLowerCase() === selectedKey;
-    return `<tr>
-      <td><button type="button" class="row-select${isSelected ? ' active' : ''}" data-crisis-tag="${esc(row.tag)}">${isSelected ? 'Open' : 'View'}</button></td>
+    return `<tr class="crisis-row${isSelected ? ' selected' : ''}" data-crisis-tag="${esc(row.tag)}">
       <td><span class="tag-pill">${esc(row.display_tag || row.tag || '')}</span></td>
       <td>${row.brands_affected || 0}</td>
       <td>${row.active_brands_latest || 0}</td>
@@ -346,12 +355,32 @@ function renderCrisisTable(payload){
     </tr>`;
   }).join('');
 
-  tbody.querySelectorAll('[data-crisis-tag]').forEach((button) => {
-    button.addEventListener('click', () => {
-      selectedCrisisTag = String(button.getAttribute('data-crisis-tag') || '').trim();
+  tbody.querySelectorAll('[data-crisis-tag]').forEach((row) => {
+    row.addEventListener('click', () => {
+      selectedCrisisTag = String(row.getAttribute('data-crisis-tag') || '').trim();
       loadCrisisWindow();
     });
   });
+}
+
+function renderCrisisSelect(payload){
+  const select = document.getElementById('crisisSelect');
+  const rows = Array.isArray(payload.crises) ? payload.crises : [];
+  const selectedTag = (payload.selected_crisis && payload.selected_crisis.tag) || selectedCrisisTag || '';
+
+  if (!rows.length){
+    select.innerHTML = '<option value="">Select a crisis</option>';
+    select.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  select.innerHTML = rows.map((row) => (
+    `<option value="${esc(row.tag)}">${esc(row.display_tag || row.tag || '')}</option>`
+  )).join('');
+  if (selectedTag) {
+    select.value = selectedTag;
+  }
 }
 
 function renderSelectedCrisis(payload){
@@ -366,6 +395,7 @@ function renderSelectedCrisis(payload){
     detailSubhead.textContent = 'Choose a crisis from the table to see the affected brands and their activity windows.';
     detailEmpty.hidden = false;
     detailContent.hidden = true;
+    renderCrisisSelect(payload);
     document.getElementById('brandBody').innerHTML = '';
     document.getElementById('dailyBody').innerHTML = '';
     return;
@@ -373,6 +403,7 @@ function renderSelectedCrisis(payload){
 
   detailEmpty.hidden = true;
   detailContent.hidden = false;
+  renderCrisisSelect(payload);
   detailHeading.textContent = selected.display_tag || selected.tag || 'Selected crisis';
   detailSubhead.textContent = `Window ${payload.window_start} to ${payload.window_end}. ${selected.brands_affected || 0} brands were affected by this crisis in the selected range.`;
   document.getElementById('detailBrandCount').textContent = String(selected.brands_affected || 0);
@@ -465,6 +496,12 @@ async function loadCrisisWindow(){
 function bindControls(){
   const dateSelect = document.getElementById('dateSelect');
   dateSelect.addEventListener('change', () => {
+    loadCrisisWindow();
+  });
+
+  const crisisSelect = document.getElementById('crisisSelect');
+  crisisSelect.addEventListener('change', () => {
+    selectedCrisisTag = String(crisisSelect.value || '').trim();
     loadCrisisWindow();
   });
 
