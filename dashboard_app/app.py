@@ -2109,10 +2109,14 @@ def build_storyline_candidates(analytics_type: str, rows: List[Dict]) -> List[Di
     return candidates
 
 
-def build_crisis_brand_impact_summary(rows: List[Dict], end_date) -> Tuple[List[Dict], Dict[str, Dict], int, int, int]:
+def build_crisis_brand_impact_summary(rows: List[Dict], start_date, end_date) -> Tuple[List[Dict], Dict[str, Dict], int, int, int, List[str], List[Dict]]:
     by_crisis: Dict[str, Dict] = {}
     affected_brand_ids = set()
     active_brand_ids = set()
+    trend_dates = [
+        (start_date + timedelta(days=offset)).isoformat()
+        for offset in range((end_date - start_date).days + 1)
+    ]
 
     for row in rows:
         tag = (row.get('narrative_primary_tag') or '').strip()
@@ -2173,6 +2177,7 @@ def build_crisis_brand_impact_summary(rows: List[Dict], end_date) -> Tuple[List[
     crisis_rows: List[Dict] = []
     detail_lookup: Dict[str, Dict] = {}
     total_brand_days = 0
+    trend_rows: List[Dict] = []
 
     for crisis_key, crisis_bucket in by_crisis.items():
         brand_rows: List[Dict] = []
@@ -2228,8 +2233,14 @@ def build_crisis_brand_impact_summary(rows: List[Dict], end_date) -> Tuple[List[
         crisis_days = sorted(crisis_bucket['days'])
         if not crisis_days:
             continue
+        avg_active_days = round(brand_day_count / len(brand_rows), 1) if brand_rows else 0
+        longest_active_days = max((int(item.get('days_affected') or 0) for item in brand_rows), default=0)
 
         daily_impact = []
+        active_brands_series = []
+        for day_iso in trend_dates:
+            active_count = len(crisis_bucket['brands_by_day'].get(day_iso, set()))
+            active_brands_series.append(active_count)
         for day_iso in sorted(crisis_bucket['brands_by_day'].keys(), reverse=True):
             daily_impact.append({
                 'date': day_iso,
@@ -2248,6 +2259,9 @@ def build_crisis_brand_impact_summary(rows: List[Dict], end_date) -> Tuple[List[
             'is_crisis': True,
             'brands_affected': len(brand_rows),
             'active_brands_latest': active_brands_latest,
+            'avg_active_days': avg_active_days,
+            'longest_active_days': longest_active_days,
+            'crisis_days': len(crisis_days),
             'brand_days': brand_day_count,
             'first_seen_date': crisis_days[0].isoformat(),
             'last_seen_date': crisis_days[-1].isoformat(),
@@ -2260,6 +2274,15 @@ def build_crisis_brand_impact_summary(rows: List[Dict], end_date) -> Tuple[List[
             'brands': brand_rows,
             'daily_impact': daily_impact,
         }
+        trend_rows.append({
+            'tag': crisis_bucket['tag'],
+            'display_tag': crisis_bucket['display_tag'],
+            'brands_affected': len(brand_rows),
+            'active_brands_latest': active_brands_latest,
+            'avg_active_days': avg_active_days,
+            'longest_active_days': longest_active_days,
+            'active_brands_series': active_brands_series,
+        })
 
     crisis_rows.sort(
         key=lambda item: (
@@ -2270,12 +2293,22 @@ def build_crisis_brand_impact_summary(rows: List[Dict], end_date) -> Tuple[List[
             str(item.get('tag') or '').casefold(),
         )
     )
+    trend_rows.sort(
+        key=lambda item: (
+            -(item.get('brands_affected') or 0),
+            -(item.get('active_brands_latest') or 0),
+            -(item.get('avg_active_days') or 0),
+            str(item.get('tag') or '').casefold(),
+        )
+    )
     return (
         crisis_rows,
         detail_lookup,
         len(affected_brand_ids),
         len(active_brand_ids),
         total_brand_days,
+        trend_dates,
+        trend_rows,
     )
 
 
@@ -4442,8 +4475,9 @@ def insights_crisis_brand_impact_json():
         return jsonify({'error': str(exc)}), 400
 
     analytics_type, rows = fetch_negative_top_stories_narrative_rows('brand', start_date, end_date, sector)
-    crisis_rows, detail_lookup, affected_brand_count, active_brand_count, brand_day_count = build_crisis_brand_impact_summary(
+    crisis_rows, detail_lookup, affected_brand_count, active_brand_count, brand_day_count, trend_dates, trend_rows = build_crisis_brand_impact_summary(
         rows,
+        start_date,
         end_date,
     )
 
@@ -4470,6 +4504,8 @@ def insights_crisis_brand_impact_json():
         'active_brand_count': active_brand_count,
         'brand_day_count': brand_day_count,
         'crises': crisis_rows,
+        'trend_dates': trend_dates,
+        'trend_rows': trend_rows,
         'selected_crisis': selected_crisis,
     }
     set_cached_json(cache_key, payload)

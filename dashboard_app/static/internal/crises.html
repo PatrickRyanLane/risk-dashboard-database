@@ -7,6 +7,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="images/favicon-16x16.png">
 <title>Fortune 1000 Crisis Explorer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 :root{
   --bg:#044152;
@@ -43,29 +44,29 @@ button:hover{filter:brightness(1.08)}
 .lookback-btn.active{border-color:var(--accent);box-shadow:0 0 0 1px rgba(88,219,237,.35);color:var(--accent)}
 .status-line{font-size:12px;min-height:18px}
 .status-line.error{color:var(--danger)}
-.stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.stats-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:16px}
 .stat-card{background:var(--cardAlt);border:1px solid var(--stroke);border-radius:12px;padding:14px}
 .stat-card .label{display:block;font-size:12px;color:var(--muted);margin-bottom:8px}
 .stat-card strong{font-size:24px;line-height:1}
-.split-grid{display:grid;grid-template-columns:minmax(440px,1.02fr) minmax(520px,1.28fr);gap:16px;align-items:start}
+.stack{display:flex;flex-direction:column;gap:16px}
 .section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
-.section-head p{max-width:540px}
+.section-head p{max-width:720px}
 .detail-controls{min-width:260px}
 .detail-controls select{width:100%}
+.subsection-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:18px 0 10px}
 .table-scroll{overflow:auto;-webkit-overflow-scrolling:touch}
 .table-scroll::-webkit-scrollbar{height:8px;width:8px}
 .table-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.05);border-radius:999px}
 .table-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:999px}
 table{width:100%;border-collapse:separate;border-spacing:0 8px}
-thead th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;padding:0 10px 4px;vertical-align:bottom}
+thead th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;padding:0 10px 4px;vertical-align:bottom;white-space:nowrap}
+thead th.numeric{text-align:right}
 tbody td{background:var(--ink);border-top:1px solid #0f1831;border-bottom:1px solid #0f1831;padding:10px;vertical-align:top}
+tbody td.numeric{text-align:right;font-variant-numeric:tabular-nums}
 tbody tr td:first-child{border-left:1px solid #0f1831;border-radius:12px 0 0 12px}
 tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 0}
 .table-empty td{text-align:center;color:var(--muted);padding:18px 12px}
 .tag-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;border:1px solid var(--dangerBorder);background:rgba(255,130,97,.08);color:#ffd7cd;font-size:12px;font-weight:600}
-.chip-list{display:flex;flex-wrap:wrap;gap:6px;min-width:220px}
-.chip{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;background:var(--chip);border:1px solid var(--chipBorder);font-size:12px;line-height:1.2}
-.chip.subtle{background:rgba(255,255,255,.04)}
 .crisis-row{cursor:pointer}
 .crisis-row:hover td{background:#253640}
 .crisis-row.selected td{background:rgba(88,219,237,.12)}
@@ -77,28 +78,26 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
 .detail-mini{background:var(--cardAlt);border:1px solid var(--stroke);border-radius:12px;padding:12px}
 .detail-mini .label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
 .detail-mini strong{font-size:20px;line-height:1}
-.detail-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:14px}
 .table-block{display:flex;flex-direction:column;gap:10px}
 .table-block h3{font-size:15px}
 .brand-name{font-weight:600}
 .yes-pill,.no-pill{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid transparent}
 .yes-pill{background:rgba(88,219,237,.14);border-color:rgba(88,219,237,.35);color:var(--accent)}
 .no-pill{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.12);color:var(--muted)}
-.windows-cell{min-width:220px}
-@media (max-width: 1200px){
-  .split-grid{grid-template-columns:1fr}
-}
+.trend-chart-shell{position:relative;min-height:340px;height:42vh;max-height:520px}
+.trend-chart-shell canvas{width:100% !important;height:100% !important;display:block}
+.chart-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border:1px dashed rgba(162,235,243,.28);border-radius:12px;color:var(--muted);background:rgba(0,0,0,.08)}
 @media (max-width: 900px){
   .controls-grid{grid-template-columns:1fr}
   .stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .detail-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .detail-grid{grid-template-columns:1fr}
+  .section-head,.subsection-head{flex-direction:column}
+  .detail-controls{min-width:0;width:100%}
 }
 @media (max-width: 620px){
   .wrap{padding:16px}
   .stats-grid{grid-template-columns:1fr}
   .detail-summary{grid-template-columns:1fr}
-  .chip-list{min-width:0}
 }
 </style>
 </head>
@@ -107,7 +106,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
   <header class="page-head">
     <div>
       <h1>Fortune 1000 Crisis Explorer</h1>
-      <p class="muted">See which crisis themes were active in the selected window, which brands they touched, and the specific dates those brands were affected.</p>
+      <p class="muted">Track which crisis categories are expanding, which are still active, and which brands are carrying each category in the selected window.</p>
     </div>
   </header>
 
@@ -143,8 +142,12 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
       <strong id="statBrandCount">0</strong>
     </div>
     <div class="stat-card">
-      <span class="label">Brands Active On End Date</span>
+      <span class="label">Active Brands</span>
       <strong id="statActiveBrandCount">0</strong>
+    </div>
+    <div class="stat-card">
+      <span class="label">Average Crisis Length</span>
+      <strong id="statAvgCrisisLength">0d</strong>
     </div>
     <div class="stat-card">
       <span class="label">Brand-Days</span>
@@ -152,27 +155,26 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
     </div>
   </section>
 
-  <section class="split-grid">
+  <section class="stack">
     <div class="card">
       <div class="section-head">
         <div>
-          <h2>Crises In Window</h2>
-          <p class="muted">Select a crisis to inspect the brands affected and when they were active.</p>
+          <h2>Crisis Summary</h2>
+          <p class="muted">Click a crisis category to update the selector and focus the detail panel below.</p>
         </div>
       </div>
       <div class="table-scroll">
         <table>
           <thead>
             <tr>
-                    <th>Crisis</th>
-                    <th>Brands Affected</th>
-                    <th>Brands Still Active</th>
-                    <th>First Seen</th>
-                    <th>Last Seen</th>
-                    <th>Affected Brands</th>
+              <th>Crisis Type</th>
+              <th class="numeric">Affected Brands</th>
+              <th class="numeric">Active Brands</th>
+              <th class="numeric">Average Active Days</th>
+              <th class="numeric">Longest Active Days</th>
             </tr>
           </thead>
-          <tbody id="crisisBody"></tbody>
+          <tbody id="summaryBody"></tbody>
         </table>
       </div>
     </div>
@@ -180,8 +182,34 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
     <div class="card">
       <div class="section-head">
         <div>
-          <h2 id="detailHeading">Select a crisis</h2>
-          <p id="detailSubhead" class="muted">Choose a crisis from the table to see the affected brands and their activity windows.</p>
+          <h2>Crisis Trends</h2>
+          <p class="muted">Daily active-brand counts for the most visible crisis categories in the selected window. The chart highlights the leading categories; the table shows the latest dates in the same window.</p>
+        </div>
+      </div>
+      <div class="trend-chart-shell">
+        <canvas id="trendChart"></canvas>
+        <div id="trendChartEmpty" class="chart-empty" hidden>Trend data will appear here when crisis categories are available.</div>
+      </div>
+
+      <div class="subsection-head">
+        <div>
+          <h3>Trend Table</h3>
+          <p id="trendTableNote" class="muted"></p>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead id="trendHead"></thead>
+          <tbody id="trendBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-head">
+        <div>
+          <h2 id="detailHeading">Selected Crisis</h2>
+          <p id="detailSubhead" class="muted">Choose a crisis from the summary table to see the brands carrying it in the current window.</p>
         </div>
         <div class="detail-controls">
           <label class="field-label" for="crisisSelect">Selected Crisis</label>
@@ -200,55 +228,35 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
             <strong id="detailBrandCount">0</strong>
           </div>
           <div class="detail-mini">
-            <span class="label">Brands Still Active</span>
+            <span class="label">Active Brands</span>
             <strong id="detailActiveCount">0</strong>
           </div>
           <div class="detail-mini">
-            <span class="label">Brand-Days</span>
-            <strong id="detailBrandDays">0</strong>
+            <span class="label">Average Active Days</span>
+            <strong id="detailAvgActiveDays">0d</strong>
           </div>
           <div class="detail-mini">
-            <span class="label">Negative Items</span>
-            <strong id="detailNegativeItems">0</strong>
+            <span class="label">Longest Active Days</span>
+            <strong id="detailLongestActiveDays">0d</strong>
           </div>
         </div>
 
-        <div class="detail-grid">
-          <div class="table-block">
-            <h3>Affected Brands</h3>
-            <div class="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Brand</th>
-                    <th>Sector</th>
-                    <th>Days</th>
-                    <th>First Seen</th>
-                    <th>Last Seen</th>
-                    <th>Still Active?</th>
-                    <th>Affected Windows</th>
-                  </tr>
-                </thead>
-                <tbody id="brandBody"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="table-block">
-            <h3>Daily Activity</h3>
-            <div class="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Brands</th>
-                    <th>Negative Items</th>
-                    <th>Brands Active</th>
-                  </tr>
-                </thead>
-                <tbody id="dailyBody"></tbody>
-              </table>
-            </div>
+        <div class="table-block">
+          <h3>Affected Brands</h3>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Brand</th>
+                  <th>Sector</th>
+                  <th class="numeric">Active Days</th>
+                  <th>First Seen</th>
+                  <th>Last Seen</th>
+                  <th>Still Active?</th>
+                </tr>
+              </thead>
+              <tbody id="brandBody"></tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -258,12 +266,17 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
 
 <script>
 const LOOKBACK_OPTIONS = [30, 45, 60, 90];
+const TREND_COLORS = ['#ff3b30', '#ff6b57', '#f59e0b', '#facc15', '#d1d5db', '#bfdbfe', '#22c55e', '#a78bfa'];
+const MAX_TREND_SERIES = 6;
+const TREND_TABLE_DAYS = 7;
+
 const params = new URLSearchParams(window.location.search);
 const requestedDays = Number(params.get('days') || '');
 let currentDays = LOOKBACK_OPTIONS.includes(requestedDays) ? requestedDays : 30;
 let selectedCrisisTag = (params.get('crisis_tag') || '').trim();
 let availableDates = [];
 let activeRequestToken = 0;
+let trendChart = null;
 
 const esc = (value) => String(value ?? '').replace(/[&<>\"']/g, (match) => ({
   '&': '&amp;',
@@ -306,39 +319,45 @@ async function fetchJson(url){
   return await response.json();
 }
 
-function renderChipList(items){
-  if (!Array.isArray(items) || !items.length) return '<span class="muted">None</span>';
-  return `<div class="chip-list">${items.map((item) => `<span class="chip">${esc(item)}</span>`).join('')}</div>`;
-}
-
-function renderWindowList(windows){
-  if (!Array.isArray(windows) || !windows.length) return '<span class="muted">N/A</span>';
-  return `<div class="chip-list">${windows.map((windowRow) => {
-    const label = windowRow.start_date === windowRow.end_date
-      ? windowRow.start_date
-      : `${windowRow.start_date} to ${windowRow.end_date}`;
-    return `<span class="chip subtle">${esc(label)} (${windowRow.duration_days}d)</span>`;
-  }).join('')}</div>`;
-}
-
 function renderActivePill(isActive){
   return isActive
     ? '<span class="yes-pill">Active</span>'
     : '<span class="no-pill">Inactive</span>';
 }
 
+function fmtDays(value){
+  const num = Number(value || 0);
+  if (!Number.isFinite(num) || num <= 0) return '0d';
+  const rounded = Math.round(num * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}d`;
+}
+
+function shortDateLabel(isoDate, includeYear = false){
+  const parts = String(isoDate || '').split('-');
+  if (parts.length !== 3) return String(isoDate || '');
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+  if (includeYear) return `${month}/${day}/${parts[0].slice(2)}`;
+  return `${month}/${day}`;
+}
+
 function updateSummaryStats(payload){
+  const rows = Array.isArray(payload.crises) ? payload.crises : [];
+  const avgCrisisLength = rows.length
+    ? rows.reduce((sum, row) => sum + Number(row.avg_active_days || 0), 0) / rows.length
+    : 0;
   document.getElementById('statCrisisCount').textContent = String(payload.crisis_count || 0);
   document.getElementById('statBrandCount').textContent = String(payload.affected_brand_count || 0);
   document.getElementById('statActiveBrandCount').textContent = String(payload.active_brand_count || 0);
+  document.getElementById('statAvgCrisisLength').textContent = fmtDays(avgCrisisLength);
   document.getElementById('statBrandDays').textContent = String(payload.brand_day_count || 0);
 }
 
-function renderCrisisTable(payload){
-  const tbody = document.getElementById('crisisBody');
+function renderSummaryTable(payload){
+  const tbody = document.getElementById('summaryBody');
   const rows = Array.isArray(payload.crises) ? payload.crises : [];
   if (!rows.length){
-    tbody.innerHTML = '<tr class="table-empty"><td colspan="6">No crisis tags were active in this window.</td></tr>';
+    tbody.innerHTML = '<tr class="table-empty"><td colspan="5">No crisis tags were active in this window.</td></tr>';
     return;
   }
 
@@ -347,11 +366,10 @@ function renderCrisisTable(payload){
     const isSelected = String(row.tag || '').toLowerCase() === selectedKey;
     return `<tr class="crisis-row${isSelected ? ' selected' : ''}" data-crisis-tag="${esc(row.tag)}">
       <td><span class="tag-pill">${esc(row.display_tag || row.tag || '')}</span></td>
-      <td>${row.brands_affected || 0}</td>
-      <td>${row.active_brands_latest || 0}</td>
-      <td>${esc(row.first_seen_date || '')}</td>
-      <td>${esc(row.last_seen_date || '')}</td>
-      <td>${renderChipList(row.affected_brands)}</td>
+      <td class="numeric">${row.brands_affected || 0}</td>
+      <td class="numeric">${row.active_brands_latest || 0}</td>
+      <td class="numeric">${fmtDays(row.avg_active_days || 0)}</td>
+      <td class="numeric">${fmtDays(row.longest_active_days || 0)}</td>
     </tr>`;
   }).join('');
 
@@ -378,9 +396,7 @@ function renderCrisisSelect(payload){
   select.innerHTML = rows.map((row) => (
     `<option value="${esc(row.tag)}">${esc(row.display_tag || row.tag || '')}</option>`
   )).join('');
-  if (selectedTag) {
-    select.value = selectedTag;
-  }
+  if (selectedTag) select.value = selectedTag;
 }
 
 function renderSelectedCrisis(payload){
@@ -390,55 +406,181 @@ function renderSelectedCrisis(payload){
   const detailContent = document.getElementById('detailContent');
   const selected = payload.selected_crisis;
 
+  renderCrisisSelect(payload);
+
   if (!selected){
-    detailHeading.textContent = 'Select a crisis';
-    detailSubhead.textContent = 'Choose a crisis from the table to see the affected brands and their activity windows.';
+    detailHeading.textContent = 'Selected Crisis';
+    detailSubhead.textContent = 'Choose a crisis from the summary table to see the brands carrying it in the current window.';
     detailEmpty.hidden = false;
     detailContent.hidden = true;
-    renderCrisisSelect(payload);
     document.getElementById('brandBody').innerHTML = '';
-    document.getElementById('dailyBody').innerHTML = '';
     return;
   }
 
   detailEmpty.hidden = true;
   detailContent.hidden = false;
-  renderCrisisSelect(payload);
   detailHeading.textContent = selected.display_tag || selected.tag || 'Selected crisis';
-  detailSubhead.textContent = `Window ${payload.window_start} to ${payload.window_end}. ${selected.brands_affected || 0} brands were affected by this crisis in the selected range.`;
+  detailSubhead.textContent = `Visible on ${selected.crisis_days || 0} dates in the selected window, with ${selected.total_negative_items || 0} tagged negative items behind the crisis signal.`;
   document.getElementById('detailBrandCount').textContent = String(selected.brands_affected || 0);
   document.getElementById('detailActiveCount').textContent = String(selected.active_brands_latest || 0);
-  document.getElementById('detailBrandDays').textContent = String(selected.brand_days || 0);
-  document.getElementById('detailNegativeItems').textContent = String(selected.total_negative_items || 0);
+  document.getElementById('detailAvgActiveDays').textContent = fmtDays(selected.avg_active_days || 0);
+  document.getElementById('detailLongestActiveDays').textContent = fmtDays(selected.longest_active_days || 0);
 
   const brandBody = document.getElementById('brandBody');
   const brands = Array.isArray(selected.brands) ? selected.brands : [];
   if (!brands.length){
-    brandBody.innerHTML = '<tr class="table-empty"><td colspan="7">No brands were attached to this crisis in the selected window.</td></tr>';
-  } else {
-    brandBody.innerHTML = brands.map((brand) => `<tr>
-      <td><span class="brand-name">${esc(brand.brand || '')}</span></td>
-      <td>${esc(brand.sector || 'Unassigned')}</td>
-      <td>${brand.days_affected || 0}</td>
-      <td>${esc(brand.first_seen_date || '')}</td>
-      <td>${esc(brand.last_seen_date || '')}</td>
-      <td>${renderActivePill(!!brand.active_on_window_end)}</td>
-      <td class="windows-cell">${renderWindowList(brand.windows)}</td>
-    </tr>`).join('');
+    brandBody.innerHTML = '<tr class="table-empty"><td colspan="6">No brands were attached to this crisis in the selected window.</td></tr>';
+    return;
   }
 
-  const dailyBody = document.getElementById('dailyBody');
-  const dailyRows = Array.isArray(selected.daily_impact) ? selected.daily_impact : [];
-  if (!dailyRows.length){
-    dailyBody.innerHTML = '<tr class="table-empty"><td colspan="4">No daily activity rows were returned for this crisis.</td></tr>';
-  } else {
-    dailyBody.innerHTML = dailyRows.map((row) => `<tr>
-      <td>${esc(row.date || '')}</td>
-      <td>${row.brands_affected || 0}</td>
-      <td>${row.total_negative_items || 0}</td>
-      <td>${renderChipList(row.brands)}</td>
-    </tr>`).join('');
+  brandBody.innerHTML = brands.map((brand) => `<tr>
+    <td><span class="brand-name">${esc(brand.brand || '')}</span></td>
+    <td>${esc(brand.sector || 'Unassigned')}</td>
+    <td class="numeric">${brand.days_affected || 0}</td>
+    <td>${esc(brand.first_seen_date || '')}</td>
+    <td>${esc(brand.last_seen_date || '')}</td>
+    <td>${renderActivePill(!!brand.active_on_window_end)}</td>
+  </tr>`).join('');
+}
+
+function selectTrendRowsForChart(payload){
+  const rows = Array.isArray(payload.trend_rows) ? payload.trend_rows : [];
+  const selectedKey = ((payload.selected_crisis && payload.selected_crisis.tag) || selectedCrisisTag || '').toLowerCase();
+  const selectedRow = rows.find((row) => String(row.tag || '').toLowerCase() === selectedKey);
+  let visibleRows = rows.slice(0, MAX_TREND_SERIES);
+  if (selectedRow && !visibleRows.some((row) => String(row.tag || '').toLowerCase() === selectedKey)){
+    visibleRows = visibleRows.slice(0, Math.max(0, MAX_TREND_SERIES - 1));
+    visibleRows.push(selectedRow);
   }
+  return visibleRows;
+}
+
+function destroyTrendChart(){
+  if (trendChart){
+    trendChart.destroy();
+    trendChart = null;
+  }
+}
+
+function renderTrendChart(payload){
+  const dates = Array.isArray(payload.trend_dates) ? payload.trend_dates : [];
+  const rows = selectTrendRowsForChart(payload);
+  const canvas = document.getElementById('trendChart');
+  const empty = document.getElementById('trendChartEmpty');
+
+  destroyTrendChart();
+
+  if (!dates.length || !rows.length){
+    canvas.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+
+  canvas.hidden = false;
+  empty.hidden = true;
+
+  trendChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: dates.map((dateValue) => shortDateLabel(dateValue)),
+      datasets: rows.map((row, index) => {
+        const color = TREND_COLORS[index % TREND_COLORS.length];
+        return {
+          label: row.display_tag || row.tag || `Crisis ${index + 1}`,
+          data: Array.isArray(row.active_brands_series) ? row.active_brands_series : [],
+          borderColor: color,
+          backgroundColor: color,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          borderWidth: 3,
+          tension: 0.24,
+        };
+      }),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: {
+            color: '#ebf2f2',
+            boxWidth: 14,
+            boxHeight: 3,
+            usePointStyle: false,
+          },
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const idx = items?.[0]?.dataIndex ?? 0;
+              return dates[idx] || '';
+            },
+            label: (context) => {
+              const label = context.dataset?.label || 'Series';
+              return `${label}: ${context.parsed?.y ?? 0}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: '#ebf2f2',
+            maxTicksLimit: 10,
+          },
+          grid: {
+            color: 'rgba(255,255,255,.08)',
+          },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: {
+            color: '#ebf2f2',
+          },
+          grid: {
+            color: 'rgba(255,255,255,.08)',
+          },
+        },
+      },
+    },
+  });
+}
+
+function renderTrendTable(payload){
+  const head = document.getElementById('trendHead');
+  const body = document.getElementById('trendBody');
+  const note = document.getElementById('trendTableNote');
+  const dates = Array.isArray(payload.trend_dates) ? payload.trend_dates : [];
+  const rows = Array.isArray(payload.trend_rows) ? payload.trend_rows : [];
+
+  if (!dates.length || !rows.length){
+    head.innerHTML = '';
+    body.innerHTML = '<tr class="table-empty"><td colspan="2">No trend rows are available for this window.</td></tr>';
+    note.textContent = '';
+    return;
+  }
+
+  const visibleCount = Math.min(TREND_TABLE_DAYS, dates.length);
+  const visibleDates = dates.slice(-visibleCount);
+  note.textContent = `Showing the last ${visibleCount} date${visibleCount === 1 ? '' : 's'} in the selected window.`;
+
+  head.innerHTML = `<tr>
+    <th>Crisis Type</th>
+    ${visibleDates.map((dateValue) => `<th class="numeric" title="${esc(dateValue)}">${esc(shortDateLabel(dateValue, true))}</th>`).join('')}
+  </tr>`;
+
+  body.innerHTML = rows.map((row) => {
+    const series = Array.isArray(row.active_brands_series) ? row.active_brands_series.slice(-visibleCount) : [];
+    return `<tr>
+      <td><span class="tag-pill">${esc(row.display_tag || row.tag || '')}</span></td>
+      ${series.map((value) => `<td class="numeric">${value || 0}</td>`).join('')}
+    </tr>`;
+  }).join('');
 }
 
 async function loadAvailableDates(){
@@ -456,10 +598,23 @@ async function loadAvailableDates(){
 async function loadCrisisWindow(){
   const requestToken = ++activeRequestToken;
   const endDate = (document.getElementById('dateSelect').value || '').trim();
+  const emptyPayload = {
+    crisis_count: 0,
+    affected_brand_count: 0,
+    active_brand_count: 0,
+    brand_day_count: 0,
+    crises: [],
+    trend_dates: [],
+    trend_rows: [],
+    selected_crisis: null,
+  };
+
   if (!endDate){
-    updateSummaryStats({ crisis_count: 0, affected_brand_count: 0, active_brand_count: 0, brand_day_count: 0 });
-    renderCrisisTable({ crises: [], selected_crisis: null });
-    renderSelectedCrisis({ selected_crisis: null });
+    updateSummaryStats(emptyPayload);
+    renderSummaryTable(emptyPayload);
+    renderTrendChart(emptyPayload);
+    renderTrendTable(emptyPayload);
+    renderSelectedCrisis(emptyPayload);
     setStatus('No dates are available yet.');
     return;
   }
@@ -481,14 +636,18 @@ async function loadCrisisWindow(){
       selectedCrisisTag = payload.selected_crisis.tag;
     }
     updateSummaryStats(payload);
-    renderCrisisTable(payload);
+    renderSummaryTable(payload);
+    renderTrendChart(payload);
+    renderTrendTable(payload);
     renderSelectedCrisis(payload);
     setStatus(`Showing crisis activity from ${payload.window_start} to ${payload.window_end}.`);
   } catch (error) {
     if (requestToken !== activeRequestToken) return;
-    updateSummaryStats({ crisis_count: 0, affected_brand_count: 0, active_brand_count: 0, brand_day_count: 0 });
-    renderCrisisTable({ crises: [], selected_crisis: null });
-    renderSelectedCrisis({ selected_crisis: null });
+    updateSummaryStats(emptyPayload);
+    renderSummaryTable(emptyPayload);
+    renderTrendChart(emptyPayload);
+    renderTrendTable(emptyPayload);
+    renderSelectedCrisis(emptyPayload);
     setStatus(`Unable to load crisis activity: ${error.message}`, true);
   }
 }
@@ -528,6 +687,7 @@ async function init(){
   await loadCrisisWindow();
 }
 
+window.addEventListener('beforeunload', destroyTrendChart);
 init();
 </script>
 </body>
