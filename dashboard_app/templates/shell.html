@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ image_base }}/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ image_base }}/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ image_base }}/favicon-16x16.png">
+  <title>{{ app_title }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/shell.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/entity-tab.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <header class="shell-header">
+      <div>
+        <p class="shell-eyebrow">{{ view_label }}</p>
+        <h1>{{ app_title }}</h1>
+        <p class="shell-subtitle">A single-page crisis monitoring workspace with lazy-loaded dashboard tabs and shared routing.</p>
+      </div>
+    </header>
+
+    <nav class="shell-tabs" aria-label="Dashboard sections">
+      {% for tab in tabs %}
+      <button
+        type="button"
+        class="shell-tab"
+        data-tab="{{ tab.id }}"
+        role="tab"
+        aria-selected="false"
+      >
+        {{ tab.label }}
+      </button>
+      {% endfor %}
+      <a id="switchDashboardModeLink" class="shell-mode-link" target="_self" rel="noopener" hidden></a>
+      <a id="openTabLink" class="shell-open-link" target="_blank" rel="noopener">Open current tab in a new tab</a>
+    </nav>
+
+    <section class="shell-content">
+      <div id="tabStatus" class="shell-status" aria-live="polite"></div>
+      <div id="tabHost" class="shell-host"></div>
+    </section>
+  </main>
+
+  <script>
+    window.__CRISIS_DASHBOARD_CONFIG__ = {{ config|tojson }};
+  </script>
+  <script type="module" src="{{ url_for('static', filename='app/shell.js') }}"></script>
+</body>
+</html>

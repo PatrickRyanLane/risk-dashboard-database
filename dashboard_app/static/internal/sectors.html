@@ -6,11 +6,13 @@
 <link rel="apple-touch-icon" sizes="180x180" href="images/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="images/favicon-16x16.png">
-<title>Fortune 1000 — Sectors Dashboard</title>
+<title>Crisis Dashboard - Sectors</title>
 
 <!-- Chart.js + PapaParse -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="/static/app/shared-data.js"></script>
+<script src="/static/app/legacy-shared.js"></script>
 <script>
 // CLOUD STORAGE CONFIGURATION - ADD THIS AT TOP
 // DATA CONFIGURATION - Uses Cloud Run proxy for authenticated access
@@ -277,7 +279,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
 
 <body>
 <div class="wrap">
-  <h1>Fortune 1000 — Sectors Dashboard</h1>
+  <h1>Crisis Dashboard: Sectors</h1>
 
   <div class="controls-row">
     <div class="refresh-panel">
@@ -853,28 +855,15 @@ function matchesCompanySize(brandKey){
 /********************** Stock Data **********************/
 async function loadStockData() {
   try {
-    // Get today's date in UTC (matching the workflow's perspective)
-    const now = new Date();
-    const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const today = todayUTC.toISOString().split('T')[0];
-    
-    let stockData = {};
-    
-    try {
-      const rows = await fetchCsv(`/api/v1/stock_data?date=${today}`);
-      stockData = parseStockRows(rows);
-    } catch {
-      // Try yesterday in UTC
-      const yesterdayUTC = new Date(todayUTC);
-      yesterdayUTC.setUTCDate(yesterdayUTC.getUTCDate() - 1);
-      const yesterday = yesterdayUTC.toISOString().split('T')[0];
-      
-      const rows = await fetchCsv(`/api/v1/stock_data?date=${yesterday}`);
-      stockData = parseStockRows(rows);
-    }
-    
+    const latest = await window.CrisisDashboardData.fetchLatestDatedCsv({
+      key: 'stock_data',
+      buildUrl: (dateStr) => `/api/v1/stock_data?date=${dateStr}`,
+      maxDays: 7,
+      transform: (rows) => parseStockRows(rows),
+    });
+
     setLoadStatus('stock', 'done');
-    return stockData;
+    return latest?.data || {};
   } catch (error) {
     console.warn('Could not load stock data:', error);
     setLoadStatus('stock', 'error');
@@ -956,21 +945,45 @@ function hookDatePager(allDates){
 }
 
 /* ================= CSV helpers ================= */
+const _csvCache = new Map();
 async function fetchCsv(url){
-  const r = await fetch(url, {cache:'no-store'});
-  if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
-  const contentType = r.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return await r.json();
+  const sharedData = window.CrisisDashboardData;
+  if (sharedData?.fetchCsv) {
+    return sharedData.fetchCsv(url);
   }
-  const t = await r.text();
-  return await new Promise((res, rej) => {
-    Papa.parse(t, {header:true, skipEmptyLines:true,
-      complete: out => res(out.data || []), error: e => rej(e)
+  if (_csvCache.has(url)) {
+    const cached = _csvCache.get(url);
+    return cached instanceof Promise ? await cached : cached;
+  }
+  const pending = (async () => {
+    const r = await fetch(url, {cache:'default'});
+    if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
+    const contentType = r.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      return await r.json();
+    }
+    const t = await r.text();
+    return await new Promise((res, rej) => {
+      Papa.parse(t, {header:true, skipEmptyLines:true,
+        complete: out => res(out.data || []), error: e => rej(e)
+      });
     });
-  });
+  })();
+  _csvCache.set(url, pending);
+  try {
+    const data = await pending;
+    _csvCache.set(url, data);
+    return data;
+  } catch (error) {
+    _csvCache.delete(url);
+    throw error;
+  }
 }
 async function fetchCsvAny(candidates){
+  const sharedData = window.CrisisDashboardData;
+  if (sharedData?.fetchCsvAny) {
+    return sharedData.fetchCsvAny(candidates);
+  }
   for (const u of candidates){
     try { const rows = await fetchCsv(u); if (Array.isArray(rows)) return rows; }
     catch(e){ /* keep trying */ }
@@ -1101,14 +1114,7 @@ async function init(){
     loadRosterSectors(),
     loadCounts(),
     loadSerpDaily(),
-    loadSerpFeatures(),
-    loadStockData().then(data => {
-      globalStockData = data;
-      if (Object.keys(globalStockData).length > 0) {
-        setLoadStatus('stock', 'done');
-      }
-      return data;
-    })
+    loadSerpFeatures()
   ]);
 
   const sel = document.getElementById('dateSelect');
@@ -1118,48 +1124,21 @@ async function init(){
     sel.dataset.boundChange = '1';
   }
 
-  document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll(); });
+  const filterInput = document.getElementById('filterInput');
+  if (filterInput && filterInput.dataset.boundInput !== '1'){
+    filterInput.addEventListener('input', ()=>{ currentPage=1; renderAll(); });
+    filterInput.dataset.boundInput = '1';
+  }
   const sectorFilterSelect = document.getElementById('sectorFilterSelect');
   if (sectorFilterSelect){
     sectorFilterSelect.onchange = ()=>{ currentPage = 1; selectedSector = null; renderAll(); };
   }
   document.getElementById('refreshBtn').onclick = async ()=>{
     const statusEl = document.getElementById('refreshStatus');
-    const refreshTargets = 'News, Organic SERP, SERP Features';
-    if (statusEl) statusEl.textContent = `Refreshing charts: ${refreshTargets}…`;
-    try {
-      const resp = await fetch('/api/internal/refresh_aggregates', { method: 'POST' });
-      if (!resp.ok) throw new Error('refresh_failed');
-      const wait = async () => {
-        for (let i = 0; i < 240; i++){
-          const r = await fetch('/api/internal/refresh_aggregates/status');
-          if (!r.ok) throw new Error('status_failed');
-          const data = await r.json();
-          if (data.status !== 'in_progress') return data;
-          await new Promise(res => setTimeout(res, 1000));
-        }
-        return { status: 'timeout' };
-      };
-      const result = await wait();
-      if (statusEl) {
-        if (result.status === 'ok') {
-          statusEl.textContent = `Refreshed charts: ${refreshTargets}`;
-        } else if (result.status === 'skipped') {
-          statusEl.textContent = `Refresh skipped (locked): ${refreshTargets}`;
-        } else if (result.status === 'timeout') {
-          statusEl.textContent = `Still refreshing: ${refreshTargets}`;
-        } else {
-          statusEl.textContent = `Refresh failed: ${refreshTargets}`;
-        }
-      }
-    } catch (e) {
-      if (statusEl) statusEl.textContent = `Refresh failed: ${refreshTargets}`;
-    }
-    if (statusEl) {
-      setTimeout(() => {
-        statusEl.textContent = '';
-      }, 3000);
-    }
+    await window.CrisisDashboardLegacy?.runInternalRefresh?.({
+      statusEl,
+      refreshTargets: 'News, Organic SERP, SERP Features',
+    });
     await init();
   };
   document.getElementById('clearBtn').onclick = ()=>{
@@ -1190,23 +1169,42 @@ async function init(){
 
   document.querySelectorAll('thead th[data-key]').forEach(th=>{
     th.style.cursor='pointer';
-    th.addEventListener('click', ()=>{
-      const k = th.getAttribute('data-key');
-      if (currentSort.key === k) currentSort.dir *= -1; else { currentSort.key = k; currentSort.dir = 1; }
-      renderTable();
-    });
+    if (th.dataset.boundSort !== '1'){
+      th.addEventListener('click', ()=>{
+        const k = th.getAttribute('data-key');
+        if (currentSort.key === k) currentSort.dir *= -1; else { currentSort.key = k; currentSort.dir = 1; }
+        renderTable();
+      });
+      th.dataset.boundSort = '1';
+    }
   });
 
-  const ro = new ResizeObserver(() => {
-    if (newsChart) newsChart.resize();
-    if (serpChart) serpChart.resize();
-    if (featureChart) featureChart.resize();
-    if (featureControlChart) featureControlChart.resize();
-  });
-  document.querySelectorAll('.chart-card').forEach(el => ro.observe(el));
+  if (!window.__riskdashSectorsResizeObserver){
+    const ro = new ResizeObserver(() => {
+      if (newsChart) newsChart.resize();
+      if (serpChart) serpChart.resize();
+      if (featureChart) featureChart.resize();
+      if (featureControlChart) featureControlChart.resize();
+    });
+    document.querySelectorAll('.chart-card').forEach(el => ro.observe(el));
+    window.__riskdashSectorsResizeObserver = ro;
+  }
 
   dataReady = true;
   renderAll();
+  renderTable();
+
+  const scheduleIdle = window.CrisisDashboardLegacy?.scheduleIdle || ((cb) => setTimeout(cb, 0));
+  scheduleIdle(() => {
+    loadStockData().then(data => {
+      globalStockData = data;
+      if (Object.keys(globalStockData).length > 0) {
+        setLoadStatus('stock', 'done');
+      }
+      renderTable();
+      return data;
+    }).catch(()=>{ setLoadStatus('stock','error'); });
+  });
 }
 
 /* ================= Sector rows ================= */
@@ -1738,7 +1736,7 @@ function renderCharts(){
     data: {
       labels: d,
       datasets: [
-        { label: 'Negative SERP %', data: sN, tension: .25, borderColor: '#ff8261', backgroundColor: 'rgba(255,130,97,.2)', fill: false },
+        { label: 'Negative Organic %', data: sN, tension: .25, borderColor: '#ff8261', backgroundColor: 'rgba(255,130,97,.2)', fill: false },
         { label: 'Control %',       data: sC, tension: .25, borderColor: '#58dbed', backgroundColor: 'rgba(88,219,237,.15)', fill: false }
       ]
     },

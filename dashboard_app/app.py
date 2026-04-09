@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import threading
+from urllib.parse import urlencode
 from decimal import Decimal
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -24,7 +25,7 @@ from psycopg2 import extensions as pg_ext
 from psycopg2.pool import PoolError, ThreadedConnectionPool
 from psycopg2.extras import Json
 import requests
-from flask import Flask, Response, jsonify, request, send_from_directory, abort
+from flask import Flask, Response, jsonify, request, send_from_directory, abort, render_template, redirect
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 from crisis_event_rollups import recompute_entity_crisis_event_window
@@ -2314,12 +2315,176 @@ def build_crisis_brand_impact_summary(rows: List[Dict], start_date, end_date) ->
 
 # --------------------------- Static routes ---------------------------
 
+SHELL_TABS = (
+    ('brands', 'Brands', 'brand-dashboard.html'),
+    ('ceos', 'CEOs', 'ceo-dashboard.html'),
+    ('sectors', 'Sectors', 'sectors.html'),
+    ('crises', 'Crises', 'crises.html'),
+)
+SHELL_TAB_IDS = {tab_id for tab_id, _, _ in SHELL_TABS}
+SHELL_TAB_FILENAMES = {filename for _, _, filename in SHELL_TABS}
+SHELL_FILENAME_TO_TAB = {filename: tab_id for tab_id, _, filename in SHELL_TABS}
+FULL_DASHBOARD_PREFIX = 'crisis-dashboard'
+OVERVIEW_PREFIX = 'crisis-dashboard-overview'
+_full_dashboard_native_tabs_env = tuple(
+    value.strip()
+    for value in os.environ.get('FULL_DASHBOARD_NATIVE_TABS', 'all').split(',')
+    if value.strip()
+)
+if any(value.lower() == 'all' for value in _full_dashboard_native_tabs_env):
+    FULL_DASHBOARD_NATIVE_TABS = tuple(tab_id for tab_id, _, _ in SHELL_TABS)
+else:
+    FULL_DASHBOARD_NATIVE_TABS = tuple(
+        tab_id
+        for tab_id in _full_dashboard_native_tabs_env
+        if tab_id in SHELL_TAB_IDS
+    )
+
+
+def render_dashboard_shell(
+    view: str,
+    shell_path: str,
+    tab_base_path: str = '',
+    tab_open_base_path: str = '',
+    force_legacy_tabs: bool = False,
+    use_bundled_legacy_pages: bool = False,
+    native_parity_tabs: Tuple[str, ...] = (),
+    native_tab_profile: str = 'overview',
+):
+    normalized_path = shell_path if shell_path.endswith('/') else f'{shell_path}/'
+    path_prefix = '' if normalized_path == '/' else normalized_path.rstrip('/')
+    normalized_tab_base = tab_base_path or normalized_path
+    if not normalized_tab_base.endswith('/'):
+        normalized_tab_base = f'{normalized_tab_base}/'
+    tab_path_prefix = '' if normalized_tab_base == '/' else normalized_tab_base.rstrip('/')
+    normalized_open_base = tab_open_base_path or normalized_tab_base
+    if not normalized_open_base.endswith('/'):
+        normalized_open_base = f'{normalized_open_base}/'
+    tab_open_prefix = '' if normalized_open_base == '/' else normalized_open_base.rstrip('/')
+    tabs = [
+        {
+            'id': tab_id,
+            'label': label,
+            'path': f'{tab_path_prefix}/{filename}' if tab_path_prefix else f'/{filename}',
+            **(
+                {
+                    'openPath': (
+                        f'{tab_open_prefix}/{filename}' if tab_open_prefix else f'/{filename}'
+                    )
+                }
+                if (
+                    (f'{tab_open_prefix}/{filename}' if tab_open_prefix else f'/{filename}')
+                    != (f'{tab_path_prefix}/{filename}' if tab_path_prefix else f'/{filename}')
+                )
+                else {}
+            ),
+        }
+        for tab_id, label, filename in SHELL_TABS
+    ]
+    return render_template(
+        'shell.html',
+        app_title='Crisis Dashboard',
+        view_label='Internal Workspace' if view == 'internal' else 'External Workspace',
+        tabs=tabs,
+        image_base=f'{path_prefix}/images' if path_prefix else '/images',
+        config={
+            'appTitle': 'Crisis Dashboard',
+            'view': view,
+            'forceLegacyTabs': force_legacy_tabs,
+            'useBundledLegacyPages': use_bundled_legacy_pages,
+            'nativeParityTabs': list(native_parity_tabs),
+            'nativeTabProfile': native_tab_profile,
+            'tabs': tabs,
+        },
+    )
+
+
+def send_legacy_dashboard(view: str):
+    return send_from_directory(f'static/{view}', 'dashboard.html')
+
+
+def serve_prefixed_legacy_dashboard(view: str, path: str = ''):
+    normalized = (path or '').strip('/')
+    if normalized in {'', 'dashboard.html'}:
+        return send_legacy_dashboard(view)
+    if normalized in SHELL_TAB_FILENAMES:
+        return send_from_directory(f'static/{view}', normalized)
+    if normalized.startswith('images/'):
+        return send_from_directory(f'static/{view}/images', normalized[len('images/'):])
+    abort(404)
+
+
+def redirect_tab_to_shell(shell_path: str, filename: str):
+    target_tab = SHELL_FILENAME_TO_TAB.get(filename, '')
+    query = request.args.to_dict(flat=False)
+    query['tab'] = [target_tab]
+    target = shell_path if shell_path.endswith('/') else f'{shell_path}/'
+    encoded = urlencode(query, doseq=True)
+    if encoded:
+        target = f'{target}?{encoded}'
+    return redirect(target, code=302)
+
+
+def serve_shell_path(view: str, shell_path: str, path: str = ''):
+    normalized = (path or '').strip('/')
+    if normalized in {'', 'dashboard.html'}:
+        if shell_path.startswith('/internal/'):
+            tab_base = f'/internal/{FULL_DASHBOARD_PREFIX}/'
+        elif shell_path.startswith('/external/'):
+            tab_base = f'/external/{FULL_DASHBOARD_PREFIX}/'
+        else:
+            tab_base = f'/{FULL_DASHBOARD_PREFIX}/'
+        return render_dashboard_shell(
+            view,
+            shell_path,
+            tab_base_path=tab_base,
+            tab_open_base_path=tab_base,
+            native_tab_profile='overview',
+        )
+    if normalized in SHELL_TAB_FILENAMES:
+        return redirect_tab_to_shell(shell_path, normalized)
+    if normalized.startswith('images/'):
+        return send_from_directory(f'static/{view}/images', normalized[len('images/'):])
+    abort(404)
+
+
+def serve_full_dashboard_shell_path(view: str, shell_path: str, path: str = ''):
+    normalized = (path or '').strip('/')
+    if normalized in {'', 'dashboard.html'}:
+        full_native_enabled = set(FULL_DASHBOARD_NATIVE_TABS) == SHELL_TAB_IDS
+        return render_dashboard_shell(
+            view,
+            shell_path,
+            tab_base_path=shell_path,
+            tab_open_base_path=shell_path,
+            force_legacy_tabs=not full_native_enabled,
+            use_bundled_legacy_pages=not full_native_enabled,
+            native_parity_tabs=FULL_DASHBOARD_NATIVE_TABS,
+            native_tab_profile='parity',
+        )
+    if normalized in SHELL_TAB_FILENAMES:
+        return redirect_tab_to_shell(shell_path, normalized)
+    if normalized.startswith('images/'):
+        return send_from_directory(f'static/{view}/images', normalized[len('images/'):])
+    if normalized.startswith('raw/'):
+        return serve_prefixed_legacy_dashboard(view, normalized[len('raw/'):])
+    abort(404)
+
+
 @app.route('/')
 def root():
     view = current_view()
     if view == 'internal':
         require_internal_access()
-    return send_from_directory(f'static/{view}', 'dashboard.html')
+    return send_legacy_dashboard(view)
+
+
+@app.route('/dashboard.html')
+def top_level_dashboard_legacy():
+    view = current_view()
+    if view == 'internal':
+        require_internal_access()
+    return send_legacy_dashboard(view)
 
 
 @app.route('/brand-dashboard.html')
@@ -2342,19 +2507,71 @@ def top_level_images(path):
     return send_from_directory(f'static/{view}/images', path)
 
 
+@app.route(f'/{FULL_DASHBOARD_PREFIX}/')
+@app.route(f'/{FULL_DASHBOARD_PREFIX}/<path:path>')
+def top_level_full_crisis_dashboard(path=''):
+    view = current_view()
+    if view == 'internal':
+        require_internal_access()
+    return serve_full_dashboard_shell_path(view, f'/{FULL_DASHBOARD_PREFIX}/', path)
+
+
+@app.route(f'/{OVERVIEW_PREFIX}/')
+@app.route(f'/{OVERVIEW_PREFIX}/<path:path>')
+def top_level_crisis_dashboard_overview(path=''):
+    view = current_view()
+    if view == 'internal':
+        require_internal_access()
+    return serve_shell_path(view, f'/{OVERVIEW_PREFIX}/', path)
+
+
 @app.route('/internal/')
 @app.route('/internal/<path:path>')
 def internal_static(path='dashboard.html'):
     if PUBLIC_MODE:
         abort(404)
     require_internal_access()
+    if path in {'', 'dashboard.html'}:
+        return send_legacy_dashboard('internal')
     return send_from_directory('static/internal', path)
+
+
+@app.route(f'/internal/{FULL_DASHBOARD_PREFIX}/')
+@app.route(f'/internal/{FULL_DASHBOARD_PREFIX}/<path:path>')
+def internal_full_crisis_dashboard(path=''):
+    if PUBLIC_MODE:
+        abort(404)
+    require_internal_access()
+    return serve_full_dashboard_shell_path('internal', f'/internal/{FULL_DASHBOARD_PREFIX}/', path)
+
+
+@app.route(f'/internal/{OVERVIEW_PREFIX}/')
+@app.route(f'/internal/{OVERVIEW_PREFIX}/<path:path>')
+def internal_crisis_dashboard_overview(path=''):
+    if PUBLIC_MODE:
+        abort(404)
+    require_internal_access()
+    return serve_shell_path('internal', f'/internal/{OVERVIEW_PREFIX}/', path)
 
 
 @app.route('/external/')
 @app.route('/external/<path:path>')
 def external_static(path='dashboard.html'):
+    if path in {'', 'dashboard.html'}:
+        return send_legacy_dashboard('external')
     return send_from_directory('static/external', path)
+
+
+@app.route(f'/external/{FULL_DASHBOARD_PREFIX}/')
+@app.route(f'/external/{FULL_DASHBOARD_PREFIX}/<path:path>')
+def external_full_crisis_dashboard(path=''):
+    return serve_full_dashboard_shell_path('external', f'/external/{FULL_DASHBOARD_PREFIX}/', path)
+
+
+@app.route(f'/external/{OVERVIEW_PREFIX}/')
+@app.route(f'/external/{OVERVIEW_PREFIX}/<path:path>')
+def external_crisis_dashboard_overview(path=''):
+    return serve_shell_path('external', f'/external/{OVERVIEW_PREFIX}/', path)
 
 
 @app.route('/health')

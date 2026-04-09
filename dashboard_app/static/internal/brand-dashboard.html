@@ -6,12 +6,14 @@
 <link rel="apple-touch-icon" sizes="180x180" href="images/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="images/favicon-16x16.png">
-<title>Brand Risk Dashboard</title>
+<title>Crisis Dashboard - Brands</title>
 
 <!-- Chart.js + PapaParse + Annotation Plugin CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="/static/app/shared-data.js"></script>
+<script src="/static/app/legacy-shared.js"></script>
 <script>
 // DATA CONFIGURATION - Uses Cloud Run proxy for authenticated access
 // The proxy endpoints in app.py fetch from private GCS bucket
@@ -41,16 +43,15 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-
 h1{font-size:28px;margin:6px 0 18px}
 
 /* Controls */
-.controls{display:flex;flex-direction:column;gap:8px;margin:0 0 16px}
+.controls{display:flex;flex-direction:column;gap:12px;margin:0 0 16px}
 .controls select,
 .controls input,
 .controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
-.controls .controls-grid{
+.controls .controls-quick{
   display:grid;
-  grid-template-columns:170px 220px 180px 170px auto auto auto;
-  gap:8px 12px;
+  grid-template-columns:minmax(170px, 250px) minmax(220px, 1fr) auto;
+  gap:10px;
   align-items:end;
-  width:100%;
 }
 .controls-row{display:flex;justify-content:flex-end;margin:0 0 8px}
 .refresh-panel{
@@ -66,29 +67,108 @@ h1{font-size:28px;margin:6px 0 18px}
 .refresh-panel #refreshStatus{font-size:12px;white-space:nowrap;display:none}
 .refresh-panel #refreshStatus:not(:empty){display:inline;margin-left:10px}
 .refresh-panel button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}
-.controls .field-label{font-size:12px;margin:0;padding-left:8px;line-height:1.2}
-.controls .field-label-empty{padding-left:0}
-.controls .controls-inputs{align-items:flex-start}
-.controls .controls-inputs input,
-.controls .controls-inputs select{width:100%;min-width:0}
-.controls .controls-inputs button{width:auto;white-space:nowrap;justify-self:start}
+.controls .controls-quick input,
+.controls .controls-quick select{width:100%;min-width:0}
+.controls .controls-quick-actions{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:flex-end;
+  justify-content:flex-end;
+  gap:8px;
+}
 .controls .date-input-stack{display:flex;flex-direction:column;gap:8px;min-width:0}
 .controls .lookback-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;width:100%}
 .controls .lookback-btn{min-width:0;padding:0 6px;font-weight:600}
 .controls .lookback-btn.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
-.controls .controls-aux{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-.controls .controls-aux .muted{font-size:12px}
+.controls .advanced-filters-btn{display:inline-flex;align-items:center;gap:8px;font-weight:600}
+.controls .advanced-filters-btn.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35)}
+.controls .filter-count-badge{
+  min-width:18px;
+  height:18px;
+  padding:0 5px;
+  border-radius:999px;
+  background:rgba(88,219,237,.16);
+  border:1px solid rgba(88,219,237,.45);
+  color:#58dbed;
+  font-size:11px;
+  font-weight:700;
+  line-height:1;
+  display:none;
+  align-items:center;
+  justify-content:center;
+}
+.controls .filter-count-badge[data-visible="true"]{display:inline-flex}
+.controls .filters-drawer-backdrop{
+  position:fixed;
+  inset:0;
+  background:rgba(2,10,13,.58);
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .2s ease;
+  z-index:1100;
+}
+.controls .filters-drawer-backdrop.open{
+  opacity:1;
+  pointer-events:auto;
+}
+.controls .filters-drawer{
+  position:fixed;
+  top:0;
+  right:0;
+  width:min(390px, 94vw);
+  height:100dvh;
+  padding:16px;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+  background:#0a323c;
+  border-left:1px solid var(--stroke);
+  box-shadow:-14px 0 38px rgba(0,0,0,.34);
+  transform:translateX(102%);
+  transition:transform .22s ease;
+  z-index:1101;
+}
+.controls .filters-drawer.open{transform:translateX(0)}
+.controls .filters-drawer-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.controls .filters-drawer-title{
+  margin:0;
+  font-size:13px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.controls .drawer-field{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  color:var(--muted);
+  font-size:12px;
+}
+.controls .filters-drawer-grid{
+  display:grid;
+  gap:12px;
+}
+.controls .filters-drawer .filter-toggle{
+  width:100%;
+  justify-content:flex-start;
+  font-weight:600;
+}
 .filter-toggle.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
 .crisis-toggle{border-color:#7b1d1d;color:#ffb3b3}
 .crisis-toggle.active{border-color:#ff4545;box-shadow:0 0 0 1px rgba(255,69,69,.4);color:#ff5c5c}
-.controls .spacer{display:none}
 @media (max-width: 980px){
   .controls-row{justify-content:stretch}
   .refresh-panel{width:100%;justify-content:center;flex-wrap:wrap}
   .refresh-panel #refreshStatus:not(:empty){margin:8px 0 0;flex-basis:100%;text-align:center}
-  .controls .controls-header{display:none}
-  .controls .controls-grid{grid-template-columns:1fr}
-  .controls .controls-inputs button{width:100%}
+  .controls .controls-quick{grid-template-columns:1fr;align-items:stretch}
+  .controls .controls-quick-actions{justify-content:stretch}
+  .controls .controls-quick-actions button{width:100%}
+  .controls .filters-drawer{width:min(430px, 100vw)}
 }
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:12px}
 select,input[type="text"]{background:var(--black);border:1px solid #23314d;border-radius:10px;color:var(--text);padding:8px 10px}
@@ -888,7 +968,7 @@ body:has(#stockChartModal.open) {
 
 <body>
 <div class="wrap">
-  <h1>Brand Risk Dashboard</h1>
+  <h1>Crisis Dashboard: Brands</h1>
 
   <div class="controls-row">
     <div class="refresh-panel">
@@ -898,16 +978,7 @@ body:has(#stockChartModal.open) {
   </div>
 
   <div class="controls card">
-    <div class="controls-grid controls-header">
-      <div class="muted field-label">Date</div>
-      <div class="muted field-label">Filter (Company)</div>
-      <div class="muted field-label">Sector</div>
-      <div class="muted field-label">Company Size</div>
-      <div class="field-label field-label-empty" aria-hidden="true"></div>
-      <div class="field-label field-label-empty" aria-hidden="true"></div>
-      <div class="field-label field-label-empty" aria-hidden="true"></div>
-    </div>
-    <div class="controls-grid controls-inputs">
+    <div class="controls-quick">
       <div class="date-input-stack">
         <select id="dateSelect"></select>
         <div class="lookback-controls" role="group" aria-label="Chart lookback window">
@@ -918,20 +989,41 @@ body:has(#stockChartModal.open) {
         </div>
       </div>
       <input id="filterInput" type="text" placeholder="Type to filter…" />
-      <select id="sectorFilterSelect" title="Filter by sector or industry">
-        <option value="">All sectors</option>
-      </select>
-      <select id="companySizeSelect">
-        <option value="all">All companies</option>
-        <option value="favorites">Favorites</option>
-        <option value="fortune500">Fortune 500</option>
-        <option value="fortune1000">Fortune 1000</option>
-        <option value="forbes">Forbes</option>
-      </select>
-      <button id="clearBtn">Clear Selection</button>
-      <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Companies with more than 4 negative Top stories URLs on any single day in the last 30 days">Crisis</button>
-      <button id="nonCrisisBtn" class="filter-toggle" title="Show companies with at least one non-crisis narrative tag on the selected date">Non-crisis Narrative</button>
+      <div class="controls-quick-actions">
+        <button id="advancedFiltersBtn" class="advanced-filters-btn" type="button" aria-expanded="false" aria-controls="filtersDrawer">
+          Filters
+          <span id="activeFilterCount" class="filter-count-badge" data-visible="false"></span>
+        </button>
+        <button id="clearBtn">Clear Selection</button>
+      </div>
     </div>
+    <div id="filtersDrawerBackdrop" class="filters-drawer-backdrop" hidden></div>
+    <aside id="filtersDrawer" class="filters-drawer" aria-hidden="true">
+      <div class="filters-drawer-header">
+        <p class="filters-drawer-title">Advanced Filters</p>
+        <button id="closeFiltersBtn" type="button">Close</button>
+      </div>
+      <div class="filters-drawer-grid">
+        <label class="drawer-field">
+          <span>Sector</span>
+          <select id="sectorFilterSelect" title="Filter by sector or industry">
+            <option value="">All sectors</option>
+          </select>
+        </label>
+        <label class="drawer-field">
+          <span>Company Size</span>
+          <select id="companySizeSelect">
+            <option value="all">All companies</option>
+            <option value="favorites">Favorites</option>
+            <option value="fortune500">Fortune 500</option>
+            <option value="fortune1000">Fortune 1000</option>
+            <option value="forbes">Forbes</option>
+          </select>
+        </label>
+        <button id="crisisBtn" class="filter-toggle crisis-toggle" title="Companies with more than 4 negative Top stories URLs on any single day in the last 30 days">Crisis</button>
+        <button id="nonCrisisBtn" class="filter-toggle" title="Show companies with at least one non-crisis narrative tag on the selected date">Non-crisis Narrative</button>
+      </div>
+    </aside>
     <div class="load-status" id="loadStatus">
       <div class="load-bar"><div class="load-bar-fill" id="loadBarFill"></div></div>
       <div class="load-items" id="loadItems"></div>
@@ -1039,7 +1131,7 @@ body:has(#stockChartModal.open) {
             </th>
             <th data-key="neg_serp">
               <div class="tooltip-header">
-                Negative<br>SERP % ▲▼
+                Negative<br>Organic % ▲▼
                 <span class="tooltip-text">Percentage of results on Google's first page with negative sentiment about this company. Indicates public perception visibility</span>
               </div>
             </th>
@@ -1088,7 +1180,7 @@ body:has(#stockChartModal.open) {
       <h3 id="stockChartTitle">Stock Price History</h3>
       <button id="volumeToggle" class="volume-toggle">📊 Volume</button>
       <button id="trendsToggle" class="trends-toggle">🔍 Trends</button>
-      <span class="close" onclick="closeStockChart()">&times;</span>
+      <span id="stockChartClose" class="close">&times;</span>
     </header>
     <div class="content">
       <canvas id="stockChart"></canvas>
@@ -1163,6 +1255,7 @@ let nonCrisisOnly = false;
 let currentSort = { key:null, dir:1 };
 let currentPage = 1;
 let dataReady = false;
+let filtersDrawerOpen = false;
 let favoriteCompanies = new Set();
 const _narrativeCache = new Map();
 const _narrativeOverlayCache = new Map();
@@ -1358,6 +1451,68 @@ function updateLookbackButtons(){
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
+}
+
+function getActiveAdvancedFilterCount(){
+  let count = 0;
+  const sectorFilter = (document.getElementById('sectorFilterSelect')?.value || '').trim();
+  if (sectorFilter) count += 1;
+  if ((companySizeFilter || 'all') !== 'all') count += 1;
+  if (crisisOnly) count += 1;
+  if (nonCrisisOnly) count += 1;
+  return count;
+}
+
+function updateAdvancedFilterBadge(){
+  const btn = document.getElementById('advancedFiltersBtn');
+  const badge = document.getElementById('activeFilterCount');
+  if (!btn || !badge) return;
+  const activeCount = getActiveAdvancedFilterCount();
+  badge.textContent = activeCount > 0 ? String(activeCount) : '';
+  badge.dataset.visible = activeCount > 0 ? 'true' : 'false';
+  btn.classList.toggle('active', activeCount > 0);
+  btn.setAttribute('aria-label', activeCount > 0 ? `Filters (${activeCount} active)` : 'Filters');
+}
+
+function setFiltersDrawerOpen(next){
+  const drawer = document.getElementById('filtersDrawer');
+  const backdrop = document.getElementById('filtersDrawerBackdrop');
+  const toggleBtn = document.getElementById('advancedFiltersBtn');
+  if (!drawer || !backdrop || !toggleBtn) return;
+  filtersDrawerOpen = !!next;
+  drawer.classList.toggle('open', filtersDrawerOpen);
+  drawer.setAttribute('aria-hidden', filtersDrawerOpen ? 'false' : 'true');
+  toggleBtn.setAttribute('aria-expanded', filtersDrawerOpen ? 'true' : 'false');
+  backdrop.hidden = !filtersDrawerOpen;
+  backdrop.classList.toggle('open', filtersDrawerOpen);
+}
+
+function bindFiltersDrawer(){
+  const toggleBtn = document.getElementById('advancedFiltersBtn');
+  const closeBtn = document.getElementById('closeFiltersBtn');
+  const backdrop = document.getElementById('filtersDrawerBackdrop');
+  const drawer = document.getElementById('filtersDrawer');
+  if (toggleBtn && toggleBtn.dataset.boundFiltersToggle !== '1'){
+    toggleBtn.dataset.boundFiltersToggle = '1';
+    toggleBtn.addEventListener('click', () => {
+      setFiltersDrawerOpen(!filtersDrawerOpen);
+    });
+  }
+  if (closeBtn && closeBtn.dataset.boundFiltersClose !== '1'){
+    closeBtn.dataset.boundFiltersClose = '1';
+    closeBtn.addEventListener('click', () => setFiltersDrawerOpen(false));
+  }
+  if (backdrop && backdrop.dataset.boundFiltersBackdrop !== '1'){
+    backdrop.dataset.boundFiltersBackdrop = '1';
+    backdrop.addEventListener('click', () => setFiltersDrawerOpen(false));
+  }
+  if (drawer && drawer.dataset.boundFiltersEscape !== '1'){
+    drawer.dataset.boundFiltersEscape = '1';
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && filtersDrawerOpen) setFiltersDrawerOpen(false);
+    });
+  }
+  updateAdvancedFilterBadge();
 }
 
 function bindLookbackControls(){
@@ -1716,40 +1871,20 @@ const DASH_PATTERN = [8, 6];
 /********************** Stock Data **********************/
 async function loadStockData() {
   try {
-    const now = new Date();
-    const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    
     console.log('📊 Looking for most recent stock data...');
-    
-    // Try up to 7 days back to find the most recent stock data file
-    // This handles weekends and holidays
-    for (let daysBack = 0; daysBack < 7; daysBack++) {
-      const checkDate = new Date(todayUTC);
-      checkDate.setUTCDate(checkDate.getUTCDate() - daysBack);
-      const dateStr = checkDate.toISOString().split('T')[0];
-      
-      try {
-        const url = `/api/v1/stock_data?date=${dateStr}`;
-        console.log(`🔍 Trying: ${url}`);
 
-        const rows = await fetchCsv(url);
-        const stockData = parseStockRows(rows);
-        
-        console.log(`✅ Successfully loaded stock data from ${dateStr} (${daysBack} day(s) old)`);
-        console.log(`📈 Found data for ${Object.keys(stockData).length} companies`);
-        
-        return stockData;
-      } catch (error) {
-        console.log(`⚠️  ${dateStr}: ${error.message}`);
-        // Continue to next day
-      }
+    const latest = await window.CrisisDashboardData.fetchLatestDatedCsv({
+      key: 'stock_data',
+      buildUrl: (dateStr) => `/api/v1/stock_data?date=${dateStr}`,
+      maxDays: 7,
+      transform: (rows) => parseStockRows(rows),
+    });
+
+    if (latest) {
+      console.log(`✅ Successfully loaded stock data from ${latest.date} (${latest.daysBack} day(s) old)`);
+      console.log(`📈 Found data for ${Object.keys(latest.data).length} companies`);
+      return latest.data;
     }
-    
-    // If we get here, no stock data was found in the last 7 days
-    console.error('❌ No stock data found in the last 7 days');
-    setLoadStatus('stock', 'error');
-    return {};
-    
   } catch (error) {
     console.error('❌ STOCK DATA LOAD FAILED:', error);
     setLoadStatus('stock', 'error');
@@ -1896,36 +2031,21 @@ async function loadNegativeSummaryForCompany(company) {
 // Load Google Trends data
 async function loadTrendsData() {
   try {
-    const now = new Date();
-    const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    
     console.log('🔍 Looking for most recent trends data...');
-    
-    for (let daysBack = 0; daysBack < 7; daysBack++) {
-      const checkDate = new Date(todayUTC);
-      checkDate.setUTCDate(checkDate.getUTCDate() - daysBack);
-      const dateStr = checkDate.toISOString().split('T')[0];
-      
-      try {
-        const url = `/api/v1/trends_data?date=${dateStr}`;
-        console.log(`🔍 Trying: ${url}`);
 
-        const rows = await fetchCsv(url);
-        const trendsData = parseTrendsRows(rows);
-        
-        console.log(`✅ Successfully loaded trends data from ${dateStr} (${daysBack} day(s) old)`);
-        console.log(`📈 Found trends for ${Object.keys(trendsData).length} companies`);
-        setLoadStatus('trends', 'done');
-        return trendsData;
-      } catch (error) {
-        console.log(`⚠️  ${dateStr}: ${error.message}`);
-      }
+    const latest = await window.CrisisDashboardData.fetchLatestDatedCsv({
+      key: 'trends_data',
+      buildUrl: (dateStr) => `/api/v1/trends_data?date=${dateStr}`,
+      maxDays: 7,
+      transform: (rows) => parseTrendsRows(rows),
+    });
+
+    if (latest) {
+      console.log(`✅ Successfully loaded trends data from ${latest.date} (${latest.daysBack} day(s) old)`);
+      console.log(`📈 Found trends for ${Object.keys(latest.data).length} companies`);
+      setLoadStatus('trends', 'done');
+      return latest.data;
     }
-    
-    console.warn('⚠️  No trends data found in the last 7 days');
-    setLoadStatus('trends', 'error');
-    return {};
-    
   } catch (error) {
     console.error('❌ TRENDS DATA LOAD FAILED:', error);
     setLoadStatus('trends', 'error');
@@ -2446,6 +2566,10 @@ const _preloadCache = new Map();
 const PERF_LOG = new URLSearchParams(window.location.search).get('perf') === '1';
 
 async function fetchCsv(url){
+  const sharedData = window.CrisisDashboardData;
+  if (sharedData?.fetchCsv) {
+    return sharedData.fetchCsv(url);
+  }
   const t0 = performance.now();
   // Check preload cache first
   if (_preloadCache.has(url)) {
@@ -2486,6 +2610,10 @@ async function fetchCsv(url){
 }
 
 async function fetchCsvAny(cands){
+  const sharedData = window.CrisisDashboardData;
+  if (sharedData?.fetchCsvAny) {
+    return sharedData.fetchCsvAny(cands);
+  }
   for (const u of cands){ try{ const rows = await fetchCsv(u); if (Array.isArray(rows)) return rows; } catch{} }
   return [];
 }
@@ -2858,24 +2986,31 @@ async function init(){
   initChartOrderPreference();
   initLoadStatus();
   dataReady = false;
+  setFiltersDrawerOpen(false);
+  bindFiltersDrawer();
   bindLookbackControls();
   _narrativeCache.clear();
   _narrativeOverlayCache.clear();
   _narrativeOverlayPending.clear();
   updateChartSkeletons();
   const sel = document.getElementById('dateSelect');
-  document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll().then(() => {
-    if (filteredRows.length === 1) selectCompany(filteredRows[0].company);
-  }); });
+  const filterInput = document.getElementById('filterInput');
+  if (filterInput && filterInput.dataset.boundInput !== '1'){
+    filterInput.addEventListener('input', ()=>{ currentPage=1; renderAll().then(() => {
+      if (filteredRows.length === 1) selectCompany(filteredRows[0].company);
+    }); });
+    filterInput.dataset.boundInput = '1';
+  }
   const sectorFilterSelect = document.getElementById('sectorFilterSelect');
   if (sectorFilterSelect){
-    sectorFilterSelect.onchange = ()=>{ currentPage = 1; renderAll(); };
+    sectorFilterSelect.onchange = ()=>{ currentPage = 1; updateAdvancedFilterBadge(); renderAll(); };
   }
   const companySizeSelect = document.getElementById('companySizeSelect');
   if (companySizeSelect){
     companySizeSelect.value = companySizeFilter;
     companySizeSelect.onchange = ()=>{
       companySizeFilter = companySizeSelect.value || 'all';
+      updateAdvancedFilterBadge();
       renderAll();
     };
   }
@@ -2887,6 +3022,7 @@ async function init(){
       if (crisisOnly && crisisEntityKeys.size === 0) {
         await loadCrisisEntityKeys();
       }
+      updateAdvancedFilterBadge();
       renderAll();
     };
   }
@@ -2895,46 +3031,16 @@ async function init(){
     nonCrisisBtn.onclick = ()=>{
       nonCrisisOnly = !nonCrisisOnly;
       nonCrisisBtn.classList.toggle('active', nonCrisisOnly);
+      updateAdvancedFilterBadge();
       renderAll();
     };
   }
   document.getElementById('refreshBtn').onclick = async ()=>{
     const statusEl = document.getElementById('refreshStatus');
-    const refreshTargets = 'News, Organic SERP, SERP Features';
-    if (statusEl) statusEl.textContent = `Refreshing charts: ${refreshTargets}…`;
-    try {
-      const resp = await fetch('/api/internal/refresh_aggregates', { method: 'POST' });
-      if (!resp.ok) throw new Error('refresh_failed');
-      const wait = async () => {
-        for (let i = 0; i < 240; i++){
-          const r = await fetch('/api/internal/refresh_aggregates/status');
-          if (!r.ok) throw new Error('status_failed');
-          const data = await r.json();
-          if (data.status !== 'in_progress') return data;
-          await new Promise(res => setTimeout(res, 1000));
-        }
-        return { status: 'timeout' };
-      };
-      const result = await wait();
-      if (statusEl) {
-        if (result.status === 'ok') {
-          statusEl.textContent = `Refreshed charts: ${refreshTargets}`;
-        } else if (result.status === 'skipped') {
-          statusEl.textContent = `Refresh skipped (locked): ${refreshTargets}`;
-        } else if (result.status === 'timeout') {
-          statusEl.textContent = `Still refreshing: ${refreshTargets}`;
-        } else {
-          statusEl.textContent = `Refresh failed: ${refreshTargets}`;
-        }
-      }
-    } catch (e) {
-      if (statusEl) statusEl.textContent = `Refresh failed: ${refreshTargets}`;
-    }
-    if (statusEl) {
-      setTimeout(() => {
-        statusEl.textContent = '';
-      }, 3000);
-    }
+    await window.CrisisDashboardLegacy?.runInternalRefresh?.({
+      statusEl,
+      refreshTargets: 'News, Organic SERP, SERP Features',
+    });
     await init();
   };
   document.getElementById('clearBtn').onclick = ()=>{
@@ -2942,6 +3048,8 @@ async function init(){
     document.getElementById('filterInput').value='';
     const sectorFilter = document.getElementById('sectorFilterSelect');
     if (sectorFilter) sectorFilter.value = '';
+    setFiltersDrawerOpen(false);
+    updateAdvancedFilterBadge();
     updateEntityUrlParam('company', null);
     renderAll();
   };
@@ -2951,11 +3059,14 @@ async function init(){
   // 2. Sorting Listeners (Define these ONCE, outside the change handler)
   document.querySelectorAll('thead th[data-key]').forEach(th=>{
     th.style.cursor='pointer';
-    th.addEventListener('click', ()=>{
-      const k = th.getAttribute('data-key');
-      if (currentSort.key===k) currentSort.dir*=-1; else { currentSort.key=k; currentSort.dir=1; }
-      renderTable();
-    });
+    if (th.dataset.boundSort !== '1'){
+      th.addEventListener('click', ()=>{
+        const k = th.getAttribute('data-key');
+        if (currentSort.key===k) currentSort.dir*=-1; else { currentSort.key=k; currentSort.dir=1; }
+        renderTable();
+      });
+      th.dataset.boundSort = '1';
+    }
   });
 
   // --- [NEW] AUTO-FILTER FROM URL (Correct Location) ---
@@ -2985,11 +3096,16 @@ async function init(){
     });
     sel.dataset.boundChange = '1';
   }
+  const stockChartClose = document.getElementById('stockChartClose');
+  if (stockChartClose && stockChartClose.dataset.boundClose !== '1'){
+    stockChartClose.addEventListener('click', closeStockChart);
+    stockChartClose.dataset.boundClose = '1';
+  }
 
   renderTable();
 
-  const idleLoad = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
-  idleLoad(async () => {
+  const scheduleIdle = window.CrisisDashboardLegacy?.scheduleIdle || ((cb) => setTimeout(cb, 0));
+  scheduleIdle(async () => {
     const tasks = [loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()];
     if (crisisOnly || crisisEntityKeys.size) tasks.push(loadCrisisEntityKeys());
     await Promise.all(tasks);
@@ -2997,8 +3113,7 @@ async function init(){
     renderAll();
   });
 
-  const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
-  idle(() => {
+  scheduleIdle(() => {
     loadStockData().then(data => {
       globalStockData = data;
       if (Object.keys(globalStockData).length > 0) {
@@ -3019,11 +3134,14 @@ async function init(){
     loadNegativeSummaryIndex();
   });
 
-  window.onclick = function(event) {
-    if (event.target === document.getElementById('stockChartModal')) {
-      closeStockChart();
-    }
-  };
+  if (!window.__riskdashBrandStockModalBound){
+    window.addEventListener('click', (event) => {
+      if (event.target === document.getElementById('stockChartModal')) {
+        closeStockChart();
+      }
+    });
+    window.__riskdashBrandStockModalBound = true;
+  }
 }
 
 /********************** Data → view rows **********************/
@@ -3068,6 +3186,7 @@ async function renderAll(){
   const d = document.getElementById('dateSelect').value;
   const filter = document.getElementById('filterInput').value.trim().toLowerCase();
   const sectorFilter = (document.getElementById('sectorFilterSelect')?.value || '').trim();
+  updateAdvancedFilterBadge();
   if (!d) {
     filteredRows = [];
     renderTable();
@@ -3099,6 +3218,7 @@ async function renderAll(){
   renderTable();
   if (chartsDataReady()) renderCharts();
   if (selectedCompany) updateEntityUrlParam('company', selectedCompany);
+  updateAdvancedFilterBadge();
   _dataRendered = true;
   maybeHideLoadStatus();
 }
@@ -3753,7 +3873,7 @@ function renderCharts(){
       labels: d,
       datasets: [
         {
-          label: 'Daily Negative SERP %',
+          label: 'Daily Negative Organic %',
           data: sN,
           tension: 0.2,
           borderWidth: SOLID_WIDTH,
@@ -3773,7 +3893,7 @@ function renderCharts(){
           pointBorderColor: CTRL_COLOR
         },
         ...(avgNegLine.length ? [{
-          label: 'Average Negative SERP %',
+          label: 'Average Negative Organic %',
           data: avgNegLine,
           tension: 0,
           fill: false,

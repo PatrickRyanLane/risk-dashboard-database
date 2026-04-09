@@ -1,0 +1,1457 @@
+import { mountParityPage, prefetchParityPage } from '../../parity-runtime.js';
+
+const page = {
+  "styles": ":root {\n  /* Palette (matches brand dashboard) */\n  --bg: #044152;\n  --card: #092e37;\n  --muted: #a2ebf3;\n  --text: #ebf2f2;\n  --accent: #58dbed;\n  --black: #1f2121;\n\n  --pill-neg: #ff8261;\n  --pill-neu: #cfdbdd;\n  --pill-pos: #82c618;\n\n  --stroke: #0e2230;\n  --chip: #12343e;\n  --chipBorder: #174550;\n  \n  --stock-pos:#22c55e; \n  --stock-neg:#ef4444;\n}\n\n*{box-sizing:border-box}\nbody{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}\n.wrap{max-width:1200px;margin:0 auto;padding:20px}\nh1{font-size:28px;margin:6px 0 18px}\n\n/* Controls */\n.controls{display:flex;flex-direction:column;gap:8px;margin:0 0 16px}\n.controls select,\n.controls input,\n.controls button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}\n.controls .controls-grid{\n  display:grid;\n  grid-template-columns:170px 220px 190px 190px auto auto;\n  gap:8px 12px;\n  align-items:end;\n  width:100%;\n}\n.controls-row{display:flex;justify-content:flex-end;margin:0 0 8px}\n.refresh-panel{\n  display:flex;\n  align-items:center;\n  justify-content:center;\n  gap:0;\n  padding:8px 10px;\n  border:1px solid var(--stroke);\n  border-radius:10px;\n  background:var(--card);\n}\n.refresh-panel #refreshStatus{font-size:12px;white-space:nowrap;display:none}\n.refresh-panel #refreshStatus:not(:empty){display:inline;margin-left:10px}\n.refresh-panel button{height:32px;padding:6px 10px;font-size:12px;line-height:1.2;border-radius:8px}\n.controls .field-label{font-size:12px;margin:0;padding-left:8px;line-height:1.2}\n.controls .field-label-empty{padding-left:0}\n.controls .controls-inputs{align-items:flex-start}\n.controls .controls-inputs input,\n.controls .controls-inputs select{width:100%;min-width:0}\n.controls .controls-inputs button{width:auto;white-space:nowrap;justify-self:start}\n.controls .date-input-stack{display:flex;flex-direction:column;gap:8px;min-width:0}\n.controls .lookback-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;width:100%}\n.controls .lookback-btn{min-width:0;padding:0 6px;font-weight:600}\n.controls .lookback-btn.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}\n.controls .controls-aux{display:flex;flex-wrap:wrap;align-items:center;gap:8px}\n.controls .controls-aux .muted{font-size:12px}\n.card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:12px 12px}\nselect,input[type=\"text\"]{background:#1f2121;border:1px solid #23314d;border-radius:10px;color:var(--text);padding:8px 10px}\nbutton{background:#1f2121;border:1px solid #2a3b5e;color:var(--text);border-radius:10px;padding:8px 12px;cursor:pointer}\nbutton:hover{filter:brightness(1.08)}\n.filter-toggle.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}\n.crisis-toggle{border-color:#7b1d1d;color:#ffb3b3}\n.crisis-toggle.active{border-color:#ff4545;box-shadow:0 0 0 1px rgba(255,69,69,.4);color:#ff5c5c}\n.controls .spacer{display:none}\n@media (max-width: 980px){\n  .controls-row{justify-content:stretch}\n  .refresh-panel{width:100%;justify-content:center;flex-wrap:wrap}\n  .refresh-panel #refreshStatus:not(:empty){margin:8px 0 0;flex-basis:100%;text-align:center}\n  .controls .controls-header{display:none}\n  .controls .controls-grid{grid-template-columns:1fr}\n  .controls .controls-inputs button{width:100%}\n}\n\n/* Charts grid */\n.grid{\n  display:grid;\n  grid-auto-rows:auto;\n  gap:16px;\n  margin:16px 0;\n}\n.chart-card{ background:var(--card); border:1px solid var(--stroke);\n  border-radius:12px; padding:16px; position:relative; min-height:400px; height:48vh }\n.chart-card canvas{ width:100% !important; height:100% !important; display:block }\n.chart-card[data-chart=\"composite\"]{ min-height:460px; height:58vh }\n.chart-card.loading::after{\n  content:\"\";position:absolute;left:16px;right:16px;top:58px;bottom:16px;border-radius:10px;\n  background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.18),rgba(255,255,255,.05));\n  background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite;pointer-events:none\n}\n.chart-card.loading canvas{opacity:.2}\n.chart-card[draggable=\"true\"]{cursor:grab}\n.chart-card h3{margin:0}\n.chart-card[draggable=\"true\"] h3{\n  display:flex;\n  align-items:flex-start;\n  gap:10px;\n  padding-left:2px;\n}\n.chart-card[draggable=\"true\"] h3 .drag-handle{\n  display:inline-flex;\n  align-items:center;\n  justify-content:center;\n  font-size:25px;\n  line-height:.7;\n  color:rgba(235,242,242,.38);\n  text-shadow:0 1px 0 rgba(0,0,0,.55), 0 -1px 0 rgba(255,255,255,.06);\n  opacity:.55;\n  transform:translateY(1px);\n  cursor:grab;\n}\n.chart-card[draggable=\"true\"] h3 .drag-handle::before{content:\"\u2630\"}\n.chart-card.dragging{opacity:.55}\n.chart-card.drag-over{outline:1px dashed rgba(88,219,237,.7);outline-offset:2px}\n\n.chart-card.chart-collapsed{grid-column:1 / -1;padding:16px;min-height:0;height:auto}\n.chart-card.chart-collapsed canvas{display:none !important}\n.chart-card.chart-collapsed .chart-actions{\n  display:flex;\n  top:16px;\n  right:16px;\n}\n.chart-card.chart-collapsed .chart-actions .dates-pager{display:none}\n.chart-card.chart-collapsed.loading::after{display:none}\n.chart-card .chart-collapsible-title{cursor:pointer;user-select:none}\n\n/* Range + pager (top right of each chart card) */\n.chart-actions{ position:absolute; top:16px; right:16px; display:flex; align-items:center; gap:10px; }\n.chart-actions .dates-range{ font-size:12px; }\n.chart-actions .dates-pager{ display:flex; gap:6px; }\n.chart-actions .dates-pager button{\n  background:#1f2121; border:1px solid #2a3b5e; color:var(--text);\n  border-radius:8px; padding:4px 8px; cursor:pointer;\n}\n.chart-actions .dates-pager button[disabled]{ opacity:.45; cursor:not-allowed; }\n\n/* Table */\n.table-card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:10px}\n.table-hint{margin:0 0 8px;color:var(--muted)}\n.load-status{margin-top:10px;width:100%;display:flex;flex-direction:column;align-items:center}\n.load-bar{height:6px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden}\n.load-bar-fill{height:100%;width:0%;background:var(--accent);transition:width .2s ease}\n.load-items{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:12px;color:var(--muted);justify-content:center;text-align:center}\n.load-pill{padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.1)}\n.load-pill.done{color:#82c618;border-color:rgba(130,198,24,.35);background:rgba(130,198,24,.1)}\n.load-pill.error{color:#ff8261;border-color:rgba(255,130,97,.35);background:rgba(255,130,97,.1)}\ntable{width:100%;border-collapse:separate;border-spacing:0 6px}\nthead th{font-size:11px;color:var(--muted);text-align:center;padding:6px 4px;vertical-align:middle;line-height:1.3;white-space:normal;max-width:100px}\nthead th:nth-child(2){text-align:left;max-width:140px}\ntbody td{padding:8px 4px;background:#1f2121;border-top:1px solid #0f1831;border-bottom:1px solid #0f1831;text-align:center}\ntbody td:nth-child(2){text-align:left;max-width:140px;white-space:normal}\ntbody tr td:first-child{border-left:1px solid #0f1831;border-radius:10px 0 0 10px}\ntbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 0}\n.skeleton-row td{padding:10px 12px}\n.skeleton-bar{height:12px;border-radius:8px;background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.2),rgba(255,255,255,.05));background-size:200% 100%;animation:skeleton 1.2s ease-in-out infinite}\n.skeleton-bar.full{width:100%;height:16px}\n\n/* Stock styling */\n.stock-change{font-weight:600}\n.stock-change.positive{color:var(--stock-pos)}\n.stock-change.negative{color:var(--stock-neg)}\n\n/* Mobile horizontal scroll */\n.table-scroll{ overflow-x:auto; -webkit-overflow-scrolling:touch }\n.table-scroll::-webkit-scrollbar{height:8px}\n.table-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.05);border-radius:8px}\n.table-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:8px}\n@media (max-width: 960px){\n  .table-card{ padding:8px }\n  thead th, tbody td{ padding:8px 10px }\n  table{ min-width: 980px }\n}\n/* Pagination */\n.pagination{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px}\n\n/* Utilities */\n.muted{color:var(--muted)}\n\n/* Tooltips */\n.tooltip-header {\n  position: relative;\n  display: inline-block;\n  border-bottom: 1px dotted #a2ebf3;\n  cursor: help;\n}\n\n.tooltip-header .tooltip-text {\n  visibility: hidden;\n  width: 240px;\n  background-color: #1f2121;\n  color: #ebf2f2;\n  text-align: left;\n  border: 1px solid #2a3b5e;\n  border-radius: 8px;\n  padding: 10px 12px;\n  position: absolute;\n  z-index: 1000;\n  top: 125%;\n  left: 50%;\n  margin-left: -120px;\n  opacity: 0;\n  transition: opacity 0.3s ease;\n  font-size: 12px;\n  line-height: 1.5;\n  font-weight: normal;\n  white-space: normal;\n  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);\n}\n\n.tooltip-header .tooltip-text::after {\n  content: \"\";\n  position: absolute;\n  bottom: 100%;\n  left: 50%;\n  margin-left: -5px;\n  border-width: 5px;\n  border-style: solid;\n  border-color: transparent transparent #1f2121 transparent;\n}\n\n.tooltip-header:hover .tooltip-text {\n  visibility: visible;\n  opacity: 1;\n}\n\n@media (max-width: 768px) {\n  .tooltip-header .tooltip-text {\n    width: 200px;\n    margin-left: -100px;\n    font-size: 11px;\n  }\n}\n\n@keyframes skeleton{0%{background-position:200% 0}100%{background-position:-200% 0}}",
+  "markup": "<div class=\"wrap\">\n  <h1>Crisis Dashboard: Sectors</h1>\n\n  <div class=\"controls-row\">\n    <div class=\"refresh-panel\">\n      <button id=\"refreshBtn\">Refresh Data</button>\n      <span id=\"refreshStatus\" class=\"muted\"></span>\n    </div>\n  </div>\n\n  <div class=\"controls card\">\n    <div class=\"controls-grid controls-header\">\n      <div class=\"muted field-label\">Date</div>\n      <div class=\"muted field-label\">Filter (Sector)</div>\n      <div class=\"muted field-label\">Sector</div>\n      <div class=\"muted field-label\">Company Size</div>\n      <div class=\"field-label field-label-empty\" aria-hidden=\"true\"></div>\n      <div class=\"field-label field-label-empty\" aria-hidden=\"true\"></div>\n    </div>\n    <div class=\"controls-grid controls-inputs\">\n      <div class=\"date-input-stack\">\n        <select id=\"dateSelect\"></select>\n        <div class=\"lookback-controls\" role=\"group\" aria-label=\"Chart lookback window\">\n          <button type=\"button\" class=\"lookback-btn\" data-days=\"30\" title=\"Show last 30 days\">30d</button>\n          <button type=\"button\" class=\"lookback-btn\" data-days=\"45\" title=\"Show last 45 days\">45d</button>\n          <button type=\"button\" class=\"lookback-btn\" data-days=\"60\" title=\"Show last 60 days\">60d</button>\n          <button type=\"button\" class=\"lookback-btn\" data-days=\"90\" title=\"Show last 90 days\">90d</button>\n        </div>\n      </div>\n      <input id=\"filterInput\" type=\"text\" placeholder=\"Type to filter\u2026\" />\n      <select id=\"sectorFilterSelect\" title=\"Filter by sector\">\n        <option value=\"\">All sectors</option>\n      </select>\n      <select id=\"companySizeSelect\">\n        <option value=\"all\">All companies</option>\n        <option value=\"fortune500\">Fortune 500</option>\n        <option value=\"fortune1000\">Fortune 1000</option>\n        <option value=\"forbes\">Forbes</option>\n      </select>\n      <button id=\"clearBtn\">Clear Selection</button>\n      <button id=\"crisisBtn\" class=\"filter-toggle crisis-toggle\" title=\"Sectors with at least one company that has more than 4 negative Top stories URLs on any single day in the last 30 days\">Crisis</button>\n    </div>\n    <div class=\"load-status\" id=\"loadStatus\">\n      <div class=\"load-bar\"><div class=\"load-bar-fill\" id=\"loadBarFill\"></div></div>\n      <div class=\"load-items\" id=\"loadItems\"></div>\n    </div>\n  </div>\n\n  <div class=\"grid\">\n    <div class=\"chart-card loading\" data-chart=\"composite\">\n      <h3>Negative Signal Composite (SERP Features vs News)</h3>\n      <div class=\"chart-actions\">\n        <span class=\"dates-range muted\" aria-live=\"polite\"></span>\n        <div class=\"dates-pager\">\n          <button class=\"dates-prev\" title=\"Older window\">\u2190</button>\n          <button class=\"dates-next\" title=\"Newer window\">\u2192</button>\n        </div>\n      </div>\n      <canvas id=\"negativeCompositeChart\"></canvas>\n    </div>\n\n    <div class=\"chart-card loading\" data-chart=\"features\">\n      <h3>SERP Feature Negativity (stacked)</h3>\n      <div class=\"chart-actions\">\n        <span class=\"dates-range muted\" aria-live=\"polite\"></span>\n        <div class=\"dates-pager\">\n          <button class=\"dates-prev\" title=\"Older window\">\u2190</button>\n          <button class=\"dates-next\" title=\"Newer window\">\u2192</button>\n        </div>\n      </div>\n      <canvas id=\"featureChart\"></canvas>\n    </div>\n    <div class=\"chart-card loading\" data-chart=\"features\">\n      <h3>SERP Feature Control (stacked)</h3>\n      <div class=\"chart-actions\">\n        <span class=\"dates-range muted\" aria-live=\"polite\"></span>\n        <div class=\"dates-pager\">\n          <button class=\"dates-prev\" title=\"Older window\">\u2190</button>\n          <button class=\"dates-next\" title=\"Newer window\">\u2192</button>\n        </div>\n      </div>\n      <canvas id=\"featureControlChart\"></canvas>\n    </div>\n    <div class=\"chart-card loading\" data-chart=\"news\">\n      <h3>News sentiment (percent of articles)</h3>\n      <div class=\"chart-actions\">\n        <span class=\"dates-range muted\" aria-live=\"polite\"></span>\n        <div class=\"dates-pager\">\n          <button class=\"dates-prev\" title=\"Older window\">\u2190</button>\n          <button class=\"dates-next\" title=\"Newer window\">\u2192</button>\n        </div>\n      </div>\n      <canvas id=\"newsChart\"></canvas>\n    </div>\n    <div class=\"chart-card loading\" data-chart=\"serps\">\n      <h3>Organic Search (Negative % \u2022 Control %)</h3>\n      <div class=\"chart-actions\">\n        <span class=\"dates-range muted\" aria-live=\"polite\"></span>\n        <div class=\"dates-pager\">\n          <button class=\"dates-prev\" title=\"Older window\">\u2190</button>\n          <button class=\"dates-next\" title=\"Newer window\">\u2192</button>\n        </div>\n      </div>\n      <canvas id=\"serpChart\"></canvas>\n    </div>\n  </div>\n\n  <div class=\"table-card\">\n    <p class=\"table-hint\">Select a sector using the checkbox to view its trend lines.</p>\n    <div class=\"table-scroll\">\n      <table>\n        <thead>\n          <tr>\n            <th style=\"width:56px\">Select</th>\n            <th data-key=\"sector\">Sector</th>\n            <th data-key=\"avg_daily_change\">\n              <div class=\"tooltip-header\">\n                Avg Overnight<br>Change % \u25b2\u25bc\n                <span class=\"tooltip-text\">Average overnight gap (yesterday's close to today's open) across all sector companies. Reflects after-hours market reactions to news and events</span>\n              </div>\n            </th>\n            <th data-key=\"avg_stock_change\">\n              <div class=\"tooltip-header\">\n                Avg 7-Day<br>Change % \u25b2\u25bc\n                <span class=\"tooltip-text\">Average 7-day stock price % change for all companies in this sector. Reveals longer-term sector momentum</span>\n              </div>\n            </th>\n            <th data-key=\"neg_news\">\n              <div class=\"tooltip-header\">\n                Negative News<br>% \u25b2\u25bc\n                <span class=\"tooltip-text\">Combined negative article sentiment across all companies in this sector. Aggregates sector-wide reputational pressure</span>\n              </div>\n            </th>\n            <th data-key=\"neg_serp\">\n              <div class=\"tooltip-header\">\n                Negative Organic % \u25b2\u25bc\n                <span class=\"tooltip-text\">Combined negative organic search results across all sector companies on Google Page 1. Indicates sector-wide search perception</span>\n              </div>\n            </th>\n            <th data-key=\"ctrl_pct\">\n              <div class=\"tooltip-header\">\n                Organic Control<br>% \u25b2\u25bc\n                <span class=\"tooltip-text\">Combined organic search result control by all sector companies. Shows industry's collective narrative control over organic results</span>\n              </div>\n            </th>\n            <th data-key=\"neg_serp_all\">\n              <div class=\"tooltip-header\">\n                Total SERP Negative<br>% \u25b2\u25bc\n                <span class=\"tooltip-text\">Negative share across all SERP features plus organic results for this sector</span>\n              </div>\n            </th>\n            <th data-key=\"ctrl_pct_all\">\n              <div class=\"tooltip-header\">\n                Total SERP Control<br>% \u25b2\u25bc\n                <span class=\"tooltip-text\">Control share across all SERP features plus organic results for this sector</span>\n              </div>\n            </th>\n          </tr>\n        </thead>\n        <tbody id=\"tbody\"></tbody>\n      </table>\n    </div>\n\n    <div class=\"pagination\">\n      <button id=\"prevBtn\">Prev</button>\n      <div>Page <span id=\"pageNo\">1</span> / <span id=\"pageTotal\">1</span></div>\n      <button id=\"nextBtn\">Next</button>\n    </div>\n  </div>\n</div>",
+  "externalScripts": [
+    "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js",
+    "https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js",
+    "/static/app/shared-data.js",
+    "/static/app/legacy-shared.js"
+  ]
+};
+
+function runInlineScript(scope) {
+  const {
+    window,
+    self,
+    top,
+    parent,
+    document,
+    history,
+    location,
+    globalThis,
+    fetch,
+    localStorage,
+    sessionStorage,
+    navigator,
+    requestAnimationFrame,
+    cancelAnimationFrame,
+    requestIdleCallback,
+    cancelIdleCallback,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    performance,
+    console,
+    URL,
+    URLSearchParams,
+    Chart,
+    Papa,
+    ResizeObserver,
+    MutationObserver,
+    Event,
+    CustomEvent,
+    Node,
+    HTMLElement,
+    HTMLCanvasElement,
+    CSS,
+    getComputedStyle
+  } = scope;
+
+  const FEATURE_ORDER_SENTIMENT = ['organic','aio_citations','paa_items','videos_items','perspectives_items','top_stories_items'];
+  const FEATURE_LABELS = {
+    organic: 'Organic',
+    aio_citations: 'AIO citations',
+    paa_items: 'PAA',
+    videos_items: 'Videos',
+    perspectives_items: 'Perspectives',
+    top_stories_items: 'Top stories',
+  };
+
+  // CLOUD STORAGE CONFIGURATION - ADD THIS AT TOP
+  // DATA CONFIGURATION - Uses Cloud Run proxy for authenticated access
+  // The proxy endpoints in app.py fetch from private GCS bucket
+  function getDataUrl(path) {
+    // Route to appropriate proxy endpoint based on path
+    if (path.startsWith('data/')) {
+      // /api/data/daily_counts/..., /api/data/processed_articles/..., etc.
+      return '/api/data/' + path.substring(5);
+    } else if (path.startsWith('rosters/')) {
+      // /api/data/rosters/main-roster.csv
+      return '/api/data/' + path;
+    }
+    return '/api/data/' + path;
+  }
+  // END OF CLOUD STORAGE CONFIG
+
+  /* ================= Config & Runtime ================= */
+  const DEFAULT_DAYS = 30;
+  const EXTENDED_DAYS = 90;
+  const LOOKBACK_OPTIONS = [30, 45, 60, 90];
+  let currentDays = DEFAULT_DAYS;
+  let extendingHistoryPromise = null;
+  let extendedHistoryQueued = false;
+  const COUNTS_CANDIDATES   = () => [`/api/v1/daily_counts?kind=brand_articles&days=${currentDays}`];
+  const SERPS_DAILY_CSV     = () => `/api/v1/daily_counts?kind=brand_serps&days=${currentDays}`;
+  const ROSTER_CANDIDATES   = ['/api/v1/roster'];
+  const SERP_FEATURES_PATH  = () => `/api/v1/serp_features?entity=brand&days=${currentDays}`;
+  const SERP_FEATURES_CONTROL_PATH = () => `/api/v1/serp_feature_controls?entity=brand&days=${currentDays}`;
+
+  let allCountsRows = [];
+  let serpsDaily = [];
+  let sectorFromBrand = new Map();
+  let brandsBySector = new Map();
+  let globalStockData = {};
+  let serpFeatureRows = [];
+  let serpFeatureControlRows = [];
+  let featureNegByDateBrand = new Map();
+  let featureCtrlByDateBrand = new Map();
+  let crisisBrandKeys = new Set();
+  let fortuneFlags = new Map();
+  let companySizeFilter = 'all';
+  let crisisOnly = false;
+
+  let filteredRows = [];
+  let selectedSector = null;
+  let currentSort = { key:null, dir:1 };
+  let currentPage = 1;
+  const PAGE_SIZE = 25;
+  const CHART_ORDER_STORAGE_KEY = `riskdash.chart_order:${window.location.pathname}`;
+  const CHART_COLLAPSE_STORAGE_KEY = `riskdash.chart_collapse:${window.location.pathname}`;
+  const COMPOSITE_CHART_KEY = 'negativeCompositeChart';
+  let draggedChartCard = null;
+  let newsChart, serpChart, featureChart, featureControlChart, negativeCompositeChart;
+  let DATE_WINDOW_SIZE = currentDays;
+  const CRISIS_MIN_NEG = 4;
+  let dateWindowStart = null;
+  let dateWindowPinned = false;
+  const _loadSections = ['roster','news','serps','features','stock'];
+  const _loadLabels = {
+    roster: 'Roster',
+    news: 'News sentiment',
+    serps: 'SERP metrics',
+    features: 'SERP features',
+    stock: 'Stock data'
+  };
+  let _loadState = {};
+  let _dataRendered = false;
+  let dataReady = false;
+
+  function getChartGrid(){
+    return document.querySelector('.grid');
+  }
+  function getChartCards(){
+    const grid = getChartGrid();
+    return grid ? Array.from(grid.querySelectorAll('.chart-card[data-chart]')) : [];
+  }
+  function getChartCardKey(card){
+    if (!card) return '';
+    if (!card.dataset.chartKey){
+      const canvasId = String(card.querySelector('canvas[id]')?.id || '').trim();
+      card.dataset.chartKey = canvasId || `chart-${Math.random().toString(36).slice(2,8)}`;
+    }
+    return card.dataset.chartKey;
+  }
+  function loadChartCollapsePreference(){
+    try {
+      const raw = localStorage.getItem(CHART_COLLAPSE_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {}
+    return {};
+  }
+  function saveChartCollapsePreference(pref){
+    try { localStorage.setItem(CHART_COLLAPSE_STORAGE_KEY, JSON.stringify(pref)); } catch {}
+  }
+  function setChartCollapsed(card, collapsed){
+    const key = getChartCardKey(card);
+    if (!key) return;
+    const pref = loadChartCollapsePreference();
+    pref[key] = !!collapsed;
+    saveChartCollapsePreference(pref);
+    card.classList.toggle('chart-collapsed', !!collapsed);
+  }
+  function applyChartCollapsePreference(){
+    const pref = loadChartCollapsePreference();
+    getChartCards().forEach(card => {
+      const key = getChartCardKey(card);
+      card.classList.toggle('chart-collapsed', !!pref[key]);
+    });
+  }
+  function bindChartCollapse(){
+    getChartCards().forEach(card => {
+      if (card.dataset.collapseBound === '1') return;
+      card.dataset.collapseBound = '1';
+      const titleEl = card.querySelector('h3');
+      if (!titleEl) return;
+      titleEl.classList.add('chart-collapsible-title');
+      titleEl.title = 'Click to collapse or expand';
+      titleEl.addEventListener('click', (event) => {
+        const target = (event.target && typeof event.target.closest === 'function') ? event.target : null;
+        if (target && target.closest('.drag-handle')) return;
+        event.preventDefault();
+        const willCollapse = !card.classList.contains('chart-collapsed');
+        setChartCollapsed(card, willCollapse);
+        if (!willCollapse && dataReady && typeof renderCharts === 'function') {
+          requestAnimationFrame(() => { renderCharts(); });
+        }
+      });
+    });
+  }
+  function saveChartOrderPreference(){
+    const keys = getChartCards().map(getChartCardKey).filter(Boolean);
+    if (!keys.length) return;
+    try { localStorage.setItem(CHART_ORDER_STORAGE_KEY, JSON.stringify(keys)); } catch {}
+  }
+  function applyChartOrderPreference(){
+    const grid = getChartGrid();
+    if (!grid) return;
+    const cards = getChartCards();
+    const byKey = new Map(cards.map(card => [getChartCardKey(card), card]));
+    let saved = [];
+    try {
+      const raw = localStorage.getItem(CHART_ORDER_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) saved = parsed.map(v => String(v || '')).filter(Boolean);
+    } catch {}
+    if (byKey.has(COMPOSITE_CHART_KEY) && !saved.includes(COMPOSITE_CHART_KEY)) {
+      saved = [COMPOSITE_CHART_KEY, ...saved];
+    }
+    saved = [...new Set(saved)];
+    if (!saved.length) return;
+    const ordered = [];
+    saved.forEach(key => {
+      const card = byKey.get(key);
+      if (card) {
+        ordered.push(card);
+        byKey.delete(key);
+      }
+    });
+    byKey.forEach(card => ordered.push(card));
+    ordered.forEach(card => grid.appendChild(card));
+  }
+  function bindChartReorder(){
+    const cards = getChartCards();
+    cards.forEach(card => {
+      getChartCardKey(card);
+      if (card.dataset.reorderBound === '1') return;
+      card.dataset.reorderBound = '1';
+      card.setAttribute('draggable', 'true');
+      card.removeAttribute('title');
+      card.setAttribute('aria-label', 'Drag to reorder chart card');
+      const titleEl = card.querySelector('h3');
+      if (titleEl && !titleEl.querySelector('.drag-handle')){
+        const handle = document.createElement('span');
+        handle.className = 'drag-handle';
+        handle.title = 'Drag to reorder charts';
+        handle.setAttribute('aria-hidden', 'true');
+        titleEl.insertBefore(handle, titleEl.firstChild);
+      }
+      card.addEventListener('dragstart', () => {
+        draggedChartCard = card;
+        card.classList.add('dragging');
+      });
+      card.addEventListener('dragend', () => {
+        card.classList.remove('dragging');
+        draggedChartCard = null;
+        getChartCards().forEach(el => el.classList.remove('drag-over'));
+        saveChartOrderPreference();
+      });
+      card.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        if (!draggedChartCard || draggedChartCard === card) return;
+        const rect = card.getBoundingClientRect();
+        const before = event.clientY < (rect.top + rect.height / 2);
+        const parent = card.parentNode;
+        if (!parent) return;
+        card.classList.add('drag-over');
+        parent.insertBefore(draggedChartCard, before ? card : card.nextSibling);
+      });
+      card.addEventListener('dragleave', () => {
+        card.classList.remove('drag-over');
+      });
+      card.addEventListener('drop', (event) => {
+        event.preventDefault();
+        card.classList.remove('drag-over');
+      });
+    });
+  }
+  function initChartOrderPreference(){
+    const grid = getChartGrid();
+    if (!grid) return;
+    if (grid.dataset.chartOrderInit === '1') return;
+    applyChartOrderPreference();
+    bindChartReorder();
+    bindChartCollapse();
+    applyChartCollapsePreference();
+    grid.dataset.chartOrderInit = '1';
+  }
+
+  function updateChartSkeletons(){
+    const compositeState = (_loadState.news === 'done' && _loadState.features === 'done')
+      ? 'done'
+      : ((_loadState.news === 'error' || _loadState.features === 'error') ? 'error' : 'loading');
+    const map = {
+      news: _loadState.news,
+      serps: _loadState.serps,
+      features: _loadState.features,
+      composite: compositeState
+    };
+    document.querySelectorAll('.chart-card[data-chart]').forEach(card=>{
+      const key = card.getAttribute('data-chart');
+      const state = map[key];
+      card.classList.toggle('loading', state !== 'done');
+    });
+  }
+
+  function updateDateOptions(){
+    const dateSet = new Set([
+      ...allCountsRows.map(r => r.date),
+      ...serpsDaily.map(r => r.date)
+    ].filter(isISODate));
+    const dates = [...dateSet].sort();
+    const sel = document.getElementById('dateSelect');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = dates.map(d => `<option value="${d}">${d}</option>`).join('');
+    sel.value = dates.includes(prev) ? prev : (dates[dates.length - 1] || '');
+    updateLookbackButtons();
+  }
+
+  function updateLookbackButtons(){
+    document.querySelectorAll('.lookback-btn').forEach(btn => {
+      const days = Number(btn.dataset.days || DEFAULT_DAYS);
+      const active = days === currentDays;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function bindLookbackControls(){
+    document.querySelectorAll('.lookback-btn').forEach(btn => {
+      if (btn.dataset.boundLookback === '1') return;
+      btn.dataset.boundLookback = '1';
+      btn.addEventListener('click', async () => {
+        await setLookbackDays(btn.dataset.days);
+      });
+    });
+    updateLookbackButtons();
+  }
+
+  function setLookbackLoadState(){
+    ['news', 'serps', 'features'].forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(_loadState, key)) {
+        setLoadStatus(key, 'loading');
+      }
+    });
+  }
+
+  async function reloadLookbackData(){
+    await Promise.all([loadCounts(), loadSerpDaily(), loadSerpFeatures()]);
+    updateDateOptions();
+    await renderAll();
+  }
+
+  function normalizeLookbackDays(days){
+    const next = Number(days);
+    return LOOKBACK_OPTIONS.includes(next) ? next : DEFAULT_DAYS;
+  }
+
+  async function setLookbackDays(days, { force = false } = {}){
+    const nextDays = normalizeLookbackDays(days);
+    if (!force && nextDays === currentDays) {
+      updateLookbackButtons();
+      return false;
+    }
+    currentDays = nextDays;
+    DATE_WINDOW_SIZE = nextDays;
+    dateWindowStart = null;
+    dateWindowPinned = false;
+    extendingHistoryPromise = null;
+    extendedHistoryQueued = currentDays >= EXTENDED_DAYS;
+    updateLookbackButtons();
+    setLookbackLoadState();
+    await reloadLookbackData();
+    return true;
+  }
+
+  function queueExtendedHistoryLoad(){ return; }
+
+  async function ensureExtendedHistory(){
+    return setLookbackDays(EXTENDED_DAYS, { force: currentDays !== EXTENDED_DAYS });
+  }
+
+
+  function initLoadStatus(){
+    _loadState = Object.fromEntries(_loadSections.map(k => [k, 'loading']));
+    const items = document.getElementById('loadItems');
+    const wrap = document.getElementById('loadStatus');
+    if (wrap) wrap.style.display = 'block';
+    if (items){
+      items.innerHTML = _loadSections.map(k => `<span class="load-pill" data-key="${k}">${_loadLabels[k] || k}: loading</span>`).join('');
+    }
+    updateLoadBar();
+  }
+
+  function setLoadStatus(key, state){
+    _loadState[key] = state;
+    const pill = document.querySelector(`.load-pill[data-key="${key}"]`);
+    if (pill){
+      pill.textContent = `${_loadLabels[key] || key}: ${state}`;
+      pill.classList.toggle('done', state === 'done');
+      pill.classList.toggle('error', state === 'error');
+    }
+    updateLoadBar();
+    updateChartSkeletons();
+  }
+
+  function updateLoadBar(){
+    const total = _loadSections.length;
+    const done = Object.values(_loadState).filter(v => v === 'done').length;
+    const fill = document.getElementById('loadBarFill');
+    if (fill){
+      fill.style.width = `${Math.round((done / total) * 100)}%`;
+    }
+    maybeHideLoadStatus();
+  }
+
+  function maybeHideLoadStatus(){
+    const total = _loadSections.length;
+    const done = Object.values(_loadState).filter(v => v === 'done').length;
+    const wrap = document.getElementById('loadStatus');
+    if (wrap && done === total && _dataRendered){
+      wrap.style.display = 'none';
+    }
+  }
+
+  /* ================= Utilities ================= */
+  const isISODate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s||'').trim());
+  const esc = (s) => String(s ?? '').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":"&#39;"}[m]));
+  const fmtPct = v => (v==null) ? 'N/A' : (Math.round(v*100) + '%');
+
+  const canonBrand = s => String(s || '').toLowerCase().replace(/\s+/g,' ').trim();
+
+  function featureIndexKey(date, brandKey){
+    return `${date}|${brandKey}`;
+  }
+
+  function rebuildFeatureIndexes(){
+    featureNegByDateBrand = new Map();
+    featureCtrlByDateBrand = new Map();
+    crisisBrandKeys = new Set();
+    const topStoriesNegByBrandDay = new Map();
+
+    serpFeatureRows.forEach(r => {
+      if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+      const brandKey = canonBrand(r.entity || '');
+      if (!brandKey || !isISODate(r.date)) return;
+      const key = featureIndexKey(r.date, brandKey);
+      const cur = featureNegByDateBrand.get(key) || {total: 0, neg: 0};
+      cur.total += r.total || 0;
+      cur.neg += r.neg || 0;
+      featureNegByDateBrand.set(key, cur);
+      if (r.feature === 'top_stories_items' && (r.total || 0) > 0 && (r.neg || 0) > 0) {
+        const dailyKey = featureIndexKey(r.date, brandKey);
+        topStoriesNegByBrandDay.set(dailyKey, (topStoriesNegByBrandDay.get(dailyKey) || 0) + (r.neg || 0));
+      }
+    });
+
+    const crisisKeys = new Set();
+    topStoriesNegByBrandDay.forEach((neg, dailyKey) => {
+      if (neg <= CRISIS_MIN_NEG) return;
+      const sep = dailyKey.indexOf('|');
+      if (sep < 0) return;
+      const brandKey = dailyKey.slice(sep + 1);
+      if (brandKey) crisisKeys.add(brandKey);
+    });
+    crisisBrandKeys = crisisKeys;
+
+    serpFeatureControlRows.forEach(r => {
+      if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+      const brandKey = canonBrand(r.entity || '');
+      if (!brandKey || !isISODate(r.date)) return;
+      const key = featureIndexKey(r.date, brandKey);
+      const cur = featureCtrlByDateBrand.get(key) || {total: 0, ctrl: 0};
+      cur.total += r.total || 0;
+      cur.ctrl += r.ctrl || 0;
+      featureCtrlByDateBrand.set(key, cur);
+    });
+  }
+
+  function matchesCompanySize(brandKey){
+    const flags = fortuneFlags.get(brandKey) || {};
+    if (companySizeFilter === 'fortune500') return !!flags.f500;
+    if (companySizeFilter === 'fortune1000') return !!flags.f1000;
+    if (companySizeFilter === 'forbes') return !!flags.forbes;
+    return true;
+  }
+
+  /********************** Stock Data **********************/
+  async function loadStockData() {
+    try {
+      const latest = await window.CrisisDashboardData.fetchLatestDatedCsv({
+        key: 'stock_data',
+        buildUrl: (dateStr) => `/api/v1/stock_data?date=${dateStr}`,
+        maxDays: 7,
+        transform: (rows) => parseStockRows(rows),
+      });
+
+      setLoadStatus('stock', 'done');
+      return latest?.data || {};
+    } catch (error) {
+      console.warn('Could not load stock data:', error);
+      setLoadStatus('stock', 'error');
+      return {};
+    }
+  }
+
+  function parseStockRows(rows) {
+    const stockData = {};
+    const toFloat = (val) => {
+      if (val === null || val === undefined || val === '') return null;
+      const num = parseFloat(val);
+      return Number.isFinite(num) ? num : null;
+    };
+    rows.forEach(r => {
+      const company = String(r.company || '').trim();
+      if (!company) return;
+      const priceHistory = Array.isArray(r.price_history)
+        ? r.price_history
+        : String(r.price_history || '').split('|').filter(Boolean).map(Number).filter(n => Number.isFinite(n));
+      const dateHistory = Array.isArray(r.date_history)
+        ? r.date_history
+        : String(r.date_history || '').split('|').filter(Boolean);
+      const volumeHistory = Array.isArray(r.volume_history)
+        ? r.volume_history
+        : String(r.volume_history || '').split('|').filter(Boolean).map(Number).filter(n => Number.isFinite(n));
+      stockData[company] = {
+        ticker: String(r.ticker || ''),
+        company,
+        openingPrice: toFloat(r.opening_price ?? r.openingPrice),
+        dailyChange: toFloat(r.daily_change_pct ?? r.dailyChange ?? r.daily_change),
+        sevenDayChange: toFloat(r.seven_day_change_pct ?? r.sevenDayChange),
+        priceHistory,
+        dateHistory,
+        volumeHistory,
+        lastUpdated: r.last_updated || ''
+      };
+    });
+    return stockData;
+  }
+
+  function clampDateStart(total){
+    if (total <= DATE_WINDOW_SIZE) return 0;
+    const maxStart = total - DATE_WINDOW_SIZE;
+    const start = (dateWindowStart ?? maxStart);
+    return Math.min(Math.max(0, start), maxStart);
+  }
+  function sliceWindow(arr, start, size){ return arr.slice(start, start + size); }
+  function updateDateRangeUI(allDates){
+    const start = clampDateStart(allDates.length);
+    const end = Math.min(allDates.length, start + DATE_WINDOW_SIZE);
+    const label = allDates.length ? `${allDates[start]} — ${allDates[end - 1]}` : '';
+    document.querySelectorAll('.dates-range').forEach(el => el.textContent = label);
+
+    const atStart = start === 0;
+    const atEnd   = (start + DATE_WINDOW_SIZE) >= allDates.length;
+    document.querySelectorAll('.dates-prev').forEach(b => b.disabled = atStart);
+    document.querySelectorAll('.dates-next').forEach(b => b.disabled = atEnd);
+  }
+  function hookDatePager(allDates){
+    const goPrev = () => {
+      const total = allDates.length;
+      if (total <= DATE_WINDOW_SIZE) return;
+      const start = clampDateStart(total);
+      dateWindowPinned = true;
+      dateWindowStart = Math.max(0, start - DATE_WINDOW_SIZE);
+      renderCharts();
+    };
+    const goNext = () => {
+      const total = allDates.length;
+      if (total <= DATE_WINDOW_SIZE) return;
+      const maxStart = total - DATE_WINDOW_SIZE;
+      dateWindowPinned = true;
+      dateWindowStart = Math.min(maxStart, clampDateStart(total) + DATE_WINDOW_SIZE);
+      renderCharts();
+    };
+    document.querySelectorAll('.dates-prev').forEach(b => b.onclick = goPrev);
+    document.querySelectorAll('.dates-next').forEach(b => b.onclick = goNext);
+  }
+
+  /* ================= CSV helpers ================= */
+  const _csvCache = new Map();
+  async function fetchCsv(url){
+    const sharedData = window.CrisisDashboardData;
+    if (sharedData?.fetchCsv) {
+      return sharedData.fetchCsv(url);
+    }
+    if (_csvCache.has(url)) {
+      const cached = _csvCache.get(url);
+      return cached instanceof Promise ? await cached : cached;
+    }
+    const pending = (async () => {
+      const r = await fetch(url, {cache:'default'});
+      if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
+      const contentType = r.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        return await r.json();
+      }
+      const t = await r.text();
+      return await new Promise((res, rej) => {
+        Papa.parse(t, {header:true, skipEmptyLines:true,
+          complete: out => res(out.data || []), error: e => rej(e)
+        });
+      });
+    })();
+    _csvCache.set(url, pending);
+    try {
+      const data = await pending;
+      _csvCache.set(url, data);
+      return data;
+    } catch (error) {
+      _csvCache.delete(url);
+      throw error;
+    }
+  }
+  async function fetchCsvAny(candidates){
+    const sharedData = window.CrisisDashboardData;
+    if (sharedData?.fetchCsvAny) {
+      return sharedData.fetchCsvAny(candidates);
+    }
+    for (const u of candidates){
+      try { const rows = await fetchCsv(u); if (Array.isArray(rows)) return rows; }
+      catch(e){ /* keep trying */ }
+    }
+    return [];
+  }
+
+  /* ================= Loading ================= */
+  async function loadCounts(){
+    try{
+      const rows = await fetchCsvAny(COUNTS_CANDIDATES());
+      allCountsRows = rows
+        .map(r => ({
+          date: String(r.date || '').trim(),
+          company: String(r.company || r.brand || '').trim(),
+          pos: +r.positive || +r.pos || 0,
+          neu: +r.neutral  || +r.neu || 0,
+          neg: +r.negative || +r.neg || 0
+        }))
+        .filter(r => isISODate(r.date) && r.company);
+      setLoadStatus('news', 'done');
+    } catch (e){
+      allCountsRows = [];
+      setLoadStatus('news', 'error');
+    }
+  }
+
+  async function loadSerpDaily(){
+    try{
+      const rows = await fetchCsv(SERPS_DAILY_CSV());
+      serpsDaily = rows.map(r => ({
+        date: (r.date||'').trim(),
+        company: (r.company||r.brand||'').trim(),
+        total: +r.total || 0,
+        neg_serp: +r.negative_serp || +r.neg_serp || 0,
+        ctrl: +r.controlled || +r.control || 0,
+      })).filter(r => isISODate(r.date) && r.company);
+      setLoadStatus('serps', 'done');
+    }catch(e){
+      serpsDaily = [];
+      setLoadStatus('serps', 'error');
+    }
+  }
+
+  async function loadSerpFeatures(){
+    try{
+      const rows = await fetchCsv(SERP_FEATURES_PATH());
+      serpFeatureRows = rows.map(r => ({
+        date: String(r.date || '').trim(),
+        entity: String(r.entity_name || r.entity || '').trim(),
+        feature: String(r.feature_type || '').trim(),
+        total: +r.total_count || +r.total || 0,
+        neg: +r.negative_count || +r.negative || 0
+      })).filter(r => isISODate(r.date) && r.entity && r.feature);
+      const ctrlRows = await fetchCsv(SERP_FEATURES_CONTROL_PATH());
+      serpFeatureControlRows = ctrlRows.map(r => ({
+        date: String(r.date || '').trim(),
+        entity: String(r.entity_name || r.entity || '').trim(),
+        feature: String(r.feature_type || '').trim(),
+        total: +r.total_count || +r.total || 0,
+        ctrl: +r.controlled_count || +r.controlled || 0
+      })).filter(r => isISODate(r.date) && r.entity && r.feature);
+      rebuildFeatureIndexes();
+      setLoadStatus('features', 'done');
+    } catch (e){
+      serpFeatureRows = [];
+      serpFeatureControlRows = [];
+      featureNegByDateBrand = new Map();
+      featureCtrlByDateBrand = new Map();
+      setLoadStatus('features', 'error');
+    }
+  }
+
+  async function loadRosterSectors() {
+    try{
+      const rows = await fetchCsvAny(ROSTER_CANDIDATES);
+
+      sectorFromBrand.clear();
+      brandsBySector.clear();
+      fortuneFlags = new Map();
+
+      rows.forEach(r => {
+        const brandRaw  = r.company || r.Company || r.brand || r.Brand || '';
+        const sector    = r.sector  || r.Sector  || '';
+        const f500 = String(r['Fortune 500'] || r.fortune_500 || r.fortune500 || '').trim();
+        const f1000 = String(r['Fortune 1000'] || r.fortune_1000 || r.fortune1000 || '').trim();
+        const forbes = String(r['Forbes'] || r['Forbes 100'] || r['Forbes 2000'] || r.forbes || r.forbes_100 || r.forbes_2000 || '').trim();
+        const brandKey  = canonBrand(brandRaw);
+        if (!brandKey || !sector) return;
+
+        sectorFromBrand.set(brandKey, sector);
+        if (!brandsBySector.has(sector)) brandsBySector.set(sector, new Set());
+        brandsBySector.get(sector).add(brandKey);
+        fortuneFlags.set(brandKey, {
+          f500: ['true','1','yes','y','x'].includes(f500.toLowerCase()),
+          f1000: ['true','1','yes','y','x'].includes(f1000.toLowerCase()),
+          forbes: ['true','1','yes','y','x'].includes(forbes.toLowerCase())
+        });
+      });
+      populateSectorFilterOptions();
+      setLoadStatus('roster', 'done');
+    } catch (e){
+      sectorFromBrand.clear();
+      brandsBySector.clear();
+      fortuneFlags = new Map();
+      populateSectorFilterOptions();
+      setLoadStatus('roster', 'error');
+    }
+  }
+
+  function populateSectorFilterOptions(){
+    const sel = document.getElementById('sectorFilterSelect');
+    if (!sel) return;
+    const prev = sel.value || '';
+    const sectors = [...brandsBySector.keys()].filter(Boolean).sort((a,b)=>a.localeCompare(b));
+    sel.innerHTML = `<option value="">All sectors</option>` + sectors.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    if (prev && sectors.includes(prev)) sel.value = prev;
+  }
+
+
+  /* ================= Init ================= */
+  async function init(){
+    initChartOrderPreference();
+    initLoadStatus();
+    dataReady = false;
+    bindLookbackControls();
+    await Promise.all([
+      loadRosterSectors(),
+      loadCounts(),
+      loadSerpDaily(),
+      loadSerpFeatures()
+    ]);
+
+    const sel = document.getElementById('dateSelect');
+    updateDateOptions();
+    if (!sel.dataset.boundChange){
+      sel.addEventListener('change', ()=>{ currentPage=1; selectedSector=null; renderAll(); });
+      sel.dataset.boundChange = '1';
+    }
+
+    const filterInput = document.getElementById('filterInput');
+    if (filterInput && filterInput.dataset.boundInput !== '1'){
+      filterInput.addEventListener('input', ()=>{ currentPage=1; renderAll(); });
+      filterInput.dataset.boundInput = '1';
+    }
+    const sectorFilterSelect = document.getElementById('sectorFilterSelect');
+    if (sectorFilterSelect){
+      sectorFilterSelect.onchange = ()=>{ currentPage = 1; selectedSector = null; renderAll(); };
+    }
+    document.getElementById('refreshBtn').onclick = async ()=>{
+      const statusEl = document.getElementById('refreshStatus');
+      await window.CrisisDashboardLegacy?.runInternalRefresh?.({
+        statusEl,
+        refreshTargets: 'News, Organic SERP, SERP Features',
+      });
+      await init();
+    };
+    document.getElementById('clearBtn').onclick = ()=>{
+      selectedSector = null;
+      document.getElementById('filterInput').value = '';
+      const sectorFilter = document.getElementById('sectorFilterSelect');
+      if (sectorFilter) sectorFilter.value = '';
+      renderAll();
+    };
+    const companySizeSelect = document.getElementById('companySizeSelect');
+    if (companySizeSelect){
+      companySizeSelect.value = companySizeFilter;
+      companySizeSelect.onchange = ()=>{
+        companySizeFilter = companySizeSelect.value || 'all';
+        renderAll();
+      };
+    }
+    const crisisBtn = document.getElementById('crisisBtn');
+    if (crisisBtn){
+      crisisBtn.onclick = ()=>{
+        crisisOnly = !crisisOnly;
+        crisisBtn.classList.toggle('active', crisisOnly);
+        renderAll();
+      };
+    }
+    document.getElementById('prevBtn').onclick = ()=>{ if (currentPage>1){ currentPage--; renderTable(); } };
+    document.getElementById('nextBtn').onclick = ()=>{ const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE)); if (currentPage<totalPages){ currentPage++; renderTable(); } };
+
+    document.querySelectorAll('thead th[data-key]').forEach(th=>{
+      th.style.cursor='pointer';
+      if (th.dataset.boundSort !== '1'){
+        th.addEventListener('click', ()=>{
+          const k = th.getAttribute('data-key');
+          if (currentSort.key === k) currentSort.dir *= -1; else { currentSort.key = k; currentSort.dir = 1; }
+          renderTable();
+        });
+        th.dataset.boundSort = '1';
+      }
+    });
+
+    if (!window.__riskdashSectorsResizeObserver){
+      const ro = new ResizeObserver(() => {
+        if (newsChart) newsChart.resize();
+        if (serpChart) serpChart.resize();
+        if (featureChart) featureChart.resize();
+        if (featureControlChart) featureControlChart.resize();
+      });
+      document.querySelectorAll('.chart-card').forEach(el => ro.observe(el));
+      window.__riskdashSectorsResizeObserver = ro;
+    }
+
+    dataReady = true;
+    renderAll();
+    renderTable();
+
+    const scheduleIdle = window.CrisisDashboardLegacy?.scheduleIdle || ((cb) => setTimeout(cb, 0));
+    scheduleIdle(() => {
+      loadStockData().then(data => {
+        globalStockData = data;
+        if (Object.keys(globalStockData).length > 0) {
+          setLoadStatus('stock', 'done');
+        }
+        renderTable();
+        return data;
+      }).catch(()=>{ setLoadStatus('stock','error'); });
+    });
+  }
+
+  /* ================= Sector rows ================= */
+  async function buildSectorRowsForDate(d) {
+    const newsByBrand = new Map();
+    for (const r of allCountsRows) {
+      if (r.date !== d) continue;
+      const b = canonBrand(r.company || r.brand || r.ceo || '');
+      if (!b) continue;
+      const cur = newsByBrand.get(b) || {pos:0, neu:0, neg:0};
+      cur.pos += +r.pos || 0;
+      cur.neu += +r.neu || 0;
+      cur.neg += +r.neg || 0;
+      newsByBrand.set(b, cur);
+    }
+
+    const serpByBrand = new Map();
+    for (const r of serpsDaily) {
+      if (r.date !== d) continue;
+      const b = canonBrand(r.company || r.brand || '');
+      if (!b) continue;
+      const cur = serpByBrand.get(b) || {total:0, neg:0, ctrl:0};
+      cur.total += +r.total   || 0;
+      cur.neg   += +r.neg_serp|| 0;
+      cur.ctrl  += +r.ctrl    || 0;
+      serpByBrand.set(b, cur);
+    }
+
+    const sectors = [];
+    brandsBySector.forEach((brandSet, sectorName) => {
+      let nPos=0, nNeu=0, nNeg=0, sTot=0, sNeg=0, sCtrl=0;
+      let sfTot=0, sfNeg=0, sfCtrl=0;
+      let dailyChanges = [];
+      let sevenDayChanges = [];
+
+      brandSet.forEach(bKey => {
+        if (!matchesCompanySize(bKey)) return;
+        if (crisisOnly && !crisisBrandKeys.has(bKey)) return;
+        const n = newsByBrand.get(bKey);
+        if (n) { nPos += n.pos; nNeu += n.neu; nNeg += n.neg; }
+        const s = serpByBrand.get(bKey);
+        if (s) { sTot += s.total; sNeg += s.neg; sCtrl += s.ctrl; }
+        const featureKey = featureIndexKey(d, bKey);
+        const sf = featureNegByDateBrand.get(featureKey);
+        if (sf) {
+          sfTot += sf.total;
+          sfNeg += sf.neg;
+        }
+        const sc = featureCtrlByDateBrand.get(featureKey);
+        if (sc) {
+          sfCtrl += sc.ctrl;
+        }
+        
+        // Get stock data for this brand
+        for (const [company, stock] of Object.entries(globalStockData)) {
+          if (canonBrand(company) === bKey) {
+            if (stock.dailyChange !== null) dailyChanges.push(stock.dailyChange);
+            if (stock.sevenDayChange !== null) sevenDayChanges.push(stock.sevenDayChange);
+            break;
+          }
+        }
+      });
+
+      const newsTot = nPos + nNeu + nNeg;
+
+      const neg_news = newsTot ? (nNeg / newsTot) : null;
+      const neg_serp = sTot    ? (sNeg / sTot)    : null;
+      const ctrl_pct = sTot    ? (sCtrl / sTot)   : null;
+      const total_serp = (sTot + sfTot);
+      const neg_serp_all = total_serp ? ((sNeg + sfNeg) / total_serp) : null;
+      const ctrl_pct_all = total_serp ? ((sCtrl + sfCtrl) / total_serp) : null;
+      const avg_daily_change = dailyChanges.length ? 
+        (dailyChanges.reduce((a,b) => a+b, 0) / dailyChanges.length) : null;
+      const avg_stock_change = sevenDayChanges.length ? 
+        (sevenDayChanges.reduce((a,b) => a+b, 0) / sevenDayChanges.length) : null;
+
+      if (newsTot || sTot || sfTot) {
+        sectors.push({ sector: sectorName, neg_news, neg_serp, ctrl_pct, neg_serp_all, ctrl_pct_all, avg_daily_change, avg_stock_change });
+      }
+    });
+
+    sectors.sort((a,b) => a.sector.localeCompare(b.sector));
+    return sectors;
+  }
+
+
+  /* ================= Renderers ================= */
+  async function renderAll(){
+    const d = document.getElementById('dateSelect').value;
+    const filter = document.getElementById('filterInput').value.trim().toLowerCase();
+    const sectorFilter = (document.getElementById('sectorFilterSelect')?.value || '').trim();
+
+    const rows = (await buildSectorRowsForDate(d)).filter(r => {
+      if (filter && !r.sector.toLowerCase().includes(filter)) return false;
+      if (sectorFilter && r.sector !== sectorFilter) return false;
+      return true;
+    });
+
+    filteredRows = rows;
+    currentPage = 1;
+
+    if (rows.length === 1){
+      selectedSector = rows[0].sector;
+    } else if (selectedSector && !rows.some(r => r.sector === selectedSector)){
+      selectedSector = null;
+    }
+
+    renderTable();
+    renderCharts();
+    _dataRendered = true;
+    maybeHideLoadStatus();
+  }
+
+  function renderTable(){
+    const tbody = document.getElementById('tbody');
+    if (!dataReady) {
+      tbody.innerHTML = Array.from({length: 6}).map(() => `
+        <tr class="skeleton-row">
+          <td colspan="9"><div class="skeleton-bar full"></div></td>
+        </tr>
+      `).join('');
+      return;
+    }
+    let rows = [...filteredRows];
+
+    if (currentSort.key){
+      rows.sort((a,b)=>{
+        const ka = a[currentSort.key], kb = b[currentSort.key];
+        if (typeof ka === 'string') return currentSort.dir * ka.localeCompare(kb);
+        return currentSort.dir * ((ka ?? -999) - (kb ?? -999));
+      });
+    }
+
+    const start = (currentPage-1)*PAGE_SIZE;
+    const pageRows = rows.slice(start, start+PAGE_SIZE);
+
+    tbody.innerHTML = pageRows.map(r=>{
+      const checked = (selectedSector && selectedSector===r.sector) ? 'checked' : '';
+      
+      let dailyChangeHtml = '<span class="muted">N/A</span>';
+      if (r.avg_daily_change !== null) {
+        const changeClass = r.avg_daily_change >= 0 ? 'positive' : 'negative';
+        const changeSymbol = r.avg_daily_change >= 0 ? '▲' : '▼';
+        dailyChangeHtml = `<span class="stock-change ${changeClass}">${changeSymbol} ${Math.abs(r.avg_daily_change).toFixed(2)}%</span>`;
+      }
+      
+      let sevenDayChangeHtml = '<span class="muted">N/A</span>';
+      if (r.avg_stock_change !== null) {
+        const changeClass = r.avg_stock_change >= 0 ? 'positive' : 'negative';
+        const changeSymbol = r.avg_stock_change >= 0 ? '▲' : '▼';
+        sevenDayChangeHtml = `<span class="stock-change ${changeClass}">${changeSymbol} ${Math.abs(r.avg_stock_change).toFixed(2)}%</span>`;
+      }
+      
+      return `<tr>
+        <td><input type="checkbox" class="sectorCheck" data-sector="${esc(r.sector)}" ${checked} /></td>
+        <td>${esc(r.sector)}</td>
+        <td>${dailyChangeHtml}</td>
+        <td>${sevenDayChangeHtml}</td>
+        <td>${fmtPct(r.neg_news)}</td>
+        <td>${fmtPct(r.neg_serp)}</td>
+        <td>${fmtPct(r.ctrl_pct)}</td>
+        <td>${fmtPct(r.neg_serp_all)}</td>
+        <td>${fmtPct(r.ctrl_pct_all)}</td>
+      </tr>`;
+    }).join('');
+
+    tbody.querySelectorAll('.sectorCheck').forEach(cb=>{
+      cb.addEventListener('change', (e)=>{
+        const sec = e.target.getAttribute('data-sector');
+        if (e.target.checked){
+          selectedSector = sec;
+          tbody.querySelectorAll('.sectorCheck').forEach(x=>{ if (x!==e.target) x.checked=false; });
+        } else {
+          if (selectedSector === sec) selectedSector = null;
+        }
+        renderCharts();
+      });
+    });
+
+    document.getElementById('pageNo').textContent = String(currentPage);
+    document.getElementById('pageTotal').textContent = String(Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE)));
+  }
+
+  function getDateSeries(){
+    let allowed = null;
+    if (selectedSector && brandsBySector.has(selectedSector)){
+      allowed = brandsBySector.get(selectedSector);
+    }
+
+    const byDate = new Map();
+    allCountsRows.forEach(r=>{
+      const brandKey = canonBrand(r.company || r.brand || '');
+      if (allowed && !allowed.has(brandKey)) return;
+      const key = r.date;
+      if (!byDate.has(key)) byDate.set(key,{pos:0,neu:0,neg:0});
+      const bucket = byDate.get(key);
+      bucket.pos += +r.pos||0;
+      bucket.neu += +r.neu||0;
+      bucket.neg += +r.neg||0;
+    });
+
+    const serpByDate = new Map();
+    serpsDaily.forEach(r=>{
+      const brandKey = canonBrand(r.company || r.brand || '');
+      if (allowed && !allowed.has(brandKey)) return;
+      const key = r.date;
+      if (!serpByDate.has(key)) serpByDate.set(key,{total:0,neg:0,ctrl:0});
+      const s = serpByDate.get(key);
+      s.total += +r.total||0;
+      s.neg   += +r.neg_serp||0;
+      s.ctrl  += +r.ctrl||0;
+    });
+
+    const dates = [...new Set([...byDate.keys(), ...serpByDate.keys()])]
+      .filter(isISODate)
+      .sort();
+
+    const newsPos=[], newsNeu=[], newsNeg=[], serpNegPct=[], serpCtrlPct=[];
+    dates.forEach(d=>{
+      const n = byDate.get(d)||{pos:0,neu:0,neg:0};
+      const t = n.pos+n.neu+n.neg || 0;
+      newsPos.push(t? n.pos/t*100 : 0);
+      newsNeu.push(t? n.neu/t*100 : 0);
+      newsNeg.push(t? n.neg/t*100 : 0);
+
+      const s = serpByDate.get(d)||{total:0,neg:0,ctrl:0};
+      serpNegPct.push(s.total? s.neg/s.total*100 : 0);
+      serpCtrlPct.push(s.total? s.ctrl/s.total*100 : 0);
+    });
+
+    return {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct};
+  }
+
+  function getFeatureSeries(){
+    const byDate = new Map();
+    const totalByDate = new Map();
+    let allowed = null;
+    if (selectedSector && brandsBySector.has(selectedSector)){
+      allowed = brandsBySector.get(selectedSector);
+    }
+    const organicByDate = new Map();
+    serpsDaily.forEach(r=>{
+      const brandKey = canonBrand(r.company || r.brand || '');
+      if (allowed && !allowed.has(brandKey)) return;
+      const key = r.date;
+      if (!organicByDate.has(key)) organicByDate.set(key, {total:0, neg:0});
+      const o = organicByDate.get(key);
+      o.total += +r.total || 0;
+      o.neg += +r.neg_serp || 0;
+    });
+    serpFeatureRows.forEach(r=>{
+      const brandKey = canonBrand(r.entity || '');
+      if (allowed && !allowed.has(brandKey)) return;
+      if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+      if (!totalByDate.has(r.date)) totalByDate.set(r.date, 0);
+      totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
+      if (!byDate.has(r.date)) byDate.set(r.date, {});
+      const bucket = byDate.get(r.date);
+      if (!bucket[r.feature]) bucket[r.feature] = {neg:0};
+      bucket[r.feature].neg += r.neg || 0;
+    });
+    organicByDate.forEach((o, date)=>{
+      if (!totalByDate.has(date)) totalByDate.set(date, 0);
+      totalByDate.set(date, totalByDate.get(date) + o.total);
+      if (!byDate.has(date)) byDate.set(date, {});
+      const bucket = byDate.get(date);
+      if (!bucket.organic) bucket.organic = {neg:0};
+      bucket.organic.neg += o.neg || 0;
+    });
+    const dates = [...totalByDate.keys()].filter(isISODate).sort();
+    const series = {};
+    FEATURE_ORDER_SENTIMENT.forEach(f => { series[f] = []; });
+    dates.forEach(d=>{
+      const bucket = byDate.get(d) || {};
+      const dayTotal = totalByDate.get(d) || 0;
+      FEATURE_ORDER_SENTIMENT.forEach(f=>{
+        const v = bucket[f] || {neg:0};
+        series[f].push(dayTotal ? (v.neg / dayTotal * 100) : 0);
+      });
+    });
+    return {dates, series, order: FEATURE_ORDER_SENTIMENT, countsByDate: byDate, totalsByDate: totalByDate};
+  }
+
+  function getFeatureControlSeries(){
+    const byDate = new Map();
+    const totalByDate = new Map();
+    let allowed = null;
+    if (selectedSector && brandsBySector.has(selectedSector)){
+      allowed = brandsBySector.get(selectedSector);
+    }
+    const organicByDate = new Map();
+    serpsDaily.forEach(r=>{
+      const brandKey = canonBrand(r.company || r.brand || '');
+      if (allowed && !allowed.has(brandKey)) return;
+      const key = r.date;
+      if (!organicByDate.has(key)) organicByDate.set(key, {total:0, ctrl:0});
+      const o = organicByDate.get(key);
+      o.total += +r.total || 0;
+      o.ctrl += +r.ctrl || 0;
+    });
+    serpFeatureControlRows.forEach(r=>{
+      const brandKey = canonBrand(r.entity || '');
+      if (allowed && !allowed.has(brandKey)) return;
+      if (!FEATURE_ORDER_SENTIMENT.includes(r.feature)) return;
+      if (!byDate.has(r.date)) byDate.set(r.date, {});
+      const bucket = byDate.get(r.date);
+      if (!bucket[r.feature]) bucket[r.feature] = {ctrl:0};
+      bucket[r.feature].ctrl += r.ctrl || 0;
+      if (!totalByDate.has(r.date)) totalByDate.set(r.date, 0);
+      totalByDate.set(r.date, totalByDate.get(r.date) + (r.total || 0));
+    });
+    organicByDate.forEach((o, date)=>{
+      if (!byDate.has(date)) byDate.set(date, {});
+      const bucket = byDate.get(date);
+      if (!bucket.organic) bucket.organic = {ctrl:0};
+      bucket.organic.ctrl += o.ctrl || 0;
+      if (!totalByDate.has(date)) totalByDate.set(date, 0);
+      totalByDate.set(date, totalByDate.get(date) + o.total);
+    });
+    const dates = [...totalByDate.keys()].filter(isISODate).sort();
+    const series = {};
+    FEATURE_ORDER_SENTIMENT.forEach(f => { series[f] = []; });
+    dates.forEach(d=>{
+      const bucket = byDate.get(d) || {};
+      const dayTotal = totalByDate.get(d) || 0;
+      FEATURE_ORDER_SENTIMENT.forEach(f=>{
+        const v = bucket[f] || {ctrl:0};
+        series[f].push(dayTotal ? (v.ctrl / dayTotal * 100) : 0);
+      });
+    });
+    return {dates, series, order: FEATURE_ORDER_SENTIMENT, countsByDate: byDate, totalsByDate: totalByDate};
+  }
+
+  function renderCharts(){
+    const {dates, newsPos, newsNeu, newsNeg, serpNegPct, serpCtrlPct} = getDateSeries();
+    const {dates: featureDates, series: featureSeries, order: featureOrder, countsByDate: featureCountsByDate} = getFeatureSeries();
+    const {dates: featureCtrlDates, series: featureCtrlSeries, order: featureCtrlOrder, countsByDate: featureCtrlCountsByDate} = getFeatureControlSeries();
+
+    const maxStart = Math.max(0, dates.length - DATE_WINDOW_SIZE);
+    if (!dateWindowPinned || dateWindowStart === null){
+      dateWindowStart = maxStart;
+    }
+    const start = clampDateStart(dates.length);
+    const d  = sliceWindow(dates,       start, DATE_WINDOW_SIZE);
+    const nP = sliceWindow(newsPos,     start, DATE_WINDOW_SIZE);
+    const nN = sliceWindow(newsNeu,     start, DATE_WINDOW_SIZE);
+    const nG = sliceWindow(newsNeg,     start, DATE_WINDOW_SIZE);
+    const sN = sliceWindow(serpNegPct,  start, DATE_WINDOW_SIZE);
+    const sC = sliceWindow(serpCtrlPct, start, DATE_WINDOW_SIZE);
+    const featureIndex = new Map(featureDates.map((d,i)=>[d,i]));
+    const fDates = d;
+    const featureData = featureOrder.map(f=>{
+      const arr = featureSeries[f] || [];
+      return fDates.map(dt=>{
+        const idx = featureIndex.get(dt);
+        return idx == null ? 0 : (arr[idx] || 0);
+      });
+    });
+    const featureCtrlIndex = new Map(featureCtrlDates.map((d,i)=>[d,i]));
+    const fcDates = d;
+    const featureCtrlData = featureCtrlOrder.map(f=>{
+      const arr = featureCtrlSeries[f] || [];
+      return fcDates.map(dt=>{
+        const idx = featureCtrlIndex.get(dt);
+        return idx == null ? 0 : (arr[idx] || 0);
+      });
+    });
+
+    updateDateRangeUI(dates);
+    hookDatePager(dates);
+
+    const who = selectedSector ? selectedSector : "Index Average";
+    const fmtPctInt = v => `${Math.round(v)}%`;
+
+    const commonOpts = {
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { bottom: 24 } },
+      scales: {
+        x: { ticks: { color: '#ebf2f2' }, grid: { color: 'transparent' } },
+        y: {
+          ticks: { color: '#ebf2f2', stepSize: 20, callback: (v) => fmtPctInt(v) },
+          grid: { color: 'transparent' },
+          min: 0, max: 100
+        }
+      },
+      plugins: {
+        legend: { labels: { color: '#ebf2f2' } },
+        title: { display: true, text: who, color: '#ebf2f2',
+          font: { weight: 'bold', size: 14 }, padding: { top: 10, bottom: 6 } },
+        tooltip: { callbacks: { label: (ctx) => {
+          const label = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
+          const val = (ctx.parsed && typeof ctx.parsed.y === 'number') ? ctx.parsed.y : (typeof ctx.parsed === 'number' ? ctx.parsed : 0);
+          return `${label}${fmtPctInt(val)}`;
+        }}}
+      }
+    };
+
+    const featureColorPalette = ['#ff3b30','#ff5e57','#ff7a59','#ff9f43','#ff6f91','#e63946'];
+    const compositeDatasets = featureOrder.map((feature, idx) => ({
+      label: FEATURE_LABELS[feature] || feature,
+      data: (featureData[idx] || []).map(v => Math.max(0, Math.min(100, Number(v) || 0))),
+      tension: .25,
+      fill: true,
+      borderWidth: 1,
+      borderColor: featureColorPalette[idx % featureColorPalette.length],
+      backgroundColor: featureColorPalette[idx % featureColorPalette.length] + 'b3',
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      pointHitRadius: 10,
+      stack: 'composite_features'
+    }));
+    const newsNegComposite = nG.map(v => -Math.max(0, Math.min(100, Number(v) || 0)));
+    const splitFillPlugin = {
+      id: 'compositeSplitFill',
+      afterDatasetsDraw(chart){
+        const {ctx, chartArea, scales} = chart;
+        if (!ctx || !chartArea || !scales?.y) return;
+        const {left, right} = chartArea;
+        const mid = scales.y.getPixelForValue(0);
+        const cardBg = getComputedStyle(document.documentElement).getPropertyValue('--card').trim() || '#092e37';
+        ctx.save();
+        ctx.fillStyle = cardBg;
+        ctx.fillRect(left, mid - 2, right - left, 4);
+        ctx.restore();
+      }
+    };
+    const compositeCtx = document.getElementById('negativeCompositeChart')?.getContext('2d');
+    if (negativeCompositeChart) negativeCompositeChart.destroy();
+    if (compositeCtx) {
+      negativeCompositeChart = new Chart(compositeCtx, {
+        type: 'line',
+        data: {
+          labels: d,
+          datasets: [
+            ...compositeDatasets,
+            {
+              type: 'bar',
+              label: 'Negative Google Newsfeed',
+              data: newsNegComposite,
+              borderWidth: 1,
+              borderColor: '#ff8261',
+              backgroundColor: 'rgba(255,130,97,.92)',
+              isNewsComposite: true,
+              order: 10
+            }
+          ]
+        },
+        options: {
+          ...commonOpts,
+          scales: {
+            ...commonOpts.scales,
+            x: { ...commonOpts.scales.x, stacked: true },
+            y: {
+              ...commonOpts.scales.y,
+              stacked: true,
+              min: -100,
+              max: 100,
+              ticks: {
+                ...commonOpts.scales.y.ticks,
+                stepSize: 20,
+                autoSkip: false,
+                maxTicksLimit: 11,
+                callback: (v) => fmtPctInt(Math.abs(Number(v) || 0))
+                },
+              grid: {
+                ...commonOpts.scales.y.grid,
+                color: 'transparent',
+                lineWidth: 0
+              }
+            }
+          },
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            ...commonOpts.plugins,
+            title: { ...commonOpts.plugins.title, text: `${who} • Negative Signal Composite` },
+            tooltip: {
+              ...commonOpts.plugins.tooltip,
+              mode: 'index',
+              intersect: false,
+              callbacks: {
+                ...commonOpts.plugins.tooltip.callbacks,
+                label: (ctx) => {
+                  const raw = (ctx.parsed && typeof ctx.parsed.y === 'number') ? ctx.parsed.y : (typeof ctx.parsed === 'number' ? ctx.parsed : 0);
+                  const val = Math.abs(Number(raw) || 0);
+                  const label = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
+                  if (ctx.dataset?.isNewsComposite) return `${label}${fmtPctInt(val)}`;
+                  const date = ctx.label;
+                  const feature = featureOrder[ctx.datasetIndex];
+                  const bucket = featureCountsByDate.get(date) || {};
+                  const count = bucket[feature]?.neg || 0;
+                  return `${label}${fmtPctInt(val)} (${Math.round(count)})`;
+                },
+                footer: (items) => {
+                  const featureTotal = items
+                    .filter(i => !i.dataset?.isNewsComposite)
+                    .reduce((sum, i) => sum + Math.abs(Number(i.parsed?.y || 0)), 0);
+                  const newsItem = items.find(i => i.dataset?.isNewsComposite);
+                  const newsVal = newsItem ? Math.abs(Number(newsItem.parsed?.y || 0)) : 0;
+                  return `SERP feature negative: ${Math.round(featureTotal)}% | News negative: ${Math.round(newsVal)}%`;
+                }
+              }
+            }
+          }
+        },
+        plugins: [splitFillPlugin]
+      });
+    }
+
+    const nh = document.getElementById('newsChart').getContext('2d');
+    if (newsChart) newsChart.destroy();
+    newsChart = new Chart(nh, {
+      type: 'bar',
+      data: {
+        labels: d,
+        datasets: [
+          { label: 'Positive %', data: nP, backgroundColor: '#82c618', stack: 's' },
+          { label: 'Neutral %',  data: nN, backgroundColor: '#cfdbdd', stack: 's' },
+          { label: 'Negative %', data: nG, backgroundColor: '#ff8261', stack: 's' }
+        ]
+      },
+      options: { ...commonOpts }
+    });
+
+    const sh = document.getElementById('serpChart').getContext('2d');
+    if (serpChart) serpChart.destroy();
+    serpChart = new Chart(sh, {
+      type: 'line',
+      data: {
+        labels: d,
+        datasets: [
+          { label: 'Negative Organic %', data: sN, tension: .25, borderColor: '#ff8261', backgroundColor: 'rgba(255,130,97,.2)', fill: false },
+          { label: 'Control %',       data: sC, tension: .25, borderColor: '#58dbed', backgroundColor: 'rgba(88,219,237,.15)', fill: false }
+        ]
+      },
+      options: { ...commonOpts }
+    });
+
+    const fh = document.getElementById('featureChart').getContext('2d');
+    if (featureChart) featureChart.destroy();
+    featureChart = new Chart(fh, {
+      type: 'line',
+      data: {
+        labels: fDates,
+        datasets: featureOrder.map((feature, idx) => ({
+          label: FEATURE_LABELS[feature] || feature,
+          data: featureData[idx],
+          tension: .25,
+          borderColor: ['#ff3b30', '#ff5e57', '#ff7a59', '#ff9f43', '#ff6f91', '#e63946'][idx % 6],
+          backgroundColor: ['rgba(255,59,48,.35)','rgba(255,94,87,.35)','rgba(255,122,89,.35)','rgba(255,159,67,.35)','rgba(255,111,145,.35)','rgba(230,57,70,.35)'][idx % 6],
+          fill: true,
+          stack: 'features'
+        }))
+      },
+      options: {
+        ...commonOpts,
+        plugins: {
+          ...commonOpts.plugins,
+          title: { ...commonOpts.plugins.title, text: `${who} • SERP Feature Negative Share` },
+          tooltip: { callbacks: { label: (ctx) => {
+            const label = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
+            const val = (ctx.parsed && typeof ctx.parsed.y === 'number') ? ctx.parsed.y : (typeof ctx.parsed === 'number' ? ctx.parsed : 0);
+            const date = ctx.label;
+            const feature = featureOrder[ctx.datasetIndex];
+            const bucket = featureCountsByDate.get(date) || {};
+            const count = bucket[feature]?.neg || 0;
+            return `${label}${fmtPctInt(val)} (${count})`;
+          }}}
+        }
+      }
+    });
+
+    const fch = document.getElementById('featureControlChart').getContext('2d');
+    if (featureControlChart) featureControlChart.destroy();
+    featureControlChart = new Chart(fch, {
+      type: 'line',
+      data: {
+        labels: fcDates,
+        datasets: featureCtrlOrder.map((feature, idx) => ({
+          label: FEATURE_LABELS[feature] || feature,
+          data: featureCtrlData[idx],
+          tension: .25,
+          borderColor: ['#2d9cdb', '#1b84d1', '#1769aa', '#115293', '#0d3b66', '#0a2742'][idx % 6],
+          backgroundColor: ['rgba(45,156,219,.35)','rgba(27,132,209,.35)','rgba(23,105,170,.35)','rgba(17,82,147,.35)','rgba(13,59,102,.35)','rgba(10,39,66,.35)'][idx % 6],
+          fill: true,
+          stack: 'features'
+        }))
+      },
+      options: {
+        ...commonOpts,
+        plugins: {
+          ...commonOpts.plugins,
+          title: { ...commonOpts.plugins.title, text: `${who} • SERP Feature Control Share` },
+          tooltip: { callbacks: { label: (ctx) => {
+            const label = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
+            const val = (ctx.parsed && typeof ctx.parsed.y === 'number') ? ctx.parsed.y : (typeof ctx.parsed === 'number' ? ctx.parsed : 0);
+            const date = ctx.label;
+            const feature = featureCtrlOrder[ctx.datasetIndex];
+            const bucket = featureCtrlCountsByDate.get(date) || {};
+            const count = bucket[feature]?.ctrl || 0;
+            return `${label}${fmtPctInt(val)} (${count})`;
+          }}}
+        }
+      }
+    });
+  }
+
+  /* ================= Go ================= */
+  init();
+}
+
+export async function prefetchParityTab({ getDirectUrl }) {
+  return prefetchParityPage({ page, getDirectUrl });
+}
+
+export async function mountParityTab({ host, getDirectUrl, onHistoryChange }) {
+  return mountParityPage({
+    host,
+    getDirectUrl,
+    onHistoryChange,
+    page,
+    runInlineScript,
+  });
+}

@@ -6,8 +6,9 @@
 <link rel="apple-touch-icon" sizes="180x180" href="images/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="images/favicon-16x16.png">
-<title>Fortune 1000 Crisis Explorer</title>
+<title>Crisis Dashboard - Crises</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="/static/app/shared-data.js"></script>
 <style>
 :root{
   --bg:#044152;
@@ -105,7 +106,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
 <div class="wrap">
   <header class="page-head">
     <div>
-      <h1>Fortune 1000 Crisis Explorer</h1>
+      <h1>Crisis Dashboard: Crises</h1>
       <p class="muted">Track which crisis categories are expanding, which are still active, and which brands are carrying each category in the selected window.</p>
     </div>
   </header>
@@ -304,19 +305,39 @@ function buildStartDate(endIso, days){
   return end.toISOString().slice(0, 10);
 }
 
+const _jsonCache = new Map();
 async function fetchJson(url){
-  const response = await fetch(url, { cache: 'no-store' });
-  if (!response.ok){
-    let detail = `HTTP ${response.status}`;
-    try {
-      const payload = await response.json();
-      if (payload && payload.error) detail = payload.error;
-    } catch (_err) {
-      // Ignore JSON parse failures for error bodies.
-    }
-    throw new Error(detail);
+  const sharedData = window.CrisisDashboardData;
+  if (sharedData?.fetchJson) {
+    return sharedData.fetchJson(url);
   }
-  return await response.json();
+  if (_jsonCache.has(url)) {
+    const cached = _jsonCache.get(url);
+    return cached instanceof Promise ? await cached : cached;
+  }
+  const pending = (async () => {
+    const response = await fetch(url, { cache: 'default' });
+    if (!response.ok){
+      let detail = `HTTP ${response.status}`;
+      try {
+        const payload = await response.json();
+        if (payload && payload.error) detail = payload.error;
+      } catch (_err) {
+        // Ignore JSON parse failures for error bodies.
+      }
+      throw new Error(detail);
+    }
+    return await response.json();
+  })();
+  _jsonCache.set(url, pending);
+  try {
+    const data = await pending;
+    _jsonCache.set(url, data);
+    return data;
+  } catch (error) {
+    _jsonCache.delete(url);
+    throw error;
+  }
 }
 
 function renderActivePill(isActive){

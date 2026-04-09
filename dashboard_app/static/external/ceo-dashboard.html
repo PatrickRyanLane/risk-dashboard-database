@@ -6,12 +6,14 @@
 <link rel="apple-touch-icon" sizes="180x180" href="images/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="images/favicon-16x16.png">
-<title>CEO Risk Dashboard</title>
+<title>Crisis Dashboard - CEOs</title>
 
 <!-- Chart.js + PapaParse + Annotation Plugin CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="/static/app/shared-data.js"></script>
+<script src="/static/app/legacy-shared.js"></script>
 <script>
 // CLOUD STORAGE CONFIGURATION - ADD THIS AT TOP
 // DATA CONFIGURATION - Uses Cloud Run proxy for authenticated access
@@ -831,7 +833,7 @@ body:has(#stockChartModal.open) {
 
 <body>
 <div class="wrap">
-  <h1>CEO Risk Dashboard</h1>
+  <h1>Crisis Dashboard: CEOs</h1>
 
   <div class="controls-row">
     <div class="refresh-panel">
@@ -977,7 +979,7 @@ body:has(#stockChartModal.open) {
             </th>
             <th data-key="neg_serp">
               <div class="tooltip-header">
-                Negative<br>SERP % ▲▼
+                Negative<br>Organic % ▲▼
                 <span class="tooltip-text">Percentage of Page 1 Google search results for this CEO's name with negative sentiment. Important for executive reputation</span>
               </div>
             </th>
@@ -990,7 +992,7 @@ body:has(#stockChartModal.open) {
             <th data-key="risk">
               <div class="tooltip-header">
                 Risk<br>▲▼
-                <span class="tooltip-text">Composite risk score based on Negative SERP % and Control %. High risk = significant negative search visibility with limited control. Low risk = minimal negative presence or strong narrative control.</span>
+                <span class="tooltip-text">Composite risk score based on Negative Organic % and Control %. High risk = significant negative search visibility with limited control. Low risk = minimal negative presence or strong narrative control.</span>
               </div>
             </th>
             <th class="action-col">Coverage</th>
@@ -1026,7 +1028,7 @@ body:has(#stockChartModal.open) {
       <h3 id="stockChartTitle">Stock Price History</h3>
       <button id="volumeToggle" class="volume-toggle">📊 Volume</button>
       <button id="trendsToggle" class="trends-toggle">🔍 Trends</button>
-      <span class="close" onclick="closeStockChart()">&times;</span>
+      <span id="stockChartClose" class="close">&times;</span>
     </header>
     <div class="content">
       <canvas id="stockChart"></canvas>
@@ -1583,36 +1585,20 @@ const canonName = s => String(s || '')
 
 async function loadStockData() {
   try {
-    const now = new Date();
-    const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    
     console.log('📊 Looking for most recent stock data...');
-    
-    for (let daysBack = 0; daysBack < 7; daysBack++) {
-      const checkDate = new Date(todayUTC);
-      checkDate.setUTCDate(checkDate.getUTCDate() - daysBack);
-      const dateStr = checkDate.toISOString().split('T')[0];
-      
-      try {
-        const url = `/api/v1/stock_data?date=${dateStr}`;
-        console.log(`🔍 Trying: ${url}`);
 
-        const rows = await fetchCsv(url);
-        const stockData = parseStockRows(rows);
-        
-        console.log(`✅ Successfully loaded stock data from ${dateStr} (${daysBack} day(s) old)`);
-        console.log(`📈 Found data for ${Object.keys(stockData).length} companies`);
-        
-        return stockData;
-      } catch (error) {
-        console.log(`⚠️  ${dateStr}: ${error.message}`);
-      }
+    const latest = await window.CrisisDashboardData.fetchLatestDatedCsv({
+      key: 'stock_data',
+      buildUrl: (dateStr) => `/api/v1/stock_data?date=${dateStr}`,
+      maxDays: 7,
+      transform: (rows) => parseStockRows(rows),
+    });
+
+    if (latest) {
+      console.log(`✅ Successfully loaded stock data from ${latest.date} (${latest.daysBack} day(s) old)`);
+      console.log(`📈 Found data for ${Object.keys(latest.data).length} companies`);
+      return latest.data;
     }
-    
-    console.error('❌ No stock data found in the last 7 days');
-    setLoadStatus('stock', 'error');
-    return {};
-    
   } catch (error) {
     console.error('❌ STOCK DATA LOAD FAILED:', error);
     setLoadStatus('stock', 'error');
@@ -1745,36 +1731,21 @@ async function loadNegativeSummaryForCompany(company) {
 // Load Google Trends data
 async function loadTrendsData() {
   try {
-    const now = new Date();
-    const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    
     console.log('🔍 Looking for most recent trends data...');
-    
-    for (let daysBack = 0; daysBack < 7; daysBack++) {
-      const checkDate = new Date(todayUTC);
-      checkDate.setUTCDate(checkDate.getUTCDate() - daysBack);
-      const dateStr = checkDate.toISOString().split('T')[0];
-      
-      try {
-        const url = `/api/v1/trends_data?date=${dateStr}`;
-        console.log(`🔍 Trying: ${url}`);
 
-        const rows = await fetchCsv(url);
-        const trendsData = parseTrendsRows(rows);
-        
-        console.log(`✅ Successfully loaded trends data from ${dateStr} (${daysBack} day(s) old)`);
-        console.log(`📈 Found trends for ${Object.keys(trendsData).length} companies`);
-        setLoadStatus('trends', 'done');
-        return trendsData;
-      } catch (error) {
-        console.log(`⚠️  ${dateStr}: ${error.message}`);
-      }
+    const latest = await window.CrisisDashboardData.fetchLatestDatedCsv({
+      key: 'trends_data',
+      buildUrl: (dateStr) => `/api/v1/trends_data?date=${dateStr}`,
+      maxDays: 7,
+      transform: (rows) => parseTrendsRows(rows),
+    });
+
+    if (latest) {
+      console.log(`✅ Successfully loaded trends data from ${latest.date} (${latest.daysBack} day(s) old)`);
+      console.log(`📈 Found trends for ${Object.keys(latest.data).length} companies`);
+      setLoadStatus('trends', 'done');
+      return latest.data;
     }
-    
-    console.warn('⚠️  No trends data found in the last 7 days');
-    setLoadStatus('trends', 'error');
-    return {};
-    
   } catch (error) {
     console.error('❌ TRENDS DATA LOAD FAILED:', error);
     setLoadStatus('trends', 'error');
@@ -2288,6 +2259,10 @@ const _serpFeatureItemsCache = new Map();
 const PERF_LOG = new URLSearchParams(window.location.search).get('perf') === '1';
 
 async function fetchCsv(url){
+  const sharedData = window.CrisisDashboardData;
+  if (sharedData?.fetchCsv) {
+    return sharedData.fetchCsv(url);
+  }
   const t0 = performance.now();
   // Check preload cache first
   if (_preloadCache.has(url)) {
@@ -2337,6 +2312,10 @@ function preloadModalData(date) {
 }
 
 async function fetchCsvAny(candidates){
+  const sharedData = window.CrisisDashboardData;
+  if (sharedData?.fetchCsvAny) {
+    return sharedData.fetchCsvAny(candidates);
+  }
   for (const u of candidates){
     try { const rows = await fetchCsv(u); if (Array.isArray(rows)) return rows; }
     catch(e){ }
@@ -2648,9 +2627,13 @@ async function init(){
   updateChartSkeletons();
   const sel = document.getElementById('dateSelect');
   // 2. UI Event Listeners
-  document.getElementById('filterInput').addEventListener('input', ()=>{ currentPage=1; renderAll().then(() => {
-    if (filteredRows.length === 1) selectCeo(filteredRows[0].ceo);
-  }); });
+  const filterInput = document.getElementById('filterInput');
+  if (filterInput && filterInput.dataset.boundInput !== '1'){
+    filterInput.addEventListener('input', ()=>{ currentPage=1; renderAll().then(() => {
+      if (filteredRows.length === 1) selectCeo(filteredRows[0].ceo);
+    }); });
+    filterInput.dataset.boundInput = '1';
+  }
   const sectorFilterSelect = document.getElementById('sectorFilterSelect');
   if (sectorFilterSelect){
     sectorFilterSelect.onchange = ()=>{ currentPage = 1; renderAll(); };
@@ -2689,11 +2672,14 @@ async function init(){
   // 3. Sorting Listeners (Defined ONCE)
   document.querySelectorAll('thead th[data-key]').forEach(th=>{
     th.style.cursor='pointer';
-    th.addEventListener('click', ()=>{
-      const k = th.getAttribute('data-key');
-      if (currentSort.key === k) currentSort.dir *= -1; else { currentSort.key = k; currentSort.dir = 1; }
-      renderTable();
-    });
+    if (th.dataset.boundSort !== '1'){
+      th.addEventListener('click', ()=>{
+        const k = th.getAttribute('data-key');
+        if (currentSort.key === k) currentSort.dir *= -1; else { currentSort.key = k; currentSort.dir = 1; }
+        renderTable();
+      });
+      th.dataset.boundSort = '1';
+    }
   });
 
   // --- [NEW] AUTO-FILTER FROM URL ---
@@ -2723,11 +2709,16 @@ async function init(){
     });
     sel.dataset.boundChange = '1';
   }
+  const stockChartClose = document.getElementById('stockChartClose');
+  if (stockChartClose && stockChartClose.dataset.boundClose !== '1'){
+    stockChartClose.addEventListener('click', closeStockChart);
+    stockChartClose.dataset.boundClose = '1';
+  }
 
   renderTable();
 
-  const idleLoad = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
-  idleLoad(async () => {
+  const scheduleIdle = window.CrisisDashboardLegacy?.scheduleIdle || ((cb) => setTimeout(cb, 0));
+  scheduleIdle(async () => {
     await loadRoster();
     const tasks = [loadCounts(), loadSerpDaily(), loadSerpFeaturesIndex()];
     if (crisisOnly || crisisEntityKeys.size) tasks.push(loadCrisisEntityKeys());
@@ -2736,8 +2727,7 @@ async function init(){
     renderAll();
   });
 
-  const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
-  idle(() => {
+  scheduleIdle(() => {
     loadStockData().then(data => {
       globalStockData = data;
       if (Object.keys(globalStockData).length > 0) {
@@ -2760,11 +2750,14 @@ async function init(){
 
   // 4. Modal Close
   
-  window.onclick = function(event) {
-    if (event.target === document.getElementById('stockChartModal')) {
-      closeStockChart();
-    }
-  };
+  if (!window.__riskdashCeoStockModalBound){
+    window.addEventListener('click', (event) => {
+      if (event.target === document.getElementById('stockChartModal')) {
+        closeStockChart();
+      }
+    });
+    window.__riskdashCeoStockModalBound = true;
+  }
 }
 
 async function buildRowsForDate(d){
@@ -3379,7 +3372,7 @@ function renderCharts(){
       labels: d,
       datasets: [
         {
-          label: 'Daily Negative SERP %',
+          label: 'Daily Negative Organic %',
           data: sN,
           tension: 0.25,
           borderWidth: SOLID_WIDTH,
@@ -3395,7 +3388,7 @@ function renderCharts(){
           fill: false
         },
         {
-          label: 'Average Negative SERP %',
+          label: 'Average Negative Organic %',
           data: avgNegLine,
           tension: 0,
           fill: false,
