@@ -119,6 +119,54 @@ Current normalized tables populated for the dashboard include:
 - `trends_daily`, `trends_snapshots`
 - Override tables for article mentions, SERP results, and SERP feature items
 
+## Local sentiment bake-off
+
+Use this when comparing replacement sentiment models (for example, moving off VADER).
+
+The script samples real rows from local Postgres and compares model speed and label
+agreement against the currently stored sentiment label baseline
+(`override -> llm_sentiment_label -> sentiment_label`).
+
+1. Install dependencies:
+
+```bash
+pip install -r requirements-bakeoff.txt
+```
+
+`requirements-bakeoff.txt` is Python-version aware and supports newer local runtimes (for example Python 3.14 via `psycopg` v3).
+If you already installed a `transformers` 5.x build in your venv, reinstall from this file to pin back to the tested 4.x range.
+
+2. Set DB connection:
+
+```bash
+export DATABASE_URL="postgresql://..."
+```
+
+3. Run the bake-off locally (CPU default):
+
+```bash
+python scripts/sentiment_bakeoff.py \
+  --models yiyanghkust/finbert-tone ProsusAI/finbert \
+  --sources company_articles ceo_articles serp_results serp_features \
+  --days-back 45 \
+  --per-source-limit 300 \
+  --batch-size 32 \
+  --max-length 256
+```
+
+4. Review outputs under:
+
+```bash
+output/sentiment_bakeoff_YYYYMMDD_HHMMSS/
+```
+
+Key files:
+
+- `summary.json`: speed + agreement summary by model
+- `predictions.csv`: row-level predictions
+- `model_disagreements.csv`: rows where compared models disagree
+- `sampled_rows.csv`: the sampled evaluation set
+
 ## Running the dashboard locally
 
 ```bash

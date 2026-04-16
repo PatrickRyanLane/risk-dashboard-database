@@ -40,7 +40,7 @@ p{margin:0}
 select,button{height:36px;border-radius:10px;border:1px solid #23314d;background:var(--ink);color:var(--text);padding:8px 12px;font:inherit}
 button{cursor:pointer}
 button:hover{filter:brightness(1.08)}
-.lookback-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.lookback-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .lookback-btn{font-weight:600}
 .lookback-btn.active{border-color:var(--accent);box-shadow:0 0 0 1px rgba(88,219,237,.35);color:var(--accent)}
 .status-line{font-size:12px;min-height:18px}
@@ -124,6 +124,8 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
           <button type="button" class="lookback-btn" data-days="45">45d</button>
           <button type="button" class="lookback-btn" data-days="60">60d</button>
           <button type="button" class="lookback-btn" data-days="90">90d</button>
+          <button type="button" class="lookback-btn" data-days="180">180d</button>
+          <button type="button" class="lookback-btn" data-days="365">365d</button>
         </div>
       </div>
       <div class="muted">
@@ -266,7 +268,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 12px 12px 
 </div>
 
 <script>
-const LOOKBACK_OPTIONS = [30, 45, 60, 90];
+const LOOKBACK_OPTIONS = [30, 45, 60, 90, 180, 365];
 const TREND_COLORS = ['#ff3b30', '#ff6b57', '#f59e0b', '#facc15', '#d1d5db', '#bfdbfe', '#22c55e', '#a78bfa'];
 const MAX_TREND_SERIES = 6;
 const TREND_TABLE_DAYS = 7;

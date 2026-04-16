@@ -1,0 +1,94 @@
+{
+  "run_meta": {
+    "timestamp_utc": "2026-04-10T14:28:24.519271+00:00",
+    "device": "mps",
+    "models": [
+      "yiyanghkust/finbert-tone",
+      "ProsusAI/finbert"
+    ],
+    "sources": [
+      "company_articles",
+      "ceo_articles",
+      "serp_results",
+      "serp_features"
+    ],
+    "days_back": 14,
+    "per_source_limit": 50,
+    "batch_size": 32,
+    "max_length": 256,
+    "include_url": false,
+    "sample_size": 200
+  },
+  "models": [
+    {
+      "model_id": "yiyanghkust/finbert-tone",
+      "elapsed_seconds": 2.5929,
+      "rows_per_second": 77.135,
+      "avg_ms_per_row": 12.964,
+      "agreement_rate": 0.595,
+      "comparable_rows": 200,
+      "baseline_distribution": {
+        "neutral": 112,
+        "positive": 70,
+        "negative": 18
+      },
+      "model_distribution": {
+        "neutral": 149,
+        "positive": 40,
+        "negative": 11
+      },
+      "confusion": {
+        "positive": {
+          "positive": 23,
+          "neutral": 46,
+          "negative": 1
+        },
+        "neutral": {
+          "positive": 16,
+          "neutral": 91,
+          "negative": 5
+        },
+        "negative": {
+          "positive": 1,
+          "neutral": 12,
+          "negative": 5
+        }
+      }
+    },
+    {
+      "model_id": "ProsusAI/finbert",
+      "elapsed_seconds": 1.0197,
+      "rows_per_second": 196.136,
+      "avg_ms_per_row": 5.098,
+      "agreement_rate": 0.55,
+      "comparable_rows": 200,
+      "baseline_distribution": {
+        "neutral": 112,
+        "positive": 70,
+        "negative": 18
+      },
+      "model_distribution": {
+        "neutral": 149,
+        "negative": 18,
+        "positive": 33
+      },
+      "confusion": {
+        "positive": {
+          "positive": 15,
+          "neutral": 54,
+          "negative": 1
+        },
+        "neutral": {
+          "positive": 18,
+          "neutral": 86,
+          "negative": 8
+        },
+        "negative": {
+          "positive": 0,
+          "neutral": 9,
+          "negative": 9
+        }
+      }
+    }
+  ]
+}

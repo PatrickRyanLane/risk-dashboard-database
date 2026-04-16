@@ -506,6 +506,21 @@ create table if not exists serp_result_overrides (
   unique (serp_result_id)
 );
 
+create table if not exists signal_weight_presets (
+  id uuid primary key default gen_random_uuid(),
+  tab_id text not null,
+  preset_name text not null,
+  weights_json jsonb not null default '{}'::jsonb,
+  created_by text,
+  updated_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (tab_id, preset_name)
+);
+
+create index if not exists signal_weight_presets_tab_idx
+  on signal_weight_presets (tab_id, lower(preset_name));
+
 create table if not exists users (
   id uuid primary key default gen_random_uuid(),
   email text not null unique,

@@ -1,0 +1,20 @@
+{
+  "timestamp_utc": "2026-04-10T15:06:11.227599+00:00",
+  "device": "mps",
+  "models": [
+    "yiyanghkust/finbert-tone",
+    "ProsusAI/finbert"
+  ],
+  "sources": [
+    "company_articles",
+    "ceo_articles",
+    "serp_results",
+    "serp_features"
+  ],
+  "days_back": 30,
+  "per_source_limit": 2000,
+  "batch_size": 32,
+  "max_length": 256,
+  "include_url": false,
+  "sample_size": 8000
+}

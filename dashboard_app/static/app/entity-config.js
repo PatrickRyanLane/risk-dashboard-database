@@ -1,11 +1,15 @@
-export const LOOKBACK_OPTIONS = [30, 45, 60, 90];
+export const LOOKBACK_OPTIONS = [30, 45, 60, 90, 180, 365];
 
 const DEFAULT_SIGNAL_SETTINGS = Object.freeze({
   weights: Object.freeze({
-    newsNegative: 0.35,
-    serpNegativeOrganic: 0.4,
-    serpNegativeFeatures: 0.25,
-    serpControl: 0.15,
+    newsNegative: 0.24,
+    organicNegative: 0.24,
+    topStoriesNegative: 0.16,
+    aioCitationsNegative: 0.12,
+    paaNegative: 0.1,
+    videosNegative: 0.07,
+    perspectivesNegative: 0.07,
+    serpControl: 0.1,
   }),
   calibration: Object.freeze({
     objective: 'downside_stock',
@@ -33,9 +37,12 @@ const ENTITY_CONFIGS = {
     tableColumns: [
       { key: 'entity', label: 'Brand' },
       { key: 'negNews', label: 'News' },
-      { key: 'topStories', label: 'Top Stories' },
       { key: 'negSerp', label: 'Organic' },
-      { key: 'negFeatureAll', label: 'Negative SERP Feature Composite' },
+      { key: 'negTopStories', label: 'Top Stories' },
+      { key: 'negAio', label: 'AIO' },
+      { key: 'negPaa', label: 'PAA' },
+      { key: 'negVideos', label: 'Videos' },
+      { key: 'negPerspectives', label: 'Perspectives' },
       { key: 'control', label: 'Control' },
       { key: 'stock', label: 'Stock' },
       { key: 'riskScore', label: 'Signal' },
@@ -60,9 +67,12 @@ const ENTITY_CONFIGS = {
       { key: 'entity', label: 'CEO' },
       { key: 'company', label: 'Company' },
       { key: 'negNews', label: 'News' },
-      { key: 'topStories', label: 'Top Stories' },
       { key: 'negSerp', label: 'Organic' },
-      { key: 'negFeatureAll', label: 'Negative SERP Feature Composite' },
+      { key: 'negTopStories', label: 'Top Stories' },
+      { key: 'negAio', label: 'AIO' },
+      { key: 'negPaa', label: 'PAA' },
+      { key: 'negVideos', label: 'Videos' },
+      { key: 'negPerspectives', label: 'Perspectives' },
       { key: 'control', label: 'Control' },
       { key: 'stock', label: 'Stock' },
       { key: 'riskScore', label: 'Signal' },

@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import threading
+import math
 from urllib.parse import urlencode
 from decimal import Decimal
 from datetime import datetime, timedelta
@@ -153,6 +154,18 @@ SCREENABLE_METRICS = {
         'column': 'crisis_risk_count',
         'label': 'crisis-risk article labels',
     },
+}
+
+SIGNAL_PRESET_TABS = {'brands', 'ceos'}
+SIGNAL_WEIGHT_DEFAULTS = {
+    'newsNegative': 0.24,
+    'organicNegative': 0.24,
+    'topStoriesNegative': 0.16,
+    'aioCitationsNegative': 0.12,
+    'paaNegative': 0.1,
+    'videosNegative': 0.07,
+    'perspectivesNegative': 0.07,
+    'serpControl': 0.1,
 }
 
 
@@ -705,6 +718,74 @@ def scope_clause(column: str, params: List):
         return "", params
     params.append(scope_ids)
     return f" and {column} = any(%s)", params
+
+
+def normalize_signal_preset_tab_id(value) -> str:
+    tab_id = str(value or '').strip().lower()
+    return tab_id if tab_id in SIGNAL_PRESET_TABS else ''
+
+
+def normalize_signal_preset_name(value) -> str:
+    name = " ".join(str(value or '').strip().split())
+    if len(name) > 80:
+        name = name[:80].strip()
+    return name
+
+
+def _coerce_weight(value, fallback: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = float(fallback)
+    if not math.isfinite(numeric):
+        numeric = float(fallback)
+    if numeric < 0:
+        return 0.0
+    if numeric > 1:
+        return 1.0
+    return numeric
+
+
+def normalize_signal_weight_payload(payload) -> Dict[str, float]:
+    raw = payload if isinstance(payload, dict) else {}
+    defaults = SIGNAL_WEIGHT_DEFAULTS
+    feature_default_sum = (
+        defaults['topStoriesNegative']
+        + defaults['aioCitationsNegative']
+        + defaults['paaNegative']
+        + defaults['videosNegative']
+        + defaults['perspectivesNegative']
+    ) or 1.0
+    legacy_feature_weight = _coerce_weight(raw.get('serpNegativeFeatures'), feature_default_sum)
+    feature_scale = legacy_feature_weight / feature_default_sum
+    return {
+        'newsNegative': _coerce_weight(raw.get('newsNegative'), defaults['newsNegative']),
+        'organicNegative': _coerce_weight(
+            raw.get('organicNegative', raw.get('serpNegativeOrganic')),
+            defaults['organicNegative'],
+        ),
+        'topStoriesNegative': _coerce_weight(
+            raw.get('topStoriesNegative'),
+            defaults['topStoriesNegative'] * feature_scale,
+        ),
+        'aioCitationsNegative': _coerce_weight(
+            raw.get('aioCitationsNegative'),
+            defaults['aioCitationsNegative'] * feature_scale,
+        ),
+        'paaNegative': _coerce_weight(
+            raw.get('paaNegative'),
+            defaults['paaNegative'] * feature_scale,
+        ),
+        'videosNegative': _coerce_weight(
+            raw.get('videosNegative'),
+            defaults['videosNegative'] * feature_scale,
+        ),
+        'perspectivesNegative': _coerce_weight(
+            raw.get('perspectivesNegative'),
+            defaults['perspectivesNegative'] * feature_scale,
+        ),
+        'serpControl': _coerce_weight(raw.get('serpControl'), defaults['serpControl']),
+    }
 
 
 # --------------------------- DB helpers ---------------------------
@@ -6085,6 +6166,120 @@ def update_favorite():
 
     _api_cache.pop('roster', None)
     return jsonify({'status': 'ok'})
+
+
+@app.route('/api/internal/signal_presets', methods=['GET', 'POST', 'DELETE'])
+def signal_presets_api():
+    if PUBLIC_MODE:
+        return jsonify({'error': 'editing disabled'}), 403
+    user_email = require_internal_user()
+    if not user_email:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    if request.method == 'GET':
+        tab_id = normalize_signal_preset_tab_id(request.args.get('tab_id'))
+        params: List = []
+        tab_sql = ""
+        if tab_id:
+            tab_sql = "where tab_id = %s"
+            params.append(tab_id)
+        rows = query_dict(
+            f"""
+            select id,
+                   tab_id,
+                   preset_name,
+                   weights_json as weights,
+                   created_by,
+                   updated_by,
+                   created_at,
+                   updated_at
+            from signal_weight_presets
+            {tab_sql}
+            order by tab_id, lower(preset_name), preset_name
+            """,
+            tuple(params),
+        )
+        return jsonify({'rows': serialize_rows(rows)})
+
+    if not ALLOW_EDITS:
+        return jsonify({'error': 'editing disabled'}), 403
+
+    payload = request.get_json(force=True, silent=True) or {}
+    tab_id = normalize_signal_preset_tab_id(payload.get('tab_id') or request.args.get('tab_id'))
+    if not tab_id:
+        return jsonify({'error': 'invalid tab_id'}), 400
+
+    preset_name = normalize_signal_preset_name(payload.get('preset_name') or request.args.get('preset_name'))
+    if not preset_name:
+        return jsonify({'error': 'preset_name is required'}), 400
+
+    if request.method == 'POST':
+        weights = normalize_signal_weight_payload(payload.get('weights'))
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into signal_weight_presets
+                      (tab_id, preset_name, weights_json, created_by, updated_by)
+                    values (%s, %s, %s::jsonb, %s, %s)
+                    on conflict (tab_id, preset_name) do update set
+                      weights_json = excluded.weights_json,
+                      updated_by = excluded.updated_by,
+                      updated_at = now()
+                    returning id,
+                              tab_id,
+                              preset_name,
+                              weights_json as weights,
+                              created_by,
+                              updated_by,
+                              created_at,
+                              updated_at
+                    """,
+                    (tab_id, preset_name, Json(weights), user_email, user_email),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            put_conn(conn)
+        clean = serialize_rows([{
+            'id': row[0],
+            'tab_id': row[1],
+            'preset_name': row[2],
+            'weights': row[3],
+            'created_by': row[4],
+            'updated_by': row[5],
+            'created_at': row[6],
+            'updated_at': row[7],
+        }])[0]
+        return jsonify({'status': 'ok', 'row': clean})
+
+    conn = get_conn()
+    deleted = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "delete from signal_weight_presets where tab_id = %s and preset_name = %s",
+                (tab_id, preset_name),
+            )
+            deleted = cur.rowcount or 0
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        put_conn(conn)
+
+    return jsonify({'status': 'ok', 'deleted': int(deleted)})
 
 
 # --------------------------- CSV builders ---------------------------

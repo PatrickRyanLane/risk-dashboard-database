@@ -41,6 +41,16 @@ function formatInteger(value, fallback = '0') {
   return `${Math.round(numeric)}`;
 }
 
+function buildAutoPresetName(label = 'Preset') {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = `${now.getMonth() + 1}`.padStart(2, '0');
+  const day = `${now.getDate()}`.padStart(2, '0');
+  const hours = `${now.getHours()}`.padStart(2, '0');
+  const minutes = `${now.getMinutes()}`.padStart(2, '0');
+  return `${label} ${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
 function scoreTone(label) {
   if (label === 'High') return 'high';
   if (label === 'Medium') return 'medium';
@@ -53,8 +63,9 @@ const HELP_TEXT = {
   serp: 'Organic Page-1 SERP pressure over time: negative organic share and controlled organic share.',
   featureIndex: 'Index snapshot: percent of visible entities with each feature on the active date. Orange is entities with at least one negative URL in that feature; blue is entities with that feature and no negative URLs.',
   featureEntity: 'Selected entity snapshot: percent of URLs in each feature that are negative on the active date.',
-  featureComposite: 'Stacked trend of negative share by SERP feature over time.',
-  leaderboard: 'Weighted composite on the active date. Higher = more pressure.',
+  featureComposite: 'Stacked trend of negative share across page-one organic results and SERP features over time.',
+  featurePresence: 'Tracks feature visibility over time across the lookback window. Use the metric toggle to switch between presence rate, slot share, negative share, and controlled share.',
+  leaderboard: 'Weighted composite leaderboard. Date mode ranks active-date pressure; window mode ranks adjusted composite signal across the lookback range with volume-aware smoothing. In window mode, the basis toggle switches between All listings and Page-one only.',
 };
 
 const FEATURE_COMPOSITE_COLORS = [
@@ -66,8 +77,73 @@ const FEATURE_COMPOSITE_COLORS = [
   'rgba(108,143,255,.78)',
 ];
 
+const FEATURE_PRESENCE_METRICS = {
+  presence_rate: {
+    label: 'Presence rate',
+    shortLabel: 'Presence',
+    description: 'Brands with feature / active brands',
+    countLabel: 'brands',
+    percentScale: true,
+  },
+  slot_share: {
+    label: 'Slot share',
+    shortLabel: 'Slot share',
+    description: 'Feature slots / all page-one slots',
+    countLabel: 'slots',
+    percentScale: true,
+  },
+  negative_share: {
+    label: 'Negative share',
+    shortLabel: 'Negative share',
+    description: 'Negative slots / feature slots',
+    countLabel: 'negative slots',
+    percentScale: true,
+  },
+  controlled_share: {
+    label: 'Controlled share',
+    shortLabel: 'Controlled share',
+    description: 'Controlled slots / feature slots',
+    countLabel: 'controlled slots',
+    percentScale: true,
+  },
+  serp_size: {
+    label: 'Page-One Real Estate',
+    shortLabel: 'Real Estate',
+    description: 'Total page-one slots per day (organic + SERP features)',
+    countLabel: 'slots',
+    percentScale: false,
+  },
+  serp_size_stacked: {
+    label: 'Page-One Real Estate (stacked)',
+    shortLabel: 'Real Estate (stacked)',
+    description: 'Total page-one slots per day, split by feature',
+    countLabel: 'slots',
+    percentScale: false,
+  },
+};
+
+const FEATURE_TYPE_COLORS = {
+  organic: 'rgba(255,130,97,.88)',
+  aio_citations: 'rgba(90,208,225,.88)',
+  paa_items: 'rgba(130,198,22,.88)',
+  videos_items: 'rgba(247,199,82,.88)',
+  perspectives_items: 'rgba(170,140,255,.88)',
+  top_stories_items: 'rgba(108,143,255,.88)',
+};
+
+const LEADERBOARD_COMPONENTS = [
+  { key: 'newsNegative', totalKey: 'newsTotal', weightKey: 'newsNegative', label: 'News', color: 'rgba(255,130,97,.78)' },
+  { key: 'organicNegative', totalKey: 'organicTotal', weightKey: 'organicNegative', label: 'Organic', color: 'rgba(88,219,237,.78)' },
+  { key: 'topStoriesNegative', totalKey: 'topStoriesTotal', weightKey: 'topStoriesNegative', label: 'Top stories', color: 'rgba(247,199,82,.78)' },
+  { key: 'aioNegative', totalKey: 'aioTotal', weightKey: 'aioCitationsNegative', label: 'AIO', color: 'rgba(130,198,22,.78)' },
+  { key: 'paaNegative', totalKey: 'paaTotal', weightKey: 'paaNegative', label: 'PAA', color: 'rgba(170,140,255,.78)' },
+  { key: 'videosNegative', totalKey: 'videosTotal', weightKey: 'videosNegative', label: 'Videos', color: 'rgba(108,143,255,.78)' },
+  { key: 'perspectivesNegative', totalKey: 'perspectivesTotal', weightKey: 'perspectivesNegative', label: 'Perspectives', color: 'rgba(201,226,120,.78)' },
+];
+
 const FEATURE_TYPE_LABELS = {
   organic: 'Organic',
+  all_page_one_slots: 'All page-one slots',
   aio_citations: 'AIO citations',
   paa_items: 'PAA',
   videos_items: 'Videos',
@@ -138,16 +214,90 @@ function clamp(value, min, max) {
 }
 
 function normalizeSignalWeights(weights = {}, fallback = {}) {
+  const featureFallbackSum = (
+    (fallback.topStoriesNegative ?? 0)
+    + (fallback.aioCitationsNegative ?? 0)
+    + (fallback.paaNegative ?? 0)
+    + (fallback.videosNegative ?? 0)
+    + (fallback.perspectivesNegative ?? 0)
+    || 1
+  );
+  const legacyFeatureWeight = toFinite(
+    weights.serpNegativeFeatures,
+    (
+      (fallback.topStoriesNegative ?? 0.16)
+      + (fallback.aioCitationsNegative ?? 0.12)
+      + (fallback.paaNegative ?? 0.1)
+      + (fallback.videosNegative ?? 0.07)
+      + (fallback.perspectivesNegative ?? 0.07)
+    ),
+  );
+  const featureScale = legacyFeatureWeight / featureFallbackSum;
   return {
-    newsNegative: clamp(toFinite(weights.newsNegative, fallback.newsNegative ?? 0.35), 0, 1),
-    serpNegativeOrganic: clamp(toFinite(weights.serpNegativeOrganic, fallback.serpNegativeOrganic ?? 0.4), 0, 1),
-    serpNegativeFeatures: clamp(toFinite(weights.serpNegativeFeatures, fallback.serpNegativeFeatures ?? 0.25), 0, 1),
-    serpControl: clamp(toFinite(weights.serpControl, fallback.serpControl ?? 0.15), 0, 1),
+    newsNegative: clamp(toFinite(weights.newsNegative, fallback.newsNegative ?? 0.24), 0, 1),
+    organicNegative: clamp(
+      toFinite(weights.organicNegative, toFinite(weights.serpNegativeOrganic, fallback.organicNegative ?? 0.24)),
+      0,
+      1,
+    ),
+    topStoriesNegative: clamp(
+      toFinite(weights.topStoriesNegative, (fallback.topStoriesNegative ?? 0.16) * featureScale),
+      0,
+      1,
+    ),
+    aioCitationsNegative: clamp(
+      toFinite(weights.aioCitationsNegative, (fallback.aioCitationsNegative ?? 0.12) * featureScale),
+      0,
+      1,
+    ),
+    paaNegative: clamp(
+      toFinite(weights.paaNegative, (fallback.paaNegative ?? 0.1) * featureScale),
+      0,
+      1,
+    ),
+    videosNegative: clamp(
+      toFinite(weights.videosNegative, (fallback.videosNegative ?? 0.07) * featureScale),
+      0,
+      1,
+    ),
+    perspectivesNegative: clamp(
+      toFinite(weights.perspectivesNegative, (fallback.perspectivesNegative ?? 0.07) * featureScale),
+      0,
+      1,
+    ),
+    serpControl: clamp(toFinite(weights.serpControl, fallback.serpControl ?? 0.1), 0, 1),
   };
 }
 
 function formatWeightPercent(value) {
   return `${(toFinite(value, 0) * 100).toFixed(0)}%`;
+}
+
+function withAlpha(color, alpha = 1) {
+  const safeAlpha = clamp(toFinite(alpha, 1), 0, 1);
+  if (typeof color !== 'string') return color;
+  const value = color.trim();
+  const rgbaMatch = value.match(/^rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)(?:\s*,\s*([0-9.]+))?\s*\)$/i);
+  if (rgbaMatch) {
+    const r = Number(rgbaMatch[1]) || 0;
+    const g = Number(rgbaMatch[2]) || 0;
+    const b = Number(rgbaMatch[3]) || 0;
+    return `rgba(${Math.max(0, Math.min(255, Math.round(r)))},${Math.max(0, Math.min(255, Math.round(g)))},${Math.max(0, Math.min(255, Math.round(b)))},${safeAlpha})`;
+  }
+  const hex = value.replace('#', '');
+  if (/^[0-9a-f]{3}$/i.test(hex)) {
+    const r = parseInt(hex[0] + hex[0], 16);
+    const g = parseInt(hex[1] + hex[1], 16);
+    const b = parseInt(hex[2] + hex[2], 16);
+    return `rgba(${r},${g},${b},${safeAlpha})`;
+  }
+  if (/^[0-9a-f]{6}$/i.test(hex)) {
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${safeAlpha})`;
+  }
+  return color;
 }
 
 function pearsonCorrelation(xs, ys) {
@@ -223,6 +373,10 @@ function createScaffold(config) {
             <span>Weight Preset</span>
             <select data-role="preset-select"></select>
           </label>
+          <label class="entity-calibration-field">
+            <span>Preset Name</span>
+            <input type="text" data-role="preset-name" placeholder="Name this preset" maxlength="80" />
+          </label>
           <button type="button" class="entity-action" data-role="preset-save">Save Preset</button>
           <button type="button" class="entity-action entity-action--reset" data-role="preset-delete">Delete Preset</button>
         </div>
@@ -238,9 +392,29 @@ function createScaffold(config) {
             <output data-role="weight-serp-value">0%</output>
           </label>
           <label class="entity-calibration-field">
-            <span>Negative SERP Feature Composite Weight</span>
-            <input type="range" min="0" max="1" step="0.01" data-role="weight-features" />
-            <output data-role="weight-features-value">0%</output>
+            <span>Top Stories Weight</span>
+            <input type="range" min="0" max="1" step="0.01" data-role="weight-top-stories" />
+            <output data-role="weight-top-stories-value">0%</output>
+          </label>
+          <label class="entity-calibration-field">
+            <span>AIO Citations Weight</span>
+            <input type="range" min="0" max="1" step="0.01" data-role="weight-aio" />
+            <output data-role="weight-aio-value">0%</output>
+          </label>
+          <label class="entity-calibration-field">
+            <span>PAA Weight</span>
+            <input type="range" min="0" max="1" step="0.01" data-role="weight-paa" />
+            <output data-role="weight-paa-value">0%</output>
+          </label>
+          <label class="entity-calibration-field">
+            <span>Videos Weight</span>
+            <input type="range" min="0" max="1" step="0.01" data-role="weight-videos" />
+            <output data-role="weight-videos-value">0%</output>
+          </label>
+          <label class="entity-calibration-field">
+            <span>Perspectives Weight</span>
+            <input type="range" min="0" max="1" step="0.01" data-role="weight-perspectives" />
+            <output data-role="weight-perspectives-value">0%</output>
           </label>
           <label class="entity-calibration-field">
             <span>SERP Control Penalty</span>
@@ -274,8 +448,8 @@ function createScaffold(config) {
             <header class="entity-card-header">
               <div>
                 <div class="entity-title-row">
-                  <h3 data-role="feature-title">SERP Feature Snapshot</h3>
-                  <button type="button" class="entity-help" data-role="feature-help" aria-label="Explain Feature Snapshot">?</button>
+                  <h3 data-role="feature-title">Negative Page One Snapshot</h3>
+                  <button type="button" class="entity-help" data-role="feature-help" aria-label="Explain Negative Page One Snapshot">?</button>
                 </div>
               </div>
               <span class="entity-pill" data-role="feature-pill">Awaiting data</span>
@@ -302,8 +476,8 @@ function createScaffold(config) {
             <header class="entity-card-header">
               <div>
                 <div class="entity-title-row">
-                  <h3 data-role="feature-composite-title">Negative SERP Feature Composite</h3>
-                  <button type="button" class="entity-help" data-role="feature-composite-help" aria-label="Explain Negative SERP Feature Composite">?</button>
+                  <h3 data-role="feature-composite-title">Negative Page One SERP Composite</h3>
+                  <button type="button" class="entity-help" data-role="feature-composite-help" aria-label="Explain Negative Page One SERP Composite">?</button>
                 </div>
               </div>
               <div class="entity-card-tools">
@@ -317,6 +491,33 @@ function createScaffold(config) {
             <div class="entity-chart-wrap"><canvas data-role="feature-composite-chart"></canvas></div>
           </article>
 
+          <article class="entity-card" data-card-id="serp-feature-trends">
+            <header class="entity-card-header">
+              <div>
+                <div class="entity-title-row">
+                  <h3 data-role="feature-presence-title">SERP Feature Trends</h3>
+                  <button type="button" class="entity-help" data-role="feature-presence-help" aria-label="Explain SERP Feature Trends">?</button>
+                </div>
+                <p data-role="feature-presence-caption">Presence rate over the current lookback window.</p>
+              </div>
+              <div class="entity-card-tools">
+                <label class="entity-mini-field">
+                  <span>Metric</span>
+                  <select data-role="feature-presence-metric" aria-label="SERP feature trend metric">
+                    <option value="presence_rate">Presence</option>
+                    <option value="slot_share">Slot share</option>
+                    <option value="negative_share">Negative share</option>
+                    <option value="controlled_share">Controlled share</option>
+                    <option value="serp_size">Page-One Real Estate</option>
+                    <option value="serp_size_stacked">Page-One Real Estate (stacked)</option>
+                  </select>
+                </label>
+                <span class="entity-pill" data-role="feature-presence-pill">Awaiting data</span>
+              </div>
+            </header>
+            <div class="entity-chart-wrap"><canvas data-role="feature-presence-chart"></canvas></div>
+          </article>
+
           <article class="entity-card" data-card-id="signal-leaderboard">
             <header class="entity-card-header">
               <div>
@@ -324,9 +525,36 @@ function createScaffold(config) {
                   <h3>Signal Leaderboard</h3>
                   <button type="button" class="entity-help" data-role="leaderboard-help" aria-label="Explain Signal Leaderboard">?</button>
                 </div>
-                <p>Highest combined crisis pressure on the active date.</p>
+                <p data-role="leaderboard-caption">Highest combined crisis pressure on the active date.</p>
               </div>
-              <span class="entity-pill" data-role="leaderboard-pill">Awaiting data</span>
+              <div class="entity-card-tools">
+                <div class="entity-view-toggle" role="group" aria-label="Leaderboard scope">
+                  <button type="button" class="entity-view-toggle-btn" data-role="leaderboard-scope" data-scope="date" aria-pressed="true">Date</button>
+                  <button type="button" class="entity-view-toggle-btn" data-role="leaderboard-scope" data-scope="window" aria-pressed="false">Window</button>
+                </div>
+                <div class="entity-view-toggle" role="group" aria-label="Window leaderboard direction">
+                  <button type="button" class="entity-view-toggle-btn" data-role="leaderboard-direction" data-direction="worst" aria-pressed="true">Worst</button>
+                  <button type="button" class="entity-view-toggle-btn" data-role="leaderboard-direction" data-direction="best" aria-pressed="false">Best</button>
+                </div>
+                <label class="entity-mini-field">
+                  <span>Min/day</span>
+                  <select data-role="leaderboard-min-volume" aria-label="Minimum listings per active day">
+                    <option value="0">Any</option>
+                    <option value="2">2+</option>
+                    <option value="5">5+</option>
+                    <option value="10">10+</option>
+                    <option value="20">20+</option>
+                  </select>
+                </label>
+                <label class="entity-mini-field">
+                  <span>Basis</span>
+                  <select data-role="leaderboard-listing-basis" aria-label="Window leaderboard listing basis">
+                    <option value="all">All</option>
+                    <option value="page_one">Page one</option>
+                  </select>
+                </label>
+                <span class="entity-pill" data-role="leaderboard-pill">Awaiting data</span>
+              </div>
             </header>
             <div class="entity-chart-wrap"><canvas data-role="leaderboard-chart"></canvas></div>
           </article>
@@ -379,16 +607,19 @@ class EntityTabController {
     this.signalWeights = normalizeSignalWeights(this.config.signalSettings?.weights, this.config.signalSettings?.weights);
     this.savedPresets = {};
     this.activePresetKey = '__default__';
+    this.sharedPresetsEnabled = false;
     this.modalEntity = null;
     this.modalState = null;
     this.modalLoadToken = 0;
     this.cleanups = [];
     this.charts = {};
+    this.externalTooltipIds = new Set();
     this.loadToken = 0;
     this.destroyed = false;
     this.supplementalLoadScheduled = false;
     this.rows = [];
     this.core = null;
+    this.legendTriStates = {};
     this.state = {
       days: this.config.defaultDays,
       date: '',
@@ -398,6 +629,11 @@ class EntityTabController {
       sortDir: 'desc',
       calibrationOpen: false,
       featureCompositeView: 'bar',
+      featurePresenceMetric: 'presence_rate',
+      leaderboardScope: 'date',
+      leaderboardDirection: 'worst',
+      leaderboardMinDailyListings: 0,
+      leaderboardListingBasis: 'all',
     };
   }
 
@@ -418,15 +654,24 @@ class EntityTabController {
       calibrationAuto: this.root.querySelector('[data-role="calibration-auto"]'),
       calibrationReset: this.root.querySelector('[data-role="calibration-reset"]'),
       presetSelect: this.root.querySelector('[data-role="preset-select"]'),
+      presetName: this.root.querySelector('[data-role="preset-name"]'),
       presetSave: this.root.querySelector('[data-role="preset-save"]'),
       presetDelete: this.root.querySelector('[data-role="preset-delete"]'),
       weightNews: this.root.querySelector('[data-role="weight-news"]'),
       weightSerp: this.root.querySelector('[data-role="weight-serp"]'),
-      weightFeatures: this.root.querySelector('[data-role="weight-features"]'),
+      weightTopStories: this.root.querySelector('[data-role="weight-top-stories"]'),
+      weightAio: this.root.querySelector('[data-role="weight-aio"]'),
+      weightPaa: this.root.querySelector('[data-role="weight-paa"]'),
+      weightVideos: this.root.querySelector('[data-role="weight-videos"]'),
+      weightPerspectives: this.root.querySelector('[data-role="weight-perspectives"]'),
       weightControl: this.root.querySelector('[data-role="weight-control"]'),
       weightNewsValue: this.root.querySelector('[data-role="weight-news-value"]'),
       weightSerpValue: this.root.querySelector('[data-role="weight-serp-value"]'),
-      weightFeaturesValue: this.root.querySelector('[data-role="weight-features-value"]'),
+      weightTopStoriesValue: this.root.querySelector('[data-role="weight-top-stories-value"]'),
+      weightAioValue: this.root.querySelector('[data-role="weight-aio-value"]'),
+      weightPaaValue: this.root.querySelector('[data-role="weight-paa-value"]'),
+      weightVideosValue: this.root.querySelector('[data-role="weight-videos-value"]'),
+      weightPerspectivesValue: this.root.querySelector('[data-role="weight-perspectives-value"]'),
       weightControlValue: this.root.querySelector('[data-role="weight-control-value"]'),
       summaryGrid: this.root.querySelector('[data-role="summary-grid"]'),
       selectedSpotlight: this.root.querySelector('[data-role="selected-spotlight"]'),
@@ -441,10 +686,20 @@ class EntityTabController {
       featureCompositeTitle: this.root.querySelector('[data-role="feature-composite-title"]'),
       featureCompositePill: this.root.querySelector('[data-role="feature-composite-pill"]'),
       featureCompositeViewButtons: Array.from(this.root.querySelectorAll('[data-role="feature-composite-view"]')),
+      featurePresenceTitle: this.root.querySelector('[data-role="feature-presence-title"]'),
+      featurePresenceCaption: this.root.querySelector('[data-role="feature-presence-caption"]'),
+      featurePresenceMetric: this.root.querySelector('[data-role="feature-presence-metric"]'),
+      featurePresencePill: this.root.querySelector('[data-role="feature-presence-pill"]'),
       leaderboardPill: this.root.querySelector('[data-role="leaderboard-pill"]'),
+      leaderboardCaption: this.root.querySelector('[data-role="leaderboard-caption"]'),
+      leaderboardScopeButtons: Array.from(this.root.querySelectorAll('[data-role="leaderboard-scope"]')),
+      leaderboardDirectionButtons: Array.from(this.root.querySelectorAll('[data-role="leaderboard-direction"]')),
+      leaderboardMinVolume: this.root.querySelector('[data-role="leaderboard-min-volume"]'),
+      leaderboardListingBasis: this.root.querySelector('[data-role="leaderboard-listing-basis"]'),
       newsHelp: this.root.querySelector('[data-role="news-help"]'),
       featureHelp: this.root.querySelector('[data-role="feature-help"]'),
       featureCompositeHelp: this.root.querySelector('[data-role="feature-composite-help"]'),
+      featurePresenceHelp: this.root.querySelector('[data-role="feature-presence-help"]'),
       serpHelp: this.root.querySelector('[data-role="serp-help"]'),
       leaderboardHelp: this.root.querySelector('[data-role="leaderboard-help"]'),
       tableCaption: this.root.querySelector('[data-role="table-caption"]'),
@@ -453,6 +708,7 @@ class EntityTabController {
       serpChart: this.root.querySelector('[data-role="serp-chart"]'),
       featureChart: this.root.querySelector('[data-role="feature-chart"]'),
       featureCompositeChart: this.root.querySelector('[data-role="feature-composite-chart"]'),
+      featurePresenceChart: this.root.querySelector('[data-role="feature-presence-chart"]'),
       leaderboardChart: this.root.querySelector('[data-role="leaderboard-chart"]'),
       entityModal: this.root.querySelector('[data-role="entity-modal"]'),
       entityModalBackdrop: this.root.querySelector('[data-role="entity-modal-backdrop"]'),
@@ -469,10 +725,12 @@ class EntityTabController {
     }));
     this.loadFeatureCompositeView();
     this.syncFeatureCompositeViewControls();
+    this.syncFeaturePresenceMetricControl();
     this.loadPresets();
     this.renderPresetOptions(this.activePresetKey);
     this.syncCalibrationControls();
     this.setCalibrationOpen(this.state.calibrationOpen);
+    this.syncLeaderboardControls();
     this.updateHelpText();
   }
 
@@ -513,6 +771,277 @@ class EntityTabController {
     });
   }
 
+  syncFeaturePresenceMetricControl() {
+    if (!this.nodes.featurePresenceMetric) return;
+    const supported = new Set(Object.keys(FEATURE_PRESENCE_METRICS));
+    const nextMetric = supported.has(String(this.state.featurePresenceMetric || '').trim())
+      ? String(this.state.featurePresenceMetric || '').trim()
+      : 'presence_rate';
+    this.state.featurePresenceMetric = nextMetric;
+    this.nodes.featurePresenceMetric.value = nextMetric;
+  }
+
+  getLegendTriStateBucket(chartKey) {
+    if (!this.legendTriStates[chartKey] || typeof this.legendTriStates[chartKey] !== 'object') {
+      this.legendTriStates[chartKey] = {};
+    }
+    return this.legendTriStates[chartKey];
+  }
+
+  getLegendDatasetKey(dataset, datasetIndex) {
+    const rawFeature = String(dataset?.rawFeature || '').trim();
+    if (rawFeature) return rawFeature;
+    const label = String(dataset?.label || '').trim();
+    if (label) return label;
+    return `dataset_${datasetIndex}`;
+  }
+
+  applyLegendTriStateStyles(chartKey, chart, { update = true } = {}) {
+    if (!chart?.data?.datasets) return;
+    const stateBucket = this.getLegendTriStateBucket(chartKey);
+    const datasets = chart.data.datasets;
+    const hasHighlight = datasets.some((dataset, index) => {
+      const key = this.getLegendDatasetKey(dataset, index);
+      return stateBucket[key] === 'highlight';
+    });
+
+    datasets.forEach((dataset, index) => {
+      const key = this.getLegendDatasetKey(dataset, index);
+      const state = stateBucket[key] || 'normal';
+      const meta = chart.getDatasetMeta(index);
+      if (!dataset.__legendBase) {
+        dataset.__legendBase = {
+          borderWidth: toFinite(dataset.borderWidth, 2),
+          pointRadius: toFinite(dataset.pointRadius, 0),
+          pointHoverRadius: toFinite(dataset.pointHoverRadius, 3),
+          borderColor: dataset.borderColor,
+          backgroundColor: dataset.backgroundColor,
+          tension: dataset.tension,
+          fill: dataset.fill,
+        };
+      }
+      const base = dataset.__legendBase;
+
+      if (state === 'hidden') {
+        meta.hidden = true;
+        return;
+      }
+      meta.hidden = false;
+
+      if (hasHighlight) {
+        if (state === 'highlight') {
+          dataset.borderWidth = Math.max(3, toFinite(base.borderWidth, 2) + 1);
+          dataset.borderColor = withAlpha(base.borderColor, 1);
+          dataset.backgroundColor = withAlpha(base.backgroundColor, 0.95);
+          dataset.pointRadius = Math.max(2, toFinite(base.pointRadius, 0));
+          dataset.pointHoverRadius = Math.max(4, toFinite(base.pointHoverRadius, 3));
+        } else {
+          dataset.borderWidth = Math.max(1, toFinite(base.borderWidth, 2) - 1);
+          dataset.borderColor = withAlpha(base.borderColor, 0.24);
+          dataset.backgroundColor = withAlpha(base.backgroundColor, 0.2);
+          dataset.pointRadius = 0;
+          dataset.pointHoverRadius = 2;
+        }
+      } else {
+        dataset.borderWidth = base.borderWidth;
+        dataset.borderColor = base.borderColor;
+        dataset.backgroundColor = base.backgroundColor;
+        dataset.pointRadius = base.pointRadius;
+        dataset.pointHoverRadius = base.pointHoverRadius;
+      }
+      dataset.tension = base.tension;
+      dataset.fill = base.fill;
+    });
+
+    if (update) chart.update();
+  }
+
+  cycleLegendTriState(chartKey, chart, legendItem) {
+    const datasetIndex = Number(legendItem?.datasetIndex);
+    if (!Number.isInteger(datasetIndex) || datasetIndex < 0) return;
+    const dataset = chart?.data?.datasets?.[datasetIndex];
+    if (!dataset) return;
+    const key = this.getLegendDatasetKey(dataset, datasetIndex);
+    const stateBucket = this.getLegendTriStateBucket(chartKey);
+    const currentState = stateBucket[key] || 'normal';
+    const nextState = currentState === 'normal'
+      ? 'highlight'
+      : currentState === 'highlight'
+        ? 'hidden'
+        : 'normal';
+    if (nextState === 'highlight') {
+      Object.keys(stateBucket).forEach((bucketKey) => {
+        if (bucketKey !== key && stateBucket[bucketKey] === 'highlight') {
+          stateBucket[bucketKey] = 'normal';
+        }
+      });
+    }
+    stateBucket[key] = nextState;
+    this.applyLegendTriStateStyles(chartKey, chart, { update: true });
+  }
+
+  buildLegendTriStateOptions(chartKey, legend = {}) {
+    const labels = legend?.labels && typeof legend.labels === 'object' ? legend.labels : {};
+    return {
+      ...legend,
+      labels: { ...labels },
+      onClick: (_event, legendItem, legendContext) => {
+        const chart = legendContext?.chart;
+        if (!chart) return;
+        this.cycleLegendTriState(chartKey, chart, legendItem);
+      },
+    };
+  }
+
+  hasActiveLegendTriState(chartKey) {
+    const bucket = this.legendTriStates?.[chartKey];
+    if (!bucket || typeof bucket !== 'object') return false;
+    return Object.values(bucket).some((state) => state && state !== 'normal');
+  }
+
+  getOrCreateExternalChartTooltip(chartKey) {
+    const safeKey = String(chartKey || 'default').replace(/[^a-z0-9_-]+/gi, '-').toLowerCase();
+    const id = `entity-chart-tooltip-${this.config.tabId}-${safeKey}`;
+    this.externalTooltipIds.add(id);
+    let tooltipEl = document.getElementById(id);
+    if (tooltipEl) return tooltipEl;
+    tooltipEl = document.createElement('div');
+    tooltipEl.id = id;
+    tooltipEl.className = 'entity-chart-tooltip';
+    tooltipEl.style.opacity = '0';
+    tooltipEl.style.pointerEvents = 'none';
+    document.body.appendChild(tooltipEl);
+    return tooltipEl;
+  }
+
+  renderExternalChartTooltip(context, { chartKey = 'default' } = {}) {
+    const tooltipEl = this.getOrCreateExternalChartTooltip(chartKey);
+    const tooltipModel = context?.tooltip;
+    const chart = context?.chart;
+    if (!tooltipEl || !tooltipModel || !chart) return;
+
+    if (!tooltipModel.opacity) {
+      tooltipEl.style.opacity = '0';
+      tooltipEl.style.pointerEvents = 'none';
+      return;
+    }
+
+    const titleLines = Array.isArray(tooltipModel.title) ? tooltipModel.title : [];
+    const bodyItems = Array.isArray(tooltipModel.body) ? tooltipModel.body : [];
+    const footerLines = Array.isArray(tooltipModel.footer) ? tooltipModel.footer : [];
+    const labelColors = Array.isArray(tooltipModel.labelColors) ? tooltipModel.labelColors : [];
+
+    const html = [];
+    if (titleLines.length) {
+      html.push('<div class="entity-chart-tooltip-title">');
+      titleLines.forEach((line) => {
+        html.push(`<div>${escapeHtml(line)}</div>`);
+      });
+      html.push('</div>');
+    }
+
+    bodyItems.forEach((bodyItem, itemIndex) => {
+      const lines = Array.isArray(bodyItem?.lines) ? bodyItem.lines : [];
+      if (!lines.length) return;
+      const colors = labelColors[itemIndex] || {};
+      const border = colors.borderColor || 'rgba(162,235,243,.7)';
+      const fill = colors.backgroundColor || 'rgba(162,235,243,.45)';
+      html.push('<div class="entity-chart-tooltip-item">');
+      lines.forEach((line, lineIndex) => {
+        if (lineIndex === 0) {
+          html.push(
+            `<div class="entity-chart-tooltip-line">`
+            + `<span class="entity-chart-tooltip-swatch" style="border-color:${escapeHtml(border)};background:${escapeHtml(fill)}"></span>`
+            + `<span>${escapeHtml(line)}</span>`
+            + '</div>',
+          );
+        } else {
+          html.push(`<div class="entity-chart-tooltip-subline">${escapeHtml(line)}</div>`);
+        }
+      });
+      html.push('</div>');
+    });
+
+    if (footerLines.length) {
+      html.push('<div class="entity-chart-tooltip-footer">');
+      footerLines.forEach((line) => {
+        html.push(`<div>${escapeHtml(line)}</div>`);
+      });
+      html.push('</div>');
+    }
+
+    tooltipEl.innerHTML = html.join('');
+    tooltipEl.style.opacity = '1';
+    tooltipEl.style.pointerEvents = 'none';
+    tooltipEl.style.maxHeight = `${Math.max(220, Math.round(window.innerHeight * 0.62))}px`;
+
+    const canvasRect = chart.canvas.getBoundingClientRect();
+    const caretX = Number(tooltipModel.caretX) || 0;
+    const caretY = Number(tooltipModel.caretY) || 0;
+    const gap = 14;
+
+    let left = canvasRect.left + caretX + gap;
+    let top = canvasRect.top + caretY + gap;
+
+    const tooltipWidth = tooltipEl.offsetWidth;
+    const tooltipHeight = tooltipEl.offsetHeight;
+    const maxLeft = window.innerWidth - tooltipWidth - 8;
+    const maxTop = window.innerHeight - tooltipHeight - 8;
+
+    if (left > maxLeft) {
+      left = canvasRect.left + caretX - tooltipWidth - gap;
+    }
+    if (top > maxTop) {
+      top = maxTop;
+    }
+
+    left = Math.max(8, Math.min(left, maxLeft));
+    top = Math.max(8, Math.min(top, maxTop));
+
+    tooltipEl.style.left = `${Math.round(left)}px`;
+    tooltipEl.style.top = `${Math.round(top)}px`;
+  }
+
+  syncLeaderboardControls() {
+    const scope = this.state.leaderboardScope === 'window' ? 'window' : 'date';
+    const direction = this.state.leaderboardDirection === 'best' ? 'best' : 'worst';
+    const minDaily = Math.max(0, Number(this.state.leaderboardMinDailyListings) || 0);
+    const listingBasis = this.state.leaderboardListingBasis === 'page_one' ? 'page_one' : 'all';
+
+    if (Array.isArray(this.nodes.leaderboardScopeButtons)) {
+      this.nodes.leaderboardScopeButtons.forEach((button) => {
+        const value = String(button.getAttribute('data-scope') || '').trim().toLowerCase();
+        const isActive = value === scope;
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        if (isActive) button.classList.add('active');
+        else button.classList.remove('active');
+      });
+    }
+
+    if (Array.isArray(this.nodes.leaderboardDirectionButtons)) {
+      const isWindow = scope === 'window';
+      this.nodes.leaderboardDirectionButtons.forEach((button) => {
+        const value = String(button.getAttribute('data-direction') || '').trim().toLowerCase();
+        const isActive = value === direction;
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        if (isActive) button.classList.add('active');
+        else button.classList.remove('active');
+        button.disabled = !isWindow;
+      });
+    }
+
+    if (this.nodes.leaderboardMinVolume) {
+      const supported = new Set(['0', '2', '5', '10', '20']);
+      const minDailyValue = supported.has(String(minDaily)) ? String(minDaily) : '0';
+      this.nodes.leaderboardMinVolume.value = minDailyValue;
+      this.nodes.leaderboardMinVolume.disabled = scope !== 'window';
+    }
+    if (this.nodes.leaderboardListingBasis) {
+      this.nodes.leaderboardListingBasis.value = listingBasis;
+      this.nodes.leaderboardListingBasis.disabled = scope !== 'window';
+    }
+  }
+
   loadPresets() {
     try {
       const raw = localStorage.getItem(this.presetStorageKey());
@@ -527,6 +1056,87 @@ class EntityTabController {
     } catch (_error) {
       this.savedPresets = {};
     }
+  }
+
+  sharedPresetEndpoint() {
+    return `/api/internal/signal_presets?tab_id=${encodeURIComponent(this.config.tabId)}`;
+  }
+
+  async readResponseError(response, fallback = '') {
+    let detail = fallback || `HTTP ${response.status}`;
+    try {
+      const payload = await response.json();
+      detail = payload?.error || payload?.detail || detail;
+    } catch (_error) {
+      try {
+        detail = await response.text() || detail;
+      } catch (_error2) {
+        // Ignore parse failures.
+      }
+    }
+    return detail || `HTTP ${response.status}`;
+  }
+
+  async loadSharedPresets({ quiet = true } = {}) {
+    if (!this.config.isInternal) return false;
+    try {
+      const response = await fetch(this.sharedPresetEndpoint(), { credentials: 'same-origin' });
+      if (!response.ok) {
+        throw new Error(await this.readResponseError(response, `HTTP ${response.status}`));
+      }
+      const payload = await response.json();
+      const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+      this.savedPresets = Object.fromEntries(
+        rows
+          .map((row) => {
+            const name = String(row?.preset_name || '').trim();
+            if (!name) return null;
+            return [name, normalizeSignalWeights(row?.weights || {}, this.config.signalSettings?.weights)];
+          })
+          .filter(Boolean),
+      );
+      this.persistPresets();
+      this.sharedPresetsEnabled = true;
+      this.renderPresetOptions(this.activePresetKey);
+      return true;
+    } catch (error) {
+      this.sharedPresetsEnabled = false;
+      if (!quiet) this.setFeedback(error?.message || 'Failed to load shared presets.', 'error');
+      return false;
+    }
+  }
+
+  async saveSharedPreset(presetName, weights) {
+    const response = await fetch('/api/internal/signal_presets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        tab_id: this.config.tabId,
+        preset_name: presetName,
+        weights,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await this.readResponseError(response, `HTTP ${response.status}`));
+    }
+    return response.json();
+  }
+
+  async deleteSharedPreset(presetName) {
+    const response = await fetch('/api/internal/signal_presets', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        tab_id: this.config.tabId,
+        preset_name: presetName,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await this.readResponseError(response, `HTTP ${response.status}`));
+    }
+    return response.json();
   }
 
   persistPresets() {
@@ -551,6 +1161,9 @@ class EntityTabController {
     if (this.nodes.presetDelete) {
       this.nodes.presetDelete.disabled = this.activePresetKey === '__default__';
     }
+    if (this.nodes.presetName) {
+      this.nodes.presetName.value = this.activePresetKey === '__default__' ? '' : this.activePresetKey;
+    }
   }
 
   updateHelpText(selectedEntity = '') {
@@ -571,22 +1184,39 @@ class EntityTabController {
       this.nodes.featureCompositeHelp.title = HELP_TEXT.featureComposite;
       this.nodes.featureCompositeHelp.dataset.help = HELP_TEXT.featureComposite;
     }
+    if (this.nodes.featurePresenceHelp) {
+      this.nodes.featurePresenceHelp.title = this.buildFeaturePresenceHelpText();
+      this.nodes.featurePresenceHelp.dataset.help = this.buildFeaturePresenceHelpText();
+    }
     if (this.nodes.leaderboardHelp) {
       this.nodes.leaderboardHelp.title = this.buildLeaderboardHelpText();
       this.nodes.leaderboardHelp.dataset.help = this.buildLeaderboardHelpText();
     }
   }
 
+  buildFeaturePresenceHelpText() {
+    const metricKey = String(this.state.featurePresenceMetric || '').trim();
+    const metricConfig = FEATURE_PRESENCE_METRICS[metricKey] || FEATURE_PRESENCE_METRICS.presence_rate;
+    return `${HELP_TEXT.featurePresence} Current metric: ${metricConfig.label} (${metricConfig.description}).`;
+  }
+
   buildLeaderboardHelpText() {
     const weights = normalizeSignalWeights(this.signalWeights, this.config.signalSettings?.weights);
-    return `${HELP_TEXT.leaderboard} Formula: (${formatWeightPercent(weights.newsNegative)} × Negative News) + (${formatWeightPercent(weights.serpNegativeOrganic)} × Negative Organic SERP) + (${formatWeightPercent(weights.serpNegativeFeatures)} × Negative SERP Feature Composite) − (${formatWeightPercent(weights.serpControl)} × Controlled Organic SERP).`;
+    const listingBasis = this.state.leaderboardListingBasis === 'page_one'
+      ? 'Page-one only (news excluded)'
+      : 'All listings (news + page one)';
+    return `${HELP_TEXT.leaderboard} Formula: (${formatWeightPercent(weights.newsNegative)} × Negative News) + (${formatWeightPercent(weights.organicNegative)} × Negative Organic SERP) + (${formatWeightPercent(weights.topStoriesNegative)} × Negative Top Stories) + (${formatWeightPercent(weights.aioCitationsNegative)} × Negative AIO Citations) + (${formatWeightPercent(weights.paaNegative)} × Negative PAA) + (${formatWeightPercent(weights.videosNegative)} × Negative Videos) + (${formatWeightPercent(weights.perspectivesNegative)} × Negative Perspectives) − (${formatWeightPercent(weights.serpControl)} × Controlled Organic SERP). Window basis: ${listingBasis}.`;
   }
 
   readWeightsFromControls() {
     return normalizeSignalWeights({
       newsNegative: this.nodes.weightNews?.value,
-      serpNegativeOrganic: this.nodes.weightSerp?.value,
-      serpNegativeFeatures: this.nodes.weightFeatures?.value,
+      organicNegative: this.nodes.weightSerp?.value,
+      topStoriesNegative: this.nodes.weightTopStories?.value,
+      aioCitationsNegative: this.nodes.weightAio?.value,
+      paaNegative: this.nodes.weightPaa?.value,
+      videosNegative: this.nodes.weightVideos?.value,
+      perspectivesNegative: this.nodes.weightPerspectives?.value,
       serpControl: this.nodes.weightControl?.value,
     }, this.config.signalSettings?.weights);
   }
@@ -598,8 +1228,12 @@ class EntityTabController {
       if (output) output.textContent = formatWeightPercent(value);
     };
     assign(this.nodes.weightNews, this.nodes.weightNewsValue, weights.newsNegative);
-    assign(this.nodes.weightSerp, this.nodes.weightSerpValue, weights.serpNegativeOrganic);
-    assign(this.nodes.weightFeatures, this.nodes.weightFeaturesValue, weights.serpNegativeFeatures);
+    assign(this.nodes.weightSerp, this.nodes.weightSerpValue, weights.organicNegative);
+    assign(this.nodes.weightTopStories, this.nodes.weightTopStoriesValue, weights.topStoriesNegative);
+    assign(this.nodes.weightAio, this.nodes.weightAioValue, weights.aioCitationsNegative);
+    assign(this.nodes.weightPaa, this.nodes.weightPaaValue, weights.paaNegative);
+    assign(this.nodes.weightVideos, this.nodes.weightVideosValue, weights.videosNegative);
+    assign(this.nodes.weightPerspectives, this.nodes.weightPerspectivesValue, weights.perspectivesNegative);
     assign(this.nodes.weightControl, this.nodes.weightControlValue, weights.serpControl);
     this.updateHelpText(this.state.selectedEntity);
     this.updateCalibrationMetric();
@@ -953,22 +1587,22 @@ class EntityTabController {
         <article class="entity-stat">
           <p class="entity-stat-label">Negative News</p>
           <p class="entity-stat-value">${formatPercent(row.negNews)}</p>
-          <p class="entity-stat-subcopy">Article sentiment share</p>
+          <p class="entity-stat-subcopy">${formatInteger(row.negNewsCount)} / ${formatInteger(row.newsTotal)} negative articles</p>
         </article>
         <article class="entity-stat">
           <p class="entity-stat-label">Negative Organic SERP</p>
           <p class="entity-stat-value">${formatPercent(row.negSerp)}</p>
-          <p class="entity-stat-subcopy">Organic result pressure</p>
+          <p class="entity-stat-subcopy">${formatInteger(row.negSerpCount)} / ${formatInteger(row.serpTotal)} negative results</p>
         </article>
         <article class="entity-stat">
-          <p class="entity-stat-label">Negative SERP Feature Composite</p>
-          <p class="entity-stat-value">${formatPercent(row.negFeatureAll)}</p>
-          <p class="entity-stat-subcopy">${formatInteger(row.negFeatureAllCount)} / ${formatInteger(row.featureAllTotal)} negative URLs</p>
+          <p class="entity-stat-label">Negative SERP Features</p>
+          <p class="entity-stat-value">${formatPercent(row.negSerpFeatures)}</p>
+          <p class="entity-stat-subcopy">${formatInteger(row.negSerpFeatureCount)} / ${formatInteger(row.serpFeatureTotal)} negative feature URLs</p>
         </article>
         <article class="entity-stat">
           <p class="entity-stat-label">Composite Signal</p>
           <p class="entity-stat-value">${formatPercent(row.riskScore, 1, 'N/A')}</p>
-          <p class="entity-stat-subcopy">${escapeHtml(row.risk || 'N/A')} rating</p>
+          <p class="entity-stat-subcopy">${escapeHtml(row.risk || 'N/A')} rating · weighted blend</p>
         </article>
       </div>
       <div class="entity-modal-toolbar">
@@ -1197,13 +1831,21 @@ class EntityTabController {
 
     for (let index = 0; index < iterations; index += 1) {
       const newsRaw = Math.random();
-      const serpRaw = Math.random();
-      const featuresRaw = Math.random();
-      const total = newsRaw + serpRaw + featuresRaw || 1;
+      const organicRaw = Math.random();
+      const topStoriesRaw = Math.random();
+      const aioRaw = Math.random();
+      const paaRaw = Math.random();
+      const videosRaw = Math.random();
+      const perspectivesRaw = Math.random();
+      const total = newsRaw + organicRaw + topStoriesRaw + aioRaw + paaRaw + videosRaw + perspectivesRaw || 1;
       const candidate = {
         newsNegative: newsRaw / total,
-        serpNegativeOrganic: serpRaw / total,
-        serpNegativeFeatures: featuresRaw / total,
+        organicNegative: organicRaw / total,
+        topStoriesNegative: topStoriesRaw / total,
+        aioCitationsNegative: aioRaw / total,
+        paaNegative: paaRaw / total,
+        videosNegative: videosRaw / total,
+        perspectivesNegative: perspectivesRaw / total,
         serpControl: Math.random() * controlMax,
       };
       const corr = scoreWeights(candidate);
@@ -1294,18 +1936,42 @@ class EntityTabController {
       });
     }
 
+    let weightApplyTimer = 0;
+    this.cleanups.push(() => {
+      if (weightApplyTimer) {
+        window.clearTimeout(weightApplyTimer);
+        weightApplyTimer = 0;
+      }
+    });
+    const scheduleWeightApply = () => {
+      if (weightApplyTimer) window.clearTimeout(weightApplyTimer);
+      weightApplyTimer = window.setTimeout(() => {
+        weightApplyTimer = 0;
+        this.applySignalWeights(this.readWeightsFromControls())
+          .catch((error) => this.setFeedback(error?.message || 'Failed to apply weights.', 'error'));
+      }, 120);
+    };
     const bindWeight = (input, output) => {
       if (!input) return;
       this.on(input, 'input', () => {
         if (output) output.textContent = formatWeightPercent(input.value);
+        scheduleWeightApply();
       });
       this.on(input, 'change', async () => {
+        if (weightApplyTimer) {
+          window.clearTimeout(weightApplyTimer);
+          weightApplyTimer = 0;
+        }
         await this.applySignalWeights(this.readWeightsFromControls(), { message: 'Composite weights updated.' });
       });
     };
     bindWeight(this.nodes.weightNews, this.nodes.weightNewsValue);
     bindWeight(this.nodes.weightSerp, this.nodes.weightSerpValue);
-    bindWeight(this.nodes.weightFeatures, this.nodes.weightFeaturesValue);
+    bindWeight(this.nodes.weightTopStories, this.nodes.weightTopStoriesValue);
+    bindWeight(this.nodes.weightAio, this.nodes.weightAioValue);
+    bindWeight(this.nodes.weightPaa, this.nodes.weightPaaValue);
+    bindWeight(this.nodes.weightVideos, this.nodes.weightVideosValue);
+    bindWeight(this.nodes.weightPerspectives, this.nodes.weightPerspectivesValue);
     bindWeight(this.nodes.weightControl, this.nodes.weightControlValue);
 
     if (this.nodes.calibrationReset) {
@@ -1343,16 +2009,50 @@ class EntityTabController {
 
     if (this.nodes.presetSave) {
       this.on(this.nodes.presetSave, 'click', async () => {
-        let presetName = this.activePresetKey;
+        const typedName = String(this.nodes.presetName?.value || '').trim();
+        const isExplicitName = !!typedName;
+        let presetName = typedName || this.activePresetKey;
         if (!presetName || presetName === '__default__') {
-          const entered = window.prompt('Preset name', `${this.config.label} preset`);
-          presetName = String(entered || '').trim();
+          presetName = buildAutoPresetName(`${this.config.label} preset`);
         }
         if (!presetName || presetName === '__default__') return;
-        this.savedPresets[presetName] = normalizeSignalWeights(this.signalWeights, this.config.signalSettings?.weights);
+        if (!isExplicitName && presetName !== this.activePresetKey) {
+          const baseName = presetName;
+          let suffix = 2;
+          while (this.savedPresets[presetName]) {
+            presetName = `${baseName} (${suffix})`;
+            suffix += 1;
+          }
+        }
+        const normalizedWeights = normalizeSignalWeights(this.signalWeights, this.config.signalSettings?.weights);
+        if (this.config.isInternal) {
+          try {
+            await this.saveSharedPreset(presetName, normalizedWeights);
+            this.sharedPresetsEnabled = true;
+            await this.loadSharedPresets({ quiet: true });
+            this.renderPresetOptions(presetName);
+            this.setFeedback(`Saved shared preset: ${presetName}.`);
+            return;
+          } catch (error) {
+            this.sharedPresetsEnabled = false;
+            this.savedPresets[presetName] = normalizedWeights;
+            this.persistPresets();
+            this.renderPresetOptions(presetName);
+            this.setFeedback(`Saved locally only (shared save failed: ${error?.message || 'unknown error'}).`, 'error');
+            return;
+          }
+        }
+        this.savedPresets[presetName] = normalizedWeights;
         this.persistPresets();
         this.renderPresetOptions(presetName);
         this.setFeedback(`Saved preset: ${presetName}.`);
+      });
+    }
+    if (this.nodes.presetName && this.nodes.presetSave) {
+      this.on(this.nodes.presetName, 'keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        this.nodes.presetSave.click();
       });
     }
 
@@ -1360,6 +2060,27 @@ class EntityTabController {
       this.on(this.nodes.presetDelete, 'click', async () => {
         const presetName = this.activePresetKey;
         if (!presetName || presetName === '__default__') return;
+        if (this.config.isInternal) {
+          try {
+            await this.deleteSharedPreset(presetName);
+            this.sharedPresetsEnabled = true;
+            await this.loadSharedPresets({ quiet: true });
+            this.activePresetKey = '__default__';
+            this.renderPresetOptions(this.activePresetKey);
+            await this.applySignalWeights(this.config.signalSettings?.weights, { message: `Deleted shared preset: ${presetName}.` });
+            return;
+          } catch (error) {
+            this.sharedPresetsEnabled = false;
+            delete this.savedPresets[presetName];
+            this.persistPresets();
+            this.activePresetKey = '__default__';
+            this.renderPresetOptions(this.activePresetKey);
+            await this.applySignalWeights(this.config.signalSettings?.weights, {
+              message: `Deleted locally only (shared delete failed: ${error?.message || 'unknown error'}).`,
+            });
+            return;
+          }
+        }
         delete this.savedPresets[presetName];
         this.persistPresets();
         this.activePresetKey = '__default__';
@@ -1574,6 +2295,64 @@ class EntityTabController {
         });
       });
     }
+    if (this.nodes.featurePresenceMetric) {
+      this.on(this.nodes.featurePresenceMetric, 'change', async () => {
+        const nextMetric = String(this.nodes.featurePresenceMetric.value || '').trim();
+        if (!(nextMetric in FEATURE_PRESENCE_METRICS)) return;
+        if (this.state.featurePresenceMetric === nextMetric) return;
+        this.state.featurePresenceMetric = nextMetric;
+        this.syncFeaturePresenceMetricControl();
+        this.updateHelpText(this.state.selectedEntity);
+        await this.updateCharts();
+      });
+    }
+    if (Array.isArray(this.nodes.leaderboardScopeButtons) && this.nodes.leaderboardScopeButtons.length) {
+      this.nodes.leaderboardScopeButtons.forEach((button) => {
+        this.on(button, 'click', async () => {
+          const nextScope = String(button.getAttribute('data-scope') || '').trim().toLowerCase();
+          if (!['date', 'window'].includes(nextScope)) return;
+          if (this.state.leaderboardScope === nextScope) return;
+          this.state.leaderboardScope = nextScope;
+          this.syncLeaderboardControls();
+          await this.updateCharts();
+        });
+      });
+    }
+    if (Array.isArray(this.nodes.leaderboardDirectionButtons) && this.nodes.leaderboardDirectionButtons.length) {
+      this.nodes.leaderboardDirectionButtons.forEach((button) => {
+        this.on(button, 'click', async () => {
+          const nextDirection = String(button.getAttribute('data-direction') || '').trim().toLowerCase();
+          if (!['worst', 'best'].includes(nextDirection)) return;
+          if (this.state.leaderboardDirection === nextDirection) return;
+          this.state.leaderboardDirection = nextDirection;
+          this.syncLeaderboardControls();
+          if (this.state.leaderboardScope !== 'window') return;
+          await this.updateCharts();
+        });
+      });
+    }
+    if (this.nodes.leaderboardMinVolume) {
+      this.on(this.nodes.leaderboardMinVolume, 'change', async () => {
+        const nextMin = Math.max(0, Number(this.nodes.leaderboardMinVolume.value) || 0);
+        if (this.state.leaderboardMinDailyListings === nextMin) return;
+        this.state.leaderboardMinDailyListings = nextMin;
+        this.syncLeaderboardControls();
+        if (this.state.leaderboardScope !== 'window') return;
+        await this.updateCharts();
+      });
+    }
+    if (this.nodes.leaderboardListingBasis) {
+      this.on(this.nodes.leaderboardListingBasis, 'change', async () => {
+        const nextBasis = String(this.nodes.leaderboardListingBasis.value || '').trim().toLowerCase() === 'page_one'
+          ? 'page_one'
+          : 'all';
+        if (this.state.leaderboardListingBasis === nextBasis) return;
+        this.state.leaderboardListingBasis = nextBasis;
+        this.syncLeaderboardControls();
+        if (this.state.leaderboardScope !== 'window') return;
+        await this.updateCharts();
+      });
+    }
     this.on(document, 'keydown', (event) => {
       if (event.key === 'Escape') this.closeEntityModal();
     });
@@ -1615,6 +2394,16 @@ class EntityTabController {
           return row.topStories ?? -1;
         case 'negSerp':
           return row.negSerp ?? -1;
+        case 'negTopStories':
+          return row.negTopStories ?? row.topStories ?? -1;
+        case 'negAio':
+          return row.negAio ?? -1;
+        case 'negPaa':
+          return row.negPaa ?? -1;
+        case 'negVideos':
+          return row.negVideos ?? -1;
+        case 'negPerspectives':
+          return row.negPerspectives ?? -1;
         case 'negFeatureAll':
           return row.negFeatureAll ?? -1;
         case 'control':
@@ -1786,6 +2575,16 @@ class EntityTabController {
               return `<td>${escapeHtml(formatPercent(row.topStories))}</td>`;
             case 'negSerp':
               return `<td>${escapeHtml(formatPercent(row.negSerp))}</td>`;
+            case 'negTopStories':
+              return `<td>${escapeHtml(formatPercent(row.negTopStories ?? row.topStories))}</td>`;
+            case 'negAio':
+              return `<td>${escapeHtml(formatPercent(row.negAio))}</td>`;
+            case 'negPaa':
+              return `<td>${escapeHtml(formatPercent(row.negPaa))}</td>`;
+            case 'negVideos':
+              return `<td>${escapeHtml(formatPercent(row.negVideos))}</td>`;
+            case 'negPerspectives':
+              return `<td>${escapeHtml(formatPercent(row.negPerspectives))}</td>`;
             case 'negFeatureAll':
               return `<td>${escapeHtml(formatPercent(row.negFeatureAll))}</td>`;
             case 'control':
@@ -1821,13 +2620,45 @@ class EntityTabController {
     const visibleEntities = this.rows.map((row) => row.entity);
     const selectedEntity = this.state.selectedEntity;
     this.updateHelpText(selectedEntity);
+    const singularLabel = this.config.label.endsWith('s')
+      ? this.config.label.slice(0, -1).toLowerCase()
+      : this.config.label.toLowerCase();
+    const openDateModalFromChart = (clickedDate, context = {}) => {
+      const targetDate = String(clickedDate || '').trim();
+      if (!targetDate) return;
+      const selectedRow = this.selectedRow();
+      if (!selectedRow) {
+        this.setFeedback(`Select a ${singularLabel} first, then click a date to open details.`, 'error');
+        return;
+      }
+      this.openEntityModal(selectedRow, { date: targetDate, ...context });
+    };
 
-    const [newsSeries, serpSeries, featureSnapshot, featureCompositeSeries, leaderboard] = await Promise.all([
+    const leaderboardPromise = this.state.leaderboardScope === 'window'
+      ? this.store.buildWindowLeaderboard({
+        days: this.state.days,
+        visibleEntities,
+        signalWeights: this.signalWeights,
+        direction: this.state.leaderboardDirection,
+        limit: 10,
+        restrictToVisible: true,
+        minAvgDailyListings: this.state.leaderboardMinDailyListings,
+        listingBasis: this.state.leaderboardListingBasis,
+      })
+      : this.store.buildLeaderboard(this.state.days, this.state.date, this.rows);
+
+    const [newsSeries, serpSeries, featureSnapshot, featureCompositeSeries, featurePresenceSeries, leaderboard] = await Promise.all([
       this.store.buildNewsSeries(this.state.days, visibleEntities, selectedEntity),
       this.store.buildSerpSeries(this.state.days, visibleEntities, selectedEntity),
       this.store.buildFeatureSnapshot(this.state.days, this.state.date, selectedEntity, visibleEntities),
       this.store.buildFeatureCompositeSeries(this.state.days, selectedEntity),
-      this.store.buildLeaderboard(this.state.days, this.state.date, this.rows),
+      this.store.buildFeaturePresenceSeries(
+        this.state.days,
+        visibleEntities,
+        selectedEntity,
+        this.state.featurePresenceMetric,
+      ),
+      leaderboardPromise,
     ]);
 
     const Chart = await ensureChartJs();
@@ -1839,7 +2670,10 @@ class EntityTabController {
       scales: {
         y: {
           beginAtZero: true,
+          min: 0,
+          max: 100,
           ticks: {
+            stepSize: 20,
             callback: (value) => `${value}%`,
             color: '#a6d7dd',
           },
@@ -1851,7 +2685,6 @@ class EntityTabController {
         },
       },
       plugins: {
-        legend: { labels: { color: '#eaf5f5' } },
         tooltip: {
           callbacks: {
             label: (context) => `${context.dataset.label}: ${formatPercent(context.parsed.y, 1, 'N/A')}`,
@@ -1876,8 +2709,22 @@ class EntityTabController {
           },
         ],
       },
-      options: lineCommon,
+      options: {
+        ...lineCommon,
+        plugins: {
+          ...lineCommon.plugins,
+          legend: this.buildLegendTriStateOptions('news', { labels: { color: '#eaf5f5' } }),
+        },
+        onClick: (event, _elements, chart) => {
+          const points = chart.getElementsAtEventForMode(event, 'nearest', { intersect: false }, false);
+          if (!points || !points.length) return;
+          const point = points[0];
+          const clickedDate = this.core?.dates?.[point.index] || chart?.data?.labels?.[point.index];
+          openDateModalFromChart(clickedDate, { tab: 'headlines' });
+        },
+      },
     }, Chart);
+    this.applyLegendTriStateStyles('news', this.charts.news, { update: false });
 
     this.upsertChart('serp', this.nodes.serpChart, {
       type: 'line',
@@ -1902,8 +2749,26 @@ class EntityTabController {
           },
         ],
       },
-      options: lineCommon,
+      options: {
+        ...lineCommon,
+        plugins: {
+          ...lineCommon.plugins,
+          legend: this.buildLegendTriStateOptions('serp', { labels: { color: '#eaf5f5' } }),
+        },
+        onClick: (event, _elements, chart) => {
+          const points = chart.getElementsAtEventForMode(event, 'nearest', { intersect: false }, false);
+          if (!points || !points.length) return;
+          const point = points[0];
+          const clickedDate = serpSeries?.dates?.[point.index] || chart?.data?.labels?.[point.index];
+          openDateModalFromChart(clickedDate, {
+            tab: 'features',
+            featureType: 'organic',
+            featureDisplayName: 'Organic',
+          });
+        },
+      },
     }, Chart);
+    this.applyLegendTriStateStyles('serp', this.charts.serp, { update: false });
 
     const isIndexSnapshot = !selectedEntity;
     const featureDatasets = isIndexSnapshot
@@ -2038,16 +2903,13 @@ class EntityTabController {
         animation: false,
         interaction: { mode: 'index', intersect: false },
         onClick: (event, _elements, chart) => {
-          const selected = this.selectedRow();
-          if (!selected) return;
           const points = chart.getElementsAtEventForMode(event, 'nearest', { intersect: true }, false);
           if (!points || !points.length) return;
           const point = points[0];
           const clickedDate = featureCompositeSeries.dates[point.index];
           const clickedSeries = featureCompositeSeries.datasets[point.datasetIndex];
           if (!clickedDate || !clickedSeries?.rawFeature) return;
-          this.openEntityModal(selected, {
-            date: clickedDate,
+          openDateModalFromChart(clickedDate, {
             tab: 'features',
             featureType: clickedSeries.rawFeature,
             featureDisplayName: featureTypeLabel(clickedSeries.rawFeature),
@@ -2068,7 +2930,7 @@ class EntityTabController {
           },
         },
         plugins: {
-          legend: { labels: { color: '#eaf5f5' } },
+          legend: this.buildLegendTriStateOptions('featureComposite', { labels: { color: '#eaf5f5' } }),
           tooltip: {
             callbacks: {
               label: (context) => `${context.dataset.label}: ${formatPercentPoints(context.parsed.y, 1, 'N/A')}`,
@@ -2077,19 +2939,228 @@ class EntityTabController {
         },
       },
     }, Chart);
+    this.applyLegendTriStateStyles('featureComposite', this.charts.featureComposite, { update: false });
+
+    const featurePresenceMetric = String(featurePresenceSeries?.metric || '').trim();
+    const featurePresenceMetricConfig = FEATURE_PRESENCE_METRICS[featurePresenceMetric] || FEATURE_PRESENCE_METRICS.presence_rate;
+    const isFeaturePresencePercentScale = featurePresenceMetricConfig.percentScale !== false;
+    const isSerpSizeMetric = featurePresenceMetric === 'serp_size';
+    const isSerpSizeStackedMetric = featurePresenceMetric === 'serp_size_stacked';
+    const featurePresenceStacked = isSerpSizeStackedMetric;
+    const featurePresenceDatasets = (featurePresenceSeries?.datasets || []).map((dataset, index) => {
+      const rawFeature = String(dataset?.rawFeature || '').trim();
+      const baseColor = FEATURE_TYPE_COLORS[rawFeature] || FEATURE_COMPOSITE_COLORS[index % FEATURE_COMPOSITE_COLORS.length];
+      const color = isSerpSizeMetric
+        ? 'rgba(147,228,255,.95)'
+        : isSerpSizeStackedMetric
+          ? baseColor
+          : baseColor;
+      const backgroundColor = isSerpSizeMetric
+        ? 'rgba(147,228,255,.22)'
+        : isSerpSizeStackedMetric
+          ? withAlpha(baseColor, 0.5)
+          : baseColor;
+      return {
+        label: featureTypeLabel(rawFeature || dataset?.feature || ''),
+        data: Array.isArray(dataset?.values) ? dataset.values : [],
+        details: Array.isArray(dataset?.details) ? dataset.details : [],
+        rawFeature,
+        borderColor: color,
+        backgroundColor,
+        pointBackgroundColor: color,
+        pointBorderColor: color,
+        borderWidth: isSerpSizeMetric ? 2.8 : isSerpSizeStackedMetric ? 1.4 : 2,
+        fill: isSerpSizeMetric || isSerpSizeStackedMetric,
+        stack: featurePresenceStacked ? 'feature-presence-slots' : undefined,
+        pointRadius: 0,
+        pointHoverRadius: (isSerpSizeMetric || isSerpSizeStackedMetric) ? 4 : 3,
+        tension: (isSerpSizeMetric || isSerpSizeStackedMetric) ? 0.2 : 0.24,
+        spanGaps: true,
+      };
+    });
+    this.upsertChart('featurePresence', this.nodes.featurePresenceChart, {
+      type: 'line',
+      data: {
+        labels: featurePresenceSeries?.dates || [],
+        datasets: featurePresenceDatasets,
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: 'index', intersect: false },
+        onClick: (event, _elements, chart) => {
+          const points = chart.getElementsAtEventForMode(event, 'nearest', { intersect: false }, false);
+          if (!points || !points.length) return;
+          const point = points[0];
+          const clickedDate = featurePresenceSeries?.dates?.[point.index] || chart?.data?.labels?.[point.index];
+          const clickedDataset = featurePresenceSeries?.datasets?.[point.datasetIndex];
+          if (!clickedDate) return;
+          if (isSerpSizeMetric) {
+            openDateModalFromChart(clickedDate, { tab: 'features' });
+            return;
+          }
+          if (isSerpSizeStackedMetric) {
+            const clickedFeature = String(clickedDataset?.rawFeature || '').trim();
+            if (!clickedFeature) {
+              openDateModalFromChart(clickedDate, { tab: 'features' });
+              return;
+            }
+            openDateModalFromChart(clickedDate, {
+              tab: 'features',
+              featureType: clickedFeature,
+              featureDisplayName: featureTypeLabel(clickedFeature),
+            });
+            return;
+          }
+          if (!clickedDataset?.rawFeature) return;
+          openDateModalFromChart(clickedDate, {
+            tab: 'features',
+            featureType: clickedDataset.rawFeature,
+            featureDisplayName: featureTypeLabel(clickedDataset.rawFeature),
+          });
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            min: 0,
+            stacked: featurePresenceStacked,
+            max: isFeaturePresencePercentScale ? 100 : undefined,
+            ticks: {
+              stepSize: isFeaturePresencePercentScale ? 20 : undefined,
+              callback: (value) => (isFeaturePresencePercentScale ? `${value}%` : formatInteger(value, '0')),
+              color: '#a6d7dd',
+            },
+            grid: { color: 'rgba(162,235,243,.08)' },
+          },
+          x: {
+            ticks: { color: '#a6d7dd', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
+            grid: { color: 'rgba(162,235,243,.05)' },
+          },
+        },
+        plugins: {
+          legend: this.buildLegendTriStateOptions('featurePresence', { labels: { color: '#eaf5f5' } }),
+          tooltip: {
+            enabled: false,
+            external: (tooltipContext) => this.renderExternalChartTooltip(tooltipContext, { chartKey: 'feature-presence' }),
+            callbacks: {
+              label: (context) => {
+                const details = context.dataset?.details?.[context.dataIndex] || null;
+                const numerator = Number(details?.numerator) || 0;
+                const denominator = Number(details?.denominator) || 0;
+                if (!isFeaturePresencePercentScale) {
+                  const slotCount = Number(context.parsed.y);
+                  const avgSlotsPerActive = Number(details?.avgSlotsPerActive);
+                  const pageOneSlots = Number(details?.pageOneSlots) || 0;
+                  const lines = [
+                    `${context.dataset.label}: ${formatInteger(slotCount, '0')} slots`,
+                    `${formatInteger(numerator)}/${formatInteger(denominator)} ${featurePresenceMetricConfig.countLabel}`,
+                  ];
+                  if (isSerpSizeStackedMetric && pageOneSlots > 0) {
+                    lines.push(`${((slotCount / pageOneSlots) * 100).toFixed(1)}% of total page-one slots`);
+                  }
+                  if (Number.isFinite(avgSlotsPerActive)) {
+                    lines.push(`${avgSlotsPerActive.toFixed(2)} slots per active brand`);
+                  }
+                  return lines;
+                }
+                const rate = formatPercent(context.parsed.y, 1, 'N/A');
+                return [
+                  `${context.dataset.label}: ${rate}`,
+                  `${formatInteger(numerator)}/${formatInteger(denominator)} ${featurePresenceMetricConfig.countLabel}`,
+                ];
+              },
+              footer: (items) => {
+                const first = Array.isArray(items) && items.length ? items[0] : null;
+                if (!first) return '';
+                const details = first.dataset?.details?.[first.dataIndex] || null;
+                if (!details) return '';
+                const total = Number(details.total) || 0;
+                const negative = Number(details.negative) || 0;
+                const controlled = Number(details.controlled) || 0;
+                if (featurePresenceSeries.metric === 'serp_size') {
+                  return `Page-one slots: ${formatInteger(details.pageOneSlots || 0)} · Active brands: ${formatInteger(details.activeCount || 0)}`;
+                }
+                if (featurePresenceSeries.metric === 'serp_size_stacked') {
+                  return `Total page-one slots: ${formatInteger(details.pageOneSlots || 0)} · Active brands: ${formatInteger(details.activeCount || 0)}`;
+                }
+                if (featurePresenceSeries.metric === 'slot_share') {
+                  return `Feature slots: ${formatInteger(total)} · Page-one slots: ${formatInteger(details.pageOneSlots || 0)}`;
+                }
+                if (featurePresenceSeries.metric === 'presence_rate') {
+                  return `Brands with feature: ${formatInteger(details.presentCount || 0)} · Active brands: ${formatInteger(details.activeCount || 0)}`;
+                }
+                return `Negative: ${formatInteger(negative)} · Controlled: ${formatInteger(controlled)} · Total slots: ${formatInteger(total)}`;
+              },
+            },
+          },
+        },
+      },
+    }, Chart);
+    this.applyLegendTriStateStyles('featurePresence', this.charts.featurePresence, { update: false });
+
+    const isWindowLeaderboard = leaderboard?.mode === 'window';
+    const leaderboardSeriesLabel = isWindowLeaderboard ? 'Adjusted composite signal' : 'Composite signal';
+    const leaderboardMeta = Array.isArray(leaderboard?.meta) ? leaderboard.meta : [];
+    const leaderboardWeights = normalizeSignalWeights(this.signalWeights, this.config.signalSettings?.weights);
+    const ratioWithPct = (negative, total) => {
+      const neg = Number(negative) || 0;
+      const den = Number(total) || 0;
+      if (den <= 0) return `${formatInteger(neg)}/${formatInteger(den)}`;
+      return `${formatInteger(neg)}/${formatInteger(den)} (${((neg / den) * 100).toFixed(1)}%)`;
+    };
+    const componentPairs = (meta) => ([
+      { label: 'News', negative: Number(meta?.newsNegative) || 0, total: Number(meta?.newsTotal) || 0 },
+      { label: 'Organic', negative: Number(meta?.organicNegative) || 0, total: Number(meta?.organicTotal) || 0 },
+      { label: 'Top stories', negative: Number(meta?.topStoriesNegative) || 0, total: Number(meta?.topStoriesTotal) || 0 },
+      { label: 'AIO', negative: Number(meta?.aioNegative) || 0, total: Number(meta?.aioTotal) || 0 },
+      { label: 'PAA', negative: Number(meta?.paaNegative) || 0, total: Number(meta?.paaTotal) || 0 },
+      { label: 'Videos', negative: Number(meta?.videosNegative) || 0, total: Number(meta?.videosTotal) || 0 },
+      { label: 'Perspectives', negative: Number(meta?.perspectivesNegative) || 0, total: Number(meta?.perspectivesTotal) || 0 },
+    ]);
+    const leaderboardBasisForMeta = (meta) => {
+      const raw = String(meta?.listingBasis || '').trim().toLowerCase();
+      if (raw === 'page_one' || raw === 'page-one') return 'page_one';
+      return 'all';
+    };
+    const leaderboardBasisLabel = (basis) => (
+      basis === 'page_one'
+        ? 'Page-one only (organic + SERP features)'
+        : 'All listings (news + page one)'
+    );
+    const leaderboardDatasets = LEADERBOARD_COMPONENTS.map((component) => ({
+      label: component.label,
+      data: leaderboard.values.map((value, index) => {
+        const meta = leaderboardMeta[index];
+        if (!meta) return 0;
+        const basis = leaderboardBasisForMeta(meta);
+        const totalScore = Math.max(0, Number(value) || 0);
+        if (!Number.isFinite(totalScore) || totalScore <= 0) return 0;
+        const weightedComponents = LEADERBOARD_COMPONENTS.reduce((acc, entry) => {
+          const total = Number(meta?.[entry.totalKey]) || 0;
+          const negative = Number(meta?.[entry.key]) || 0;
+          const rate = total > 0 ? (negative / total) : 0;
+          const weight = Number(leaderboardWeights?.[entry.weightKey]) || 0;
+          const weighted = (basis === 'page_one' && entry.key === 'newsNegative') ? 0 : (rate * weight);
+          acc[entry.key] = Math.max(0, weighted);
+          return acc;
+        }, {});
+        const weightedTotal = Object.values(weightedComponents).reduce((sum, part) => sum + (Number(part) || 0), 0);
+        if (weightedTotal <= 0) return 0;
+        const componentWeighted = Number(weightedComponents[component.key]) || 0;
+        if (componentWeighted <= 0) return 0;
+        return totalScore * (componentWeighted / weightedTotal);
+      }),
+      borderRadius: 12,
+      backgroundColor: component.color,
+      stack: 'leaderboard-mix',
+    }));
 
     this.upsertChart('leaderboard', this.nodes.leaderboardChart, {
       type: 'bar',
       data: {
         labels: leaderboard.labels,
-        datasets: [
-          {
-            label: 'Composite signal',
-            data: leaderboard.values,
-            borderRadius: 12,
-            backgroundColor: leaderboard.values.map(() => 'rgba(255,130,97,.72)'),
-          },
-        ],
+        datasets: leaderboardDatasets,
       },
       options: {
         responsive: true,
@@ -2108,31 +3179,119 @@ class EntityTabController {
         scales: {
           x: {
             beginAtZero: true,
-            ticks: { color: '#a6d7dd' },
+            stacked: true,
+            ticks: {
+              color: '#a6d7dd',
+              callback: (value) => (isWindowLeaderboard ? `${value}%` : `${value}`),
+            },
             grid: { color: 'rgba(162,235,243,.08)' },
           },
           y: {
+            stacked: true,
             ticks: { color: '#eaf5f5' },
             grid: { display: false },
           },
         },
         plugins: {
           legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (context) => {
+                const value = Number(context.parsed.x);
+                if (!Number.isFinite(value)) return '';
+                if (isWindowLeaderboard) return `Score contribution · ${context.dataset.label}: ${value.toFixed(1)}%`;
+                return `Score contribution · ${context.dataset.label}: ${value.toFixed(1)}`;
+              },
+              footer: (items) => {
+                const first = Array.isArray(items) && items.length ? items[0] : null;
+                const meta = first ? leaderboardMeta[first.dataIndex] : null;
+                const totalValue = first ? Number(leaderboard.values[first.dataIndex] ?? 0) : 0;
+                if (!meta) return '';
+                const listingBasis = leaderboardBasisForMeta(meta);
+                const listingLabel = listingBasis === 'page_one' ? 'Page-one listings' : 'Listings';
+                const pairs = componentPairs(meta);
+                const primaryPairs = pairs.slice(0, 2).map((entry) => `${entry.label} ${ratioWithPct(entry.negative, entry.total)}`);
+                const featurePairs = pairs.slice(2)
+                  .filter((entry) => entry.total > 0 || entry.negative > 0)
+                  .map((entry) => `${entry.label} ${ratioWithPct(entry.negative, entry.total)}`);
+                if (isWindowLeaderboard) {
+                  return [
+                    `Score (${leaderboardSeriesLabel.toLowerCase()}): ${totalValue.toFixed(1)}%`,
+                    `${listingLabel}: ${ratioWithPct(meta.totalNegative, meta.totalListings)}`,
+                    `Basis: ${leaderboardBasisLabel(listingBasis)}`,
+                    `Days: ${formatInteger(meta.negativeDays)} negative / ${formatInteger(meta.activeDays)} active (${formatInteger(meta.zeroNegativeDays)} zero-negative)`,
+                    `Avg visibility: ${Number(meta.avgDailyListings || 0).toFixed(1)} listings/day`,
+                    `Raw composite: ${Number(meta.avgDailyScorePct || 0).toFixed(1)}% · Adjusted listing rate: ${Number(meta.adjustedRatePct || 0).toFixed(1)}%`,
+                    `Core: ${primaryPairs.join(' · ')}`,
+                    featurePairs.length
+                      ? `SERP features: ${featurePairs.join(' · ')}`
+                      : 'SERP features: none in this window',
+                  ];
+                }
+                return [
+                  `Score (${leaderboardSeriesLabel.toLowerCase()}): ${totalValue.toFixed(1)}`,
+                  `Core: ${primaryPairs.join(' · ')}`,
+                  featurePairs.length
+                    ? `SERP features: ${featurePairs.join(' · ')}`
+                    : 'SERP features: none on active date',
+                ];
+              },
+            },
+          },
         },
       },
     }, Chart);
 
+    this.syncLeaderboardControls();
     this.nodes.newsPill.textContent = selectedEntity ? `${selectedEntity}` : `${visibleEntities.length} entities`;
     this.nodes.serpPill.textContent = selectedEntity ? `${selectedEntity}` : `${visibleEntities.length} entities`;
     this.nodes.featurePill.textContent = selectedEntity ? `${selectedEntity}` : `Index snapshot`;
     if (this.nodes.featureCompositePill) this.nodes.featureCompositePill.textContent = selectedEntity ? `${selectedEntity}` : 'Index composite';
-    this.nodes.leaderboardPill.textContent = `${leaderboard.labels.length} ranked`;
+    if (this.nodes.featurePresencePill) {
+      const scopeLabel = selectedEntity ? selectedEntity : 'Index trends';
+      this.nodes.featurePresencePill.textContent = `${scopeLabel} · ${featurePresenceMetricConfig.shortLabel}`;
+    }
+    if (this.nodes.leaderboardPill) {
+      if (isWindowLeaderboard) {
+        const minDaily = Math.max(0, Number(leaderboard?.minAvgDailyListings ?? this.state.leaderboardMinDailyListings) || 0);
+        const listingBasis = String(leaderboard?.listingBasis || this.state.leaderboardListingBasis || '').trim().toLowerCase() === 'page_one'
+          ? 'page_one'
+          : 'all';
+        const basisShort = listingBasis === 'page_one' ? 'page one' : 'all';
+        this.nodes.leaderboardPill.textContent = `${leaderboard.labels.length} ranked · min ${minDaily}/day · ${basisShort}`;
+      } else {
+        this.nodes.leaderboardPill.textContent = `${leaderboard.labels.length} ranked`;
+      }
+    }
+    if (this.nodes.leaderboardCaption) {
+      if (isWindowLeaderboard) {
+        const eligible = Number(leaderboard?.eligibleCandidates) || 0;
+        const total = Number(leaderboard?.totalCandidates) || 0;
+        const minDaily = Math.max(0, Number(leaderboard?.minAvgDailyListings ?? this.state.leaderboardMinDailyListings) || 0);
+        const listingBasis = String(leaderboard?.listingBasis || this.state.leaderboardListingBasis || '').trim().toLowerCase() === 'page_one'
+          ? 'page_one'
+          : 'all';
+        const basisLabel = listingBasis === 'page_one' ? 'page-one listings' : 'all listings';
+        const summary = this.state.leaderboardDirection === 'best'
+          ? `Lowest adjusted composite signal over ${this.state.days} days.`
+          : `Highest adjusted composite signal over ${this.state.days} days.`;
+        this.nodes.leaderboardCaption.textContent = `${summary} ${eligible}/${total} eligible at ${minDaily}+ ${basisLabel}/day.`;
+      } else {
+        this.nodes.leaderboardCaption.textContent = 'Highest combined crisis pressure on the active date.';
+      }
+    }
     this.nodes.newsCaption.textContent = selectedEntity
       ? `${selectedEntity} across ${this.state.days} days.`
       : `Visible ${this.config.label.toLowerCase()} across ${this.state.days} days.`;
     if (this.nodes.serpTitle) this.nodes.serpTitle.textContent = 'Organic Search Results';
-    if (this.nodes.featureTitle) this.nodes.featureTitle.textContent = `SERP Feature Snapshot on ${this.state.date}`;
-    if (this.nodes.featureCompositeTitle) this.nodes.featureCompositeTitle.textContent = 'Negative SERP Feature Composite';
+    if (this.nodes.featureTitle) this.nodes.featureTitle.textContent = `Negative Page One Snapshot on ${this.state.date}`;
+    if (this.nodes.featureCompositeTitle) this.nodes.featureCompositeTitle.textContent = 'Negative Page One SERP Composite';
+    if (this.nodes.featurePresenceTitle) this.nodes.featurePresenceTitle.textContent = 'SERP Feature Trends';
+    if (this.nodes.featurePresenceCaption) {
+      this.nodes.featurePresenceCaption.textContent = `${featurePresenceMetricConfig.label}: ${featurePresenceSeries?.metricDescription || featurePresenceMetricConfig.description}.`;
+    }
+    this.syncFeaturePresenceMetricControl();
+    this.updateHelpText(selectedEntity);
   }
 
   upsertChart(key, canvas, chartConfig, Chart) {
@@ -2154,11 +3313,17 @@ class EntityTabController {
       const existing = this.charts[key];
       existing.data = chartConfig.data;
       existing.options = chartConfig.options;
+      if (this.hasActiveLegendTriState(key)) {
+        this.applyLegendTriStateStyles(key, existing, { update: false });
+      }
       existing.update();
       return;
     }
     const context = canvas.getContext('2d');
     this.charts[key] = new Chart(context, chartConfig);
+    if (this.hasActiveLegendTriState(key)) {
+      this.applyLegendTriStateStyles(key, this.charts[key], { update: true });
+    }
   }
 
   async refreshRowsAndVisuals({ updateCharts = true, replaceUrl = true } = {}) {
@@ -2244,6 +3409,7 @@ class EntityTabController {
     this.render();
     this.bind();
     this.nodes.queryInput.value = this.state.query;
+    await this.loadSharedPresets({ quiet: true });
     await ensureChartJs();
     await this.load({ replaceUrl: false });
   }
@@ -2273,6 +3439,11 @@ class EntityTabController {
         // Ignore Chart.js teardown failures.
       }
     });
+    this.externalTooltipIds.forEach((id) => {
+      const node = document.getElementById(id);
+      if (node?.parentNode) node.parentNode.removeChild(node);
+    });
+    this.externalTooltipIds.clear();
     this.charts = {};
     this.host.innerHTML = '';
     this.host.hidden = true;

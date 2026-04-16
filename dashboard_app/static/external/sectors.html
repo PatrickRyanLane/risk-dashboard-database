@@ -89,7 +89,7 @@ h1{font-size:28px;margin:6px 0 18px}
 .controls .controls-inputs select{width:100%;min-width:0}
 .controls .controls-inputs button{width:auto;white-space:nowrap;justify-self:start}
 .controls .date-input-stack{display:flex;flex-direction:column;gap:8px;min-width:0}
-.controls .lookback-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;width:100%}
+.controls .lookback-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%}
 .controls .lookback-btn{min-width:0;padding:0 6px;font-weight:600}
 .controls .lookback-btn.active{border-color:#58dbed;box-shadow:0 0 0 1px rgba(88,219,237,.35);color:#58dbed}
 .controls .controls-aux{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
@@ -300,6 +300,8 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
           <button type="button" class="lookback-btn" data-days="45" title="Show last 45 days">45d</button>
           <button type="button" class="lookback-btn" data-days="60" title="Show last 60 days">60d</button>
           <button type="button" class="lookback-btn" data-days="90" title="Show last 90 days">90d</button>
+          <button type="button" class="lookback-btn" data-days="180" title="Show last 180 days">180d</button>
+          <button type="button" class="lookback-btn" data-days="365" title="Show last 365 days">365d</button>
         </div>
       </div>
       <input id="filterInput" type="text" placeholder="Type to filter…" />
@@ -448,7 +450,7 @@ tbody tr td:last-child{border-right:1px solid #0f1831;border-radius:0 10px 10px 
 /* ================= Config & Runtime ================= */
 const DEFAULT_DAYS = 30;
 const EXTENDED_DAYS = 90;
-const LOOKBACK_OPTIONS = [30, 45, 60, 90];
+const LOOKBACK_OPTIONS = [30, 45, 60, 90, 180, 365];
 let currentDays = DEFAULT_DAYS;
 let extendingHistoryPromise = null;
 let extendedHistoryQueued = false;
