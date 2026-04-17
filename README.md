@@ -83,6 +83,12 @@ Optional:
 - `sql/rpcs.sql` for helper RPCs
 - `sql/rls.sql` if you want row-level security policies
 
+If you update materialized-view definitions on an existing database, run:
+
+```bash
+psql "$DATABASE_URL" -f sql/rebuild_serp_feature_mvs.sql
+```
+
 ## Loading data
 
 Use the active ingest scripts from `../risk-dashboard/` if you have both repos checked out side by side.

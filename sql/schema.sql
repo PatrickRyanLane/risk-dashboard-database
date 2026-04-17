@@ -374,6 +374,63 @@ create table if not exists serp_feature_item_overrides (
 create index if not exists serp_feature_item_overrides_item_idx
   on serp_feature_item_overrides (serp_feature_item_id);
 
+create table if not exists serp_feature_url_overrides (
+  id uuid primary key default gen_random_uuid(),
+  entity_type text not null,
+  entity_id uuid not null,
+  feature_type text not null,
+  url_hash text not null,
+  override_sentiment_label text,
+  override_control_class text,
+  note text,
+  edited_by text,
+  edited_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  unique (entity_type, entity_id, feature_type, url_hash)
+);
+
+create index if not exists serp_feature_url_overrides_lookup_idx
+  on serp_feature_url_overrides (entity_type, entity_id, feature_type, url_hash);
+
+create index if not exists serp_feature_url_overrides_hash_idx
+  on serp_feature_url_overrides (url_hash);
+
+insert into serp_feature_url_overrides (
+  entity_type,
+  entity_id,
+  feature_type,
+  url_hash,
+  override_sentiment_label,
+  override_control_class,
+  note,
+  edited_by,
+  edited_at,
+  created_at
+)
+select distinct on (sfi.entity_type, sfi.entity_id, sfi.feature_type, sfi.url_hash)
+  sfi.entity_type,
+  sfi.entity_id,
+  sfi.feature_type,
+  sfi.url_hash,
+  ov.override_sentiment_label,
+  ov.override_control_class,
+  ov.note,
+  ov.edited_by,
+  ov.edited_at,
+  ov.created_at
+from serp_feature_item_overrides ov
+join serp_feature_items sfi on sfi.id = ov.serp_feature_item_id
+where sfi.entity_id is not null
+  and coalesce(sfi.url_hash, '') <> ''
+order by sfi.entity_type, sfi.entity_id, sfi.feature_type, sfi.url_hash, ov.edited_at desc, ov.created_at desc
+on conflict (entity_type, entity_id, feature_type, url_hash) do update set
+  override_sentiment_label = excluded.override_sentiment_label,
+  override_control_class = excluded.override_control_class,
+  note = excluded.note,
+  edited_by = excluded.edited_by,
+  edited_at = excluded.edited_at
+where excluded.edited_at >= serp_feature_url_overrides.edited_at;
+
 create table if not exists serp_feature_summaries (
   id uuid primary key default gen_random_uuid(),
   date date not null,

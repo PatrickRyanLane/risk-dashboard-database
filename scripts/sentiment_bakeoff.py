@@ -285,9 +285,10 @@ def query_rows(conn, sources: list[str], days_back: int, per_source_limit: int) 
                   sfi.url,
                   sfi.title,
                   sfi.snippet,
-                  coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as baseline_label
+                  coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as baseline_label
                 from serp_feature_items sfi
                 left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
                 where coalesce(sfi.title, '') <> ''
                   and (%s <= 0 or sfi.date >= current_date - (%s::text || ' days')::interval)
                 order by random()

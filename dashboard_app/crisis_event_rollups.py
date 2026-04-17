@@ -366,15 +366,16 @@ def _load_top_stories_items(cur, start_date, end_date, entity_types: list[str], 
                    sfi.snippet,
                    sfi.url,
                    sfi.source,
-                   coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
+                   coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
                    coalesce(sfi.finance_routine, false) as finance_routine
             from serp_feature_items sfi
             join companies c on c.id = sfi.entity_id
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
             where sfi.date between %s and %s
               and sfi.entity_type = any(%s)
               and sfi.feature_type = 'top_stories_items'
-              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
               and coalesce(sfi.finance_routine, false) = false
               {entity_sql}
             order by sfi.date, c.name, sfi.position nulls last, sfi.id
@@ -409,15 +410,16 @@ def _load_top_stories_items(cur, start_date, end_date, entity_types: list[str], 
                    sfi.snippet,
                    sfi.url,
                    sfi.source,
-                   coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
+                   coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
                    coalesce(sfi.finance_routine, false) as finance_routine
             from serp_feature_items sfi
             join ceos ceo on ceo.id = sfi.entity_id
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
             where sfi.date between %s and %s
               and sfi.entity_type = 'ceo'
               and sfi.feature_type = 'top_stories_items'
-              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
               and coalesce(sfi.finance_routine, false) = false
               {entity_sql}
             order by sfi.date, ceo.name, sfi.position nulls last, sfi.id

@@ -68,6 +68,7 @@ _refresh_last_status = {
     'duration_ms': None,
     'error': None,
 }
+_override_refresh_pending = False
 
 REFRESH_LOCK_KEY = int(os.getenv("REFRESH_LOCK_KEY", "918273645"))
 
@@ -103,6 +104,20 @@ def _release_refresh_lock(conn) -> None:
             cur.execute("select pg_advisory_unlock(%s)", (REFRESH_LOCK_KEY,))
     except Exception:
         pass
+
+
+def _mark_override_refresh_pending() -> None:
+    global _override_refresh_pending
+    with _refresh_lock:
+        _override_refresh_pending = True
+
+
+def _consume_override_refresh_pending() -> bool:
+    global _override_refresh_pending
+    with _refresh_lock:
+        pending = _override_refresh_pending
+        _override_refresh_pending = False
+    return pending
 
 DATE_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-(brand|ceo)-(articles|serps)-(modal|table)\.csv$')
 STOCK_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})-stock-data\.csv$')
@@ -496,10 +511,11 @@ def recompute_entity_day_narrative_rollup(
                sfi.snippet,
                sfi.url,
                sfi.source,
-               coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
+               coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
                coalesce(sfi.finance_routine, false) as finance_routine
         from serp_feature_items sfi
         left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+        left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
         where sfi.date = %s
           and sfi.entity_type = %s
           and sfi.entity_name = %s
@@ -1683,9 +1699,10 @@ def latest_negative_top_stories_narrative_date(entity: str, sector: str = ''):
             from serp_feature_items sfi
             join companies c on c.id = sfi.entity_id
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
             where sfi.entity_type = any(%s)
               and sfi.feature_type = 'top_stories_items'
-              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
               and coalesce(sfi.finance_routine, false) = false
               and sfi.narrative_primary_tag is not null
               {sector_sql}
@@ -1708,9 +1725,10 @@ def latest_negative_top_stories_narrative_date(entity: str, sector: str = ''):
         join ceos ceo on ceo.id = sfi.entity_id
         join companies c on c.id = ceo.company_id
         left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+        left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
         where sfi.entity_type = %s
           and sfi.feature_type = 'top_stories_items'
-          and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+          and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
           and coalesce(sfi.finance_routine, false) = false
           and sfi.narrative_primary_tag is not null
           {sector_sql}
@@ -1821,10 +1839,11 @@ def fetch_negative_top_stories_narrative_rows(entity: str, start_date, end_date,
             from serp_feature_items sfi
             join companies c on c.id = sfi.entity_id
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
             where sfi.date between %s and %s
               and sfi.entity_type = any(%s)
               and sfi.feature_type = 'top_stories_items'
-              and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+              and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
               and coalesce(sfi.finance_routine, false) = false
               and sfi.narrative_primary_tag is not null
               {sector_sql}
@@ -1859,10 +1878,11 @@ def fetch_negative_top_stories_narrative_rows(entity: str, start_date, end_date,
         join ceos ceo on ceo.id = sfi.entity_id
         join companies c on c.id = ceo.company_id
         left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+        left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
         where sfi.date between %s and %s
           and sfi.entity_type = %s
           and sfi.feature_type = 'top_stories_items'
-          and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+          and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
           and coalesce(sfi.finance_routine, false) = false
           and sfi.narrative_primary_tag is not null
           {sector_sql}
@@ -3360,14 +3380,15 @@ def serp_feature_items_json():
             select sfi.id, sfi.date, sfi.entity_name, sfi.feature_type,
                    sfi.title, sfi.snippet, sfi.url, sfi.domain, sfi.position, sfi.source,
                    to_jsonb(sfi) ->> 'published_date' as published_date,
-                   coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment,
-                   coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) as control_class,
-                   ov.override_sentiment_label as sentiment_override,
-                   ov.override_control_class as control_override,
+                   coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment,
+                   coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class) as control_class,
+                   coalesce(ov.override_sentiment_label, uov.override_sentiment_label) as sentiment_override,
+                   coalesce(ov.override_control_class, uov.override_control_class) as control_override,
                    coalesce(sfi.llm_sentiment_label, sfi.llm_risk_label) as llm_label
             from serp_feature_items sfi
             join companies c on c.id = sfi.entity_id
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
             where sfi.date = %s
               and sfi.entity_type = any(%s)
               {scope_sql}
@@ -3393,15 +3414,16 @@ def serp_feature_items_json():
             select sfi.id, sfi.date, sfi.entity_name, sfi.feature_type,
                    sfi.title, sfi.snippet, sfi.url, sfi.domain, sfi.position, sfi.source,
                    to_jsonb(sfi) ->> 'published_date' as published_date,
-                   coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment,
-                   coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) as control_class,
-                   ov.override_sentiment_label as sentiment_override,
-                   ov.override_control_class as control_override,
+                   coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment,
+                   coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class) as control_class,
+                   coalesce(ov.override_sentiment_label, uov.override_sentiment_label) as sentiment_override,
+                   coalesce(ov.override_control_class, uov.override_control_class) as control_override,
                    coalesce(sfi.llm_sentiment_label, sfi.llm_risk_label) as llm_label
             from serp_feature_items sfi
             join ceos ceo on ceo.id = sfi.entity_id
             join companies c on c.id = ceo.company_id
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
             where sfi.date = %s
               and sfi.entity_type = %s
               {scope_sql}
@@ -3488,10 +3510,11 @@ def narrative_tags_json():
                     from serp_feature_items sfi
                     {join_sql}
                     left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                    left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
                     where sfi.date = %s
                       and sfi.entity_type = any(%s)
                       and sfi.feature_type = 'top_stories_items'
-                      and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
                       and coalesce(sfi.finance_routine, false) = false
                       and sfi.narrative_primary_tag is not null
                       {scope_sql}
@@ -3509,10 +3532,11 @@ def narrative_tags_json():
                     from serp_feature_items sfi
                     {join_sql}
                     left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                    left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
                     where sfi.date = %s
                       and sfi.entity_type = %s
                       and sfi.feature_type = 'top_stories_items'
-                      and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
                       and coalesce(sfi.finance_routine, false) = false
                       and sfi.narrative_primary_tag is not null
                       {scope_sql}
@@ -3690,11 +3714,12 @@ def narrative_timeline_json():
                 from serp_feature_items sfi
                 {join_sql}
                 left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
                 where sfi.date between %s and %s
                   and sfi.entity_type = any(%s)
                   and sfi.entity_name = %s
                   and sfi.feature_type = 'top_stories_items'
-                  and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                  and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
                   and coalesce(sfi.finance_routine, false) = false
                   and sfi.narrative_primary_tag is not null
                   {scope_sql}
@@ -3712,11 +3737,12 @@ def narrative_timeline_json():
                 from serp_feature_items sfi
                 {join_sql}
                 left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
                 where sfi.date between %s and %s
                   and sfi.entity_type = %s
                   and sfi.entity_name = %s
                   and sfi.feature_type = 'top_stories_items'
-                  and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                  and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
                   and coalesce(sfi.finance_routine, false) = false
                   and sfi.narrative_primary_tag is not null
                   {scope_sql}
@@ -3967,11 +3993,12 @@ def narrative_overlay_json():
                     from serp_feature_items sfi
                     {join_sql}
                     left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                    left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
                     where sfi.date between %s and %s
                       and sfi.entity_type = any(%s)
                       and sfi.entity_name = %s
                       and sfi.feature_type = 'top_stories_items'
-                      and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
                       and coalesce(sfi.finance_routine, false) = false
                       and sfi.narrative_primary_tag is not null
                       {scope_sql}
@@ -3991,11 +4018,12 @@ def narrative_overlay_json():
                     from serp_feature_items sfi
                     {join_sql}
                     left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                    left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
                     where sfi.date between %s and %s
                       and sfi.entity_type = %s
                       and sfi.entity_name = %s
                       and sfi.feature_type = 'top_stories_items'
-                      and coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      and coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
                       and coalesce(sfi.finance_routine, false) = false
                       and sfi.narrative_primary_tag is not null
                       {scope_sql}
@@ -4122,13 +4150,14 @@ def serp_feature_series_json():
         sql = f"""
             select sfi.date,
                    count(*) as total_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count,
-                   sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
+                   sum(case when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
+                   sum(case when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
+                   sum(case when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count,
+                   sum(case when coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
             from serp_feature_items sfi
             join companies c on c.id = sfi.entity_id
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
             where sfi.entity_type = any(%s)
               and sfi.entity_name = %s
               and sfi.feature_type = %s
@@ -4143,14 +4172,15 @@ def serp_feature_series_json():
         sql = f"""
             select sfi.date,
                    count(*) as total_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
-                   sum(case when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count,
-                   sum(case when coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
+                   sum(case when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'positive' then 1 else 0 end) as positive_count,
+                   sum(case when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'neutral' then 1 else 0 end) as neutral_count,
+                   sum(case when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative' then 1 else 0 end) as negative_count,
+                   sum(case when coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'controlled' then 1 else 0 end) as controlled_count
             from serp_feature_items sfi
             join ceos ceo on ceo.id = sfi.entity_id
             join companies c on c.id = ceo.company_id
             left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+            left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
             where sfi.entity_type = %s
               and sfi.entity_name = %s
               and sfi.feature_type = %s
@@ -5417,28 +5447,29 @@ def insights_evidence_json():
                        sfi.snippet,
                        sfi.url,
                        coalesce(sfi.source, sfi.domain) as source,
-                       coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
-                       coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class, '') as control_class,
+                       coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
+                       coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class, '') as control_class,
                        sfi.llm_risk_label,
                        sfi.narrative_primary_tag,
                        case
-                           when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
-                                and coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
+                           when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                                and coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
                                then 'negative_and_uncontrolled'
-                           when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                           when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
                                then 'negative'
                            else 'uncontrolled'
                        end as included_reason,
                        4 as sort_weight
                 from serp_feature_items sfi
                 left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
                 where sfi.entity_type = any(%s)
                   and sfi.entity_id = %s
                   and sfi.feature_type = 'top_stories_items'
                   and sfi.date between %s and %s
                   and (
-                      coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
-                      or coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
+                      coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      or coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
                   )
             ),
             deduped as (
@@ -5560,28 +5591,29 @@ def insights_evidence_json():
                        sfi.snippet,
                        sfi.url,
                        coalesce(sfi.source, sfi.domain) as source,
-                       coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
-                       coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class, '') as control_class,
+                       coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) as sentiment_label,
+                       coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class, '') as control_class,
                        sfi.llm_risk_label,
                        sfi.narrative_primary_tag,
                        case
-                           when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
-                                and coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
+                           when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                                and coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
                                then 'negative_and_uncontrolled'
-                           when coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                           when coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
                                then 'negative'
                            else 'uncontrolled'
                        end as included_reason,
                        4 as sort_weight
                 from serp_feature_items sfi
                 left join serp_feature_item_overrides ov on ov.serp_feature_item_id = sfi.id
+                left join serp_feature_url_overrides uov on uov.entity_type = sfi.entity_type and uov.entity_id = sfi.entity_id and uov.feature_type = sfi.feature_type and uov.url_hash = sfi.url_hash
                 where sfi.entity_type = 'ceo'
                   and sfi.entity_id = %s
                   and sfi.feature_type = 'top_stories_items'
                   and sfi.date between %s and %s
                   and (
-                      coalesce(ov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
-                      or coalesce(ov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
+                      coalesce(ov.override_sentiment_label, uov.override_sentiment_label, sfi.llm_sentiment_label, sfi.sentiment_label) = 'negative'
+                      or coalesce(ov.override_control_class, uov.override_control_class, sfi.llm_control_class, sfi.control_class) = 'uncontrolled'
                   )
             ),
             deduped as (
@@ -5933,6 +5965,7 @@ def apply_override():
     crisis_event_context = None
     try:
         with conn.cursor() as cur:
+            row = None
             if mention_type == 'company_article':
                 cur.execute(
                     """
@@ -5952,6 +5985,7 @@ def apply_override():
                     """,
                     (sentiment_override, relevant_override, control_override, note, user_email, mention_id),
                 )
+                row = cur.fetchone()
             elif mention_type == 'ceo_article':
                 cur.execute(
                     """
@@ -5971,6 +6005,7 @@ def apply_override():
                     """,
                     (sentiment_override, relevant_override, control_override, note, user_email, mention_id),
                 )
+                row = cur.fetchone()
             elif mention_type == 'serp_result':
                 cur.execute(
                     """
@@ -5987,6 +6022,7 @@ def apply_override():
                     """,
                     (serp_result_id, sentiment_override, control_override, note, user_email),
                 )
+                row = cur.fetchone()
             elif mention_type == 'serp_feature_item':
                 cur.execute(
                     """
@@ -6003,9 +6039,27 @@ def apply_override():
                     """,
                     (serp_feature_item_id, sentiment_override, control_override, note, user_email),
                 )
+                row = cur.fetchone()
+                cur.execute(
+                    """
+                    insert into serp_feature_url_overrides
+                      (entity_type, entity_id, feature_type, url_hash, override_sentiment_label, override_control_class, note, edited_by)
+                    select sfi.entity_type, sfi.entity_id, sfi.feature_type, sfi.url_hash, %s, %s, %s, %s
+                    from serp_feature_items sfi
+                    where sfi.id = %s
+                      and sfi.entity_id is not null
+                      and coalesce(sfi.url_hash, '') <> ''
+                    on conflict (entity_type, entity_id, feature_type, url_hash) do update set
+                      override_sentiment_label = excluded.override_sentiment_label,
+                      override_control_class = excluded.override_control_class,
+                      note = excluded.note,
+                      edited_by = excluded.edited_by,
+                      edited_at = now()
+                    """,
+                    (sentiment_override, control_override, note, user_email, serp_feature_item_id),
+                )
             else:
                 return jsonify({'error': 'invalid mention_type'}), 400
-            row = cur.fetchone()
             if mention_type == 'company_article':
                 crisis_event_context = load_company_article_crisis_event_context(cur, mention_id)
             elif mention_type == 'ceo_article':
@@ -6042,7 +6096,8 @@ def apply_override():
                 app.logger.warning("refresh after override skipped: db unavailable")
                 return
             if not _try_acquire_refresh_lock(lock_conn):
-                app.logger.info("refresh after override skipped: refresh already running")
+                _mark_override_refresh_pending()
+                app.logger.info("refresh after override skipped: refresh already running (queued follow-up refresh)")
                 put_conn(lock_conn)
                 return
             try:
@@ -6110,6 +6165,36 @@ def apply_override():
             finally:
                 _release_refresh_lock(lock_conn)
                 put_conn(lock_conn)
+
+            if _consume_override_refresh_pending():
+                app.logger.info("refresh after override: running queued follow-up refresh")
+                try:
+                    follow_conn = get_autocommit_conn("refresh_after_override_queued")
+                except Exception:
+                    app.logger.warning("queued refresh after override skipped: db unavailable")
+                    return
+                if not _try_acquire_refresh_lock(follow_conn):
+                    _mark_override_refresh_pending()
+                    app.logger.info("queued refresh after override deferred: lock unavailable")
+                    put_conn(follow_conn)
+                    return
+                try:
+                    refresh_article_daily_counts_view(conn=follow_conn)
+                    refresh_serp_daily_counts_view(conn=follow_conn)
+                    refresh_serp_feature_daily_view(conn=follow_conn)
+                    refresh_serp_feature_control_daily_view(conn=follow_conn)
+                    refresh_serp_feature_daily_index_view(conn=follow_conn)
+                    refresh_serp_feature_control_daily_index_view(conn=follow_conn)
+                    clear_api_cache_prefix("negative_summary:")
+                    clear_api_cache_prefix("daily_counts:")
+                    clear_api_cache_prefix("serp_features:")
+                    clear_api_cache_prefix("serp_feature_controls:")
+                    clear_narrative_api_caches()
+                except Exception:
+                    app.logger.exception("queued refresh after override failed")
+                finally:
+                    _release_refresh_lock(follow_conn)
+                    put_conn(follow_conn)
 
         threading.Thread(target=_refresh_after_override, daemon=True).start()
     except Exception:
