@@ -2577,7 +2577,17 @@ def root():
     view = current_view()
     if view == 'internal':
         require_internal_access()
-    return send_legacy_dashboard(view)
+    return serve_shell_path(view, f'/{OVERVIEW_PREFIX}/')
+
+
+@app.route('/legacy')
+@app.route('/legacy/')
+@app.route('/legacy/<path:path>')
+def top_level_legacy_dashboard(path=''):
+    view = current_view()
+    if view == 'internal':
+        require_internal_access()
+    return serve_prefixed_legacy_dashboard(view, path)
 
 
 @app.route('/dashboard.html')
@@ -2585,7 +2595,11 @@ def top_level_dashboard_legacy():
     view = current_view()
     if view == 'internal':
         require_internal_access()
-    return send_legacy_dashboard(view)
+    target = '/legacy/'
+    query = request.query_string.decode('utf-8').strip()
+    if query:
+        target = f'{target}?{query}'
+    return redirect(target, code=302)
 
 
 @app.route('/brand-dashboard.html')

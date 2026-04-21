@@ -1290,16 +1290,18 @@ class EntityStore {
               };
               const total = metricNumber(bucket.total);
               const activeCount = (activeEntitiesByDate.get(date) || new Set()).size;
+              const presentCount = bucket.entitiesWithFeature.size;
               return {
                 numerator: total,
                 denominator: pageOneSlots,
                 total,
                 negative: metricNumber(bucket.negative),
                 controlled: metricNumber(bucket.controlled),
-                presentCount: bucket.entitiesWithFeature.size,
+                presentCount,
                 activeCount,
                 pageOneSlots,
                 avgSlotsPerActive: activeCount > 0 ? total / activeCount : null,
+                avgSlotsPerFeaturePresent: presentCount > 0 ? total / presentCount : null,
               };
             }),
           };

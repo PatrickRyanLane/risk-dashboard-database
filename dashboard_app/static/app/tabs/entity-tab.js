@@ -973,7 +973,7 @@ class EntityTabController {
     tooltipEl.innerHTML = html.join('');
     tooltipEl.style.opacity = '1';
     tooltipEl.style.pointerEvents = 'none';
-    tooltipEl.style.maxHeight = `${Math.max(220, Math.round(window.innerHeight * 0.62))}px`;
+    tooltipEl.style.maxHeight = `${Math.max(180, window.innerHeight - 16)}px`;
 
     const canvasRect = chart.canvas.getBoundingClientRect();
     const caretX = Number(tooltipModel.caretX) || 0;
@@ -3051,6 +3051,7 @@ class EntityTabController {
                 if (!isFeaturePresencePercentScale) {
                   const slotCount = Number(context.parsed.y);
                   const avgSlotsPerActive = Number(details?.avgSlotsPerActive);
+                  const avgSlotsPerFeaturePresent = Number(details?.avgSlotsPerFeaturePresent);
                   const pageOneSlots = Number(details?.pageOneSlots) || 0;
                   const lines = [
                     `${context.dataset.label}: ${formatInteger(slotCount, '0')} slots`,
@@ -3059,7 +3060,9 @@ class EntityTabController {
                   if (isSerpSizeStackedMetric && pageOneSlots > 0) {
                     lines.push(`${((slotCount / pageOneSlots) * 100).toFixed(1)}% of total page-one slots`);
                   }
-                  if (Number.isFinite(avgSlotsPerActive)) {
+                  if (isSerpSizeStackedMetric && Number.isFinite(avgSlotsPerFeaturePresent)) {
+                    lines.push(`${avgSlotsPerFeaturePresent.toFixed(2)} slots per brand when feature is present`);
+                  } else if (Number.isFinite(avgSlotsPerActive)) {
                     lines.push(`${avgSlotsPerActive.toFixed(2)} slots per active brand`);
                   }
                   return lines;

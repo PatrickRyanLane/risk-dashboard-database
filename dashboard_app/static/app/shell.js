@@ -133,7 +133,10 @@ function getDashboardModeSwitch() {
   let nextPath = '';
   let label = '';
 
-  if (/\/crisis-dashboard-overview(?:\/|$)/.test(path)) {
+  if (path === '/' || path === '') {
+    nextPath = '/crisis-dashboard/';
+    label = 'Switch to Full Dashboard';
+  } else if (/\/crisis-dashboard-overview(?:\/|$)/.test(path)) {
     nextPath = path.replace('/crisis-dashboard-overview', '/crisis-dashboard');
     label = 'Switch to Full Dashboard';
   } else if (/\/crisis-dashboard(?:\/|$)/.test(path)) {
